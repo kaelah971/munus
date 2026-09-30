@@ -1,5 +1,5 @@
-import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MunusProfile, ProfileDraft } from '../src/domain/profile'
+import type { DatabaseClient } from './database'
 
 export type ServerNetwork = 'mainnet' | 'testnet'
 
@@ -140,197 +140,192 @@ export class InMemoryMunusRepository implements MunusRepository {
   }
 }
 
-export class SupabaseMunusRepository implements MunusRepository {
-  constructor(private readonly client: SupabaseClient) {}
+export class PostgresMunusRepository implements MunusRepository {
+  constructor(private readonly database: DatabaseClient) {}
 
   async createChallenge(challenge: ChallengeRecord): Promise<void> {
-    const { error } = await this.client.from('auth_challenges').insert({
-      id: challenge.id,
-      wallet_address: challenge.walletAddress,
-      wallet_network: challenge.network,
-      nonce: challenge.nonce,
-      message: challenge.message,
-      expires_at: new Date(challenge.expiresAt).toISOString(),
-    })
-    if (error) throw new Error(`Could not persist auth challenge: ${error.message}`)
+    await this.run('persist auth challenge', () => this.database.query(
+      `INSERT INTO auth_challenges
+        (id, wallet_address, wallet_network, nonce, message, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        challenge.id,
+        challenge.walletAddress,
+        challenge.network,
+        challenge.nonce,
+        challenge.message,
+        new Date(challenge.expiresAt),
+      ],
+    ))
   }
 
   async getChallenge(id: string): Promise<ChallengeRecord | null> {
-    const { data, error } = await this.client
-      .from('auth_challenges')
-      .select('id,wallet_address,wallet_network,nonce,message,expires_at,consumed_at')
-      .eq('id', id)
-      .maybeSingle()
-    if (error) throw new Error(`Could not load auth challenge: ${error.message}`)
-    if (!data) return null
-
+    const result = await this.run('load auth challenge', () => this.database.query(
+      `SELECT id, wallet_address, wallet_network, nonce, message, expires_at, consumed_at
+       FROM auth_challenges
+       WHERE id = $1`,
+      [id],
+    ))
+    const row = result.rows[0]
+    if (!row) return null
     return {
-      id: data.id,
-      walletAddress: data.wallet_address,
-      network: data.wallet_network,
-      nonce: data.nonce,
-      message: data.message,
-      expiresAt: Date.parse(data.expires_at),
-      consumedAt: data.consumed_at ? Date.parse(data.consumed_at) : null,
+      id: String(row.id),
+      walletAddress: String(row.wallet_address),
+      network: row.wallet_network as ServerNetwork,
+      nonce: String(row.nonce),
+      message: String(row.message),
+      expiresAt: timestampMillis(row.expires_at),
+      consumedAt: row.consumed_at ? timestampMillis(row.consumed_at) : null,
     }
   }
 
   async consumeChallenge(id: string, consumedAt: number): Promise<boolean> {
-    const { data, error } = await this.client
-      .from('auth_challenges')
-      .update({ consumed_at: new Date(consumedAt).toISOString() })
-      .eq('id', id)
-      .is('consumed_at', null)
-      .select('id')
-    if (error) throw new Error(`Could not consume auth challenge: ${error.message}`)
-    return Array.isArray(data) && data.length === 1
+    const result = await this.run('consume auth challenge', () => this.database.query(
+      `UPDATE auth_challenges
+       SET consumed_at = $2
+       WHERE id = $1 AND consumed_at IS NULL
+       RETURNING id`,
+      [id, new Date(consumedAt)],
+    ))
+    return result.rowCount === 1 || result.rows.length === 1
   }
 
   async getOrCreateUser(walletAddress: string, network: ServerNetwork): Promise<UserRecord> {
-    const { data, error } = await this.client
-      .from('users')
-      .upsert(
-        {
-          wallet_address: walletAddress,
-          wallet_network: network,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'wallet_address' },
-      )
-      .select('id,wallet_address,wallet_network')
-      .single()
-    if (error) throw new Error(`Could not persist Munus user: ${error.message}`)
-    await this.getPreferences(data.id)
-
+    const result = await this.run('persist Munus user', () => this.database.query(
+      `INSERT INTO users (wallet_address, wallet_network)
+       VALUES ($1, $2)
+       ON CONFLICT (wallet_address) DO UPDATE
+         SET wallet_network = EXCLUDED.wallet_network,
+             updated_at = NOW()
+       RETURNING id, wallet_address, wallet_network`,
+      [walletAddress, network],
+    ))
+    const row = requireRow(result.rows[0], 'Munus user')
+    await this.getPreferences(String(row.id))
     return {
-      id: data.id,
-      walletAddress: data.wallet_address,
-      network: data.wallet_network,
+      id: String(row.id),
+      walletAddress: String(row.wallet_address),
+      network: row.wallet_network as ServerNetwork,
     }
   }
 
   async createSession(session: SessionRecord): Promise<void> {
-    const { error } = await this.client.from('sessions').insert({
-      id: session.id,
-      user_id: session.userId,
-      token_hash: session.tokenHash,
-      expires_at: new Date(session.expiresAt).toISOString(),
-    })
-    if (error) throw new Error(`Could not persist Munus session: ${error.message}`)
+    await this.run('persist Munus session', () => this.database.query(
+      `INSERT INTO sessions (id, user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [session.id, session.userId, session.tokenHash, new Date(session.expiresAt)],
+    ))
   }
 
   async getSessionByTokenHash(tokenHash: string): Promise<SessionRecord | null> {
-    const { data, error } = await this.client
-      .from('sessions')
-      .select(
-        'id,user_id,token_hash,expires_at,revoked_at,created_at,users(wallet_address,wallet_network)',
-      )
-      .eq('token_hash', tokenHash)
-      .maybeSingle()
-    if (error) throw new Error(`Could not load Munus session: ${error.message}`)
-    if (!data) return null
-
-    const user = Array.isArray(data.users) ? data.users[0] : data.users
-    if (!user) throw new Error('Munus session has no owning user.')
-
+    const result = await this.run('load Munus session', () => this.database.query(
+      `SELECT s.id, s.user_id, s.token_hash, s.expires_at, s.revoked_at, s.created_at,
+              u.wallet_address, u.wallet_network
+       FROM sessions AS s
+       JOIN users AS u ON u.id = s.user_id
+       WHERE s.token_hash = $1`,
+      [tokenHash],
+    ))
+    const row = result.rows[0]
+    if (!row) return null
     return {
-      id: data.id,
-      userId: data.user_id,
-      walletAddress: user.wallet_address,
-      network: user.wallet_network,
-      tokenHash: data.token_hash,
-      expiresAt: Date.parse(data.expires_at),
-      revokedAt: data.revoked_at ? Date.parse(data.revoked_at) : null,
-      createdAt: Date.parse(data.created_at),
+      id: String(row.id),
+      userId: String(row.user_id),
+      walletAddress: String(row.wallet_address),
+      network: row.wallet_network as ServerNetwork,
+      tokenHash: String(row.token_hash),
+      expiresAt: timestampMillis(row.expires_at),
+      revokedAt: row.revoked_at ? timestampMillis(row.revoked_at) : null,
+      createdAt: timestampMillis(row.created_at),
     }
   }
 
   async revokeSession(tokenHash: string, revokedAt: number): Promise<void> {
-    const { error } = await this.client
-      .from('sessions')
-      .update({ revoked_at: new Date(revokedAt).toISOString() })
-      .eq('token_hash', tokenHash)
-      .is('revoked_at', null)
-    if (error) throw new Error(`Could not revoke Munus session: ${error.message}`)
+    await this.run('revoke Munus session', () => this.database.query(
+      `UPDATE sessions
+       SET revoked_at = $2
+       WHERE token_hash = $1 AND revoked_at IS NULL`,
+      [tokenHash, new Date(revokedAt)],
+    ))
   }
 
   async getPreferences(userId: string): Promise<PreferencesRecord> {
-    const { data, error } = await this.client
-      .from('user_preferences')
-      .select('user_id,notifications_enabled,app_lock_enabled')
-      .eq('user_id', userId)
-      .maybeSingle()
-    if (error) throw new Error(`Could not load Munus preferences: ${error.message}`)
-    if (!data) return this.savePreferences(defaultPreferences(userId))
-
-    return {
-      userId: data.user_id,
-      notificationsEnabled: data.notifications_enabled,
-      appLockEnabled: data.app_lock_enabled,
-    }
+    const result = await this.run('load Munus preferences', () => this.database.query(
+      `SELECT user_id, notifications_enabled, app_lock_enabled
+       FROM user_preferences
+       WHERE user_id = $1`,
+      [userId],
+    ))
+    const row = result.rows[0]
+    if (!row) return this.savePreferences(defaultPreferences(userId))
+    return mapPreferences(row)
   }
 
   async savePreferences(preferences: PreferencesRecord): Promise<PreferencesRecord> {
-    const { data, error } = await this.client
-      .from('user_preferences')
-      .upsert(
-        {
-          user_id: preferences.userId,
-          notifications_enabled: preferences.notificationsEnabled,
-          app_lock_enabled: preferences.appLockEnabled,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id' },
-      )
-      .select('user_id,notifications_enabled,app_lock_enabled')
-      .single()
-    if (error) throw new Error(`Could not save Munus preferences: ${error.message}`)
-
-    return {
-      userId: data.user_id,
-      notificationsEnabled: data.notifications_enabled,
-      appLockEnabled: data.app_lock_enabled,
-    }
+    const result = await this.run('save Munus preferences', () => this.database.query(
+      `INSERT INTO user_preferences (user_id, notifications_enabled, app_lock_enabled)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) DO UPDATE
+         SET notifications_enabled = EXCLUDED.notifications_enabled,
+             app_lock_enabled = EXCLUDED.app_lock_enabled,
+             updated_at = NOW()
+       RETURNING user_id, notifications_enabled, app_lock_enabled`,
+      [preferences.userId, preferences.notificationsEnabled, preferences.appLockEnabled],
+    ))
+    return mapPreferences(requireRow(result.rows[0], 'Munus preferences'))
   }
 
   async getProfile(userId: string): Promise<MunusProfile | null> {
-    const { data, error } = await this.client
-      .from('profiles')
-      .select(
-        'user_id,display_name,avatar_reference,country,local_currency,default_phone,default_network,preferred_payment_asset,language,created_at,updated_at',
-      )
-      .eq('user_id', userId)
-      .maybeSingle()
-    if (error) throw new Error(`Could not load Munus profile: ${error.message}`)
-    if (!data) return null
-
-    return mapProfile(data)
+    const result = await this.run('load Munus profile', () => this.database.query(
+      `SELECT user_id, display_name, avatar_reference, country, local_currency,
+              default_phone, default_network, preferred_payment_asset, language,
+              created_at, updated_at
+       FROM profiles
+       WHERE user_id = $1`,
+      [userId],
+    ))
+    const row = result.rows[0]
+    return row ? mapProfile(row) : null
   }
 
   async saveProfile(userId: string, draft: ProfileDraft): Promise<MunusProfile> {
-    const { data, error } = await this.client
-      .from('profiles')
-      .upsert(
-        {
-          user_id: userId,
-          display_name: draft.displayName.trim(),
-          country: draft.country,
-          local_currency: draft.localCurrency,
-          default_phone: draft.defaultPhone.trim() || null,
-          default_network: draft.defaultNetwork || null,
-          preferred_payment_asset: draft.preferredPaymentAsset,
-          language: draft.language,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id' },
-      )
-      .select(
-        'user_id,display_name,avatar_reference,country,local_currency,default_phone,default_network,preferred_payment_asset,language,created_at,updated_at',
-      )
-      .single()
-    if (error) throw new Error(`Could not save Munus profile: ${error.message}`)
+    const result = await this.run('save Munus profile', () => this.database.query(
+      `INSERT INTO profiles
+        (user_id, display_name, country, local_currency, default_phone,
+         default_network, preferred_payment_asset, language)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (user_id) DO UPDATE
+         SET display_name = EXCLUDED.display_name,
+             country = EXCLUDED.country,
+             local_currency = EXCLUDED.local_currency,
+             default_phone = EXCLUDED.default_phone,
+             default_network = EXCLUDED.default_network,
+             preferred_payment_asset = EXCLUDED.preferred_payment_asset,
+             language = EXCLUDED.language,
+             updated_at = NOW()
+       RETURNING user_id, display_name, avatar_reference, country, local_currency,
+                 default_phone, default_network, preferred_payment_asset, language,
+                 created_at, updated_at`,
+      [
+        userId,
+        draft.displayName.trim(),
+        draft.country,
+        draft.localCurrency,
+        draft.defaultPhone.trim() || null,
+        draft.defaultNetwork || null,
+        draft.preferredPaymentAsset,
+        draft.language,
+      ],
+    ))
+    return mapProfile(requireRow(result.rows[0], 'Munus profile'))
+  }
 
-    return mapProfile(data)
+  private async run<T>(label: string, operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (error) {
+      throw new Error(`Could not ${label}: ${errorMessage(error)}`, { cause: error })
+    }
   }
 }
 
@@ -342,18 +337,44 @@ function defaultPreferences(userId: string): PreferencesRecord {
   }
 }
 
-function mapProfile(row: Record<string, string | null>): MunusProfile {
+function mapPreferences(row: Record<string, unknown>): PreferencesRecord {
   return {
-    userId: row.user_id as string,
-    displayName: row.display_name as string,
-    avatarReference: row.avatar_reference ?? undefined,
+    userId: String(row.user_id),
+    notificationsEnabled: Boolean(row.notifications_enabled),
+    appLockEnabled: Boolean(row.app_lock_enabled),
+  }
+}
+
+function mapProfile(row: Record<string, unknown>): MunusProfile {
+  return {
+    userId: String(row.user_id),
+    displayName: String(row.display_name),
+    avatarReference: row.avatar_reference ? String(row.avatar_reference) : undefined,
     country: row.country as MunusProfile['country'],
     localCurrency: row.local_currency as MunusProfile['localCurrency'],
-    defaultPhone: row.default_phone ?? undefined,
+    defaultPhone: row.default_phone ? String(row.default_phone) : undefined,
     defaultNetwork: row.default_network as MunusProfile['defaultNetwork'],
     preferredPaymentAsset: row.preferred_payment_asset as MunusProfile['preferredPaymentAsset'],
     language: row.language as MunusProfile['language'],
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
+    createdAt: timestampString(row.created_at),
+    updatedAt: timestampString(row.updated_at),
   }
+}
+
+function requireRow(row: Record<string, unknown> | undefined, label: string): Record<string, unknown> {
+  if (!row) throw new Error(`${label} was not returned by the database.`)
+  return row
+}
+
+function timestampMillis(value: unknown): number {
+  if (value instanceof Date) return value.getTime()
+  return Date.parse(String(value))
+}
+
+function timestampString(value: unknown): string {
+  return value instanceof Date ? value.toISOString() : String(value)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

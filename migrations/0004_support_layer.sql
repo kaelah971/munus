@@ -71,19 +71,11 @@ create table if not exists public.support_drafts (
 );
 
 create index if not exists contacts_user_active_lookup on public.contacts (user_id, archived_at, display_name);
+create unique index if not exists contacts_user_active_phone_unique on public.contacts (user_id, phone) where archived_at is null;
 create index if not exists support_rules_user_lookup on public.support_rules (user_id, enabled);
 create index if not exists support_requests_owner_status_lookup on public.support_requests (owner_user_id, status, created_at desc);
 create index if not exists support_requests_recipient_status_lookup on public.support_requests (recipient_user_id, status, created_at desc);
 create index if not exists support_drafts_user_lookup on public.support_drafts (user_id, status, created_at desc);
-
-alter table public.contacts enable row level security;
-alter table public.support_rules enable row level security;
-alter table public.support_requests enable row level security;
-alter table public.support_drafts enable row level security;
-
--- No browser policies are added. The server-only service-role repository filters
--- every query by the authenticated session owner and public links expose only a
--- deliberately safe projection.
 
 comment on table public.contacts is 'Manual support contacts; no address-book import or wallet authority.';
 comment on table public.support_rules is 'Soft support planning limits, not transaction blocks.';

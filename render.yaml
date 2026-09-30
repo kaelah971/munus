@@ -27,7 +27,5 @@ services:
         value: "2592000"
       - key: MUNUS_NIMIQ_NETWORK
         value: mainnet
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
+      - key: DATABASE_URL
         sync: false

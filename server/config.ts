@@ -7,8 +7,7 @@ export class ServerConfigurationError extends Error {
 
 export interface MunusServerConfig {
   port: number
-  supabaseUrl: string
-  supabaseServiceRoleKey: string
+  databaseUrl: string
   cookieName: string
   cookieSecure: boolean
   challengeTtlMs: number
@@ -27,16 +26,11 @@ export interface ServerEnv {
   MUNUS_NIMIQ_NETWORK?: string
   MUNUS_CORS_ORIGIN?: string
   NODE_ENV?: string
-  SUPABASE_URL?: string
-  SUPABASE_SERVICE_ROLE_KEY?: string
+  DATABASE_URL?: string
 }
 
 export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfig {
-  const supabaseUrl = required(env.SUPABASE_URL, 'SUPABASE_URL')
-  const supabaseServiceRoleKey = required(
-    env.SUPABASE_SERVICE_ROLE_KEY,
-    'SUPABASE_SERVICE_ROLE_KEY',
-  )
+  const databaseUrl = required(env.DATABASE_URL, 'DATABASE_URL')
   const portSource = env.MUNUS_SERVER_PORT ?? env.PORT ?? '8787'
   const port = positiveInteger(portSource, env.MUNUS_SERVER_PORT ? 'MUNUS_SERVER_PORT' : 'PORT')
   const challengeTtlSeconds = positiveInteger(
@@ -55,8 +49,7 @@ export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfi
 
   return {
     port,
-    supabaseUrl,
-    supabaseServiceRoleKey,
+    databaseUrl,
     cookieName: env.MUNUS_COOKIE_NAME ?? 'munus_session',
     cookieSecure: parseBoolean(
       env.MUNUS_COOKIE_SECURE,

@@ -1,19 +1,17 @@
-import { createClient } from '@supabase/supabase-js'
 import { resolve } from 'node:path'
 import { createMunusServer } from './app'
 import { MunusAuthService } from './authService'
+import { createPostgresPool } from './database'
 import { loadServerConfig } from './config'
-import { SupabaseMunusRepository } from './repository'
-import { SupabasePlanningRepository } from './planningRepository'
-import { SupabaseSupportRepository } from './supportRepository'
+import { PostgresMunusRepository } from './repository'
+import { PostgresPlanningRepository } from './planningRepository'
+import { PostgresSupportRepository } from './supportRepository'
 
 const config = loadServerConfig()
-const supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
-  auth: { autoRefreshToken: false, persistSession: false },
-})
-const repository = new SupabaseMunusRepository(supabase)
-const planning = new SupabasePlanningRepository(supabase)
-const support = new SupabaseSupportRepository(supabase)
+const database = createPostgresPool(config.databaseUrl)
+const repository = new PostgresMunusRepository(database)
+const planning = new PostgresPlanningRepository(database)
+const support = new PostgresSupportRepository(database)
 const auth = new MunusAuthService(repository, {
   challengeTtlMs: config.challengeTtlMs,
   sessionTtlMs: config.sessionTtlMs,

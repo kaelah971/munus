@@ -16,7 +16,7 @@ import {
   calculatePocketStatus,
   subtractMoney,
 } from '../src/domain/planning'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import { withTransaction, type DatabasePool } from './database'
 
 export class PlanningRepositoryError extends Error {
   constructor(message: string, readonly statusCode = 400) {
@@ -256,83 +256,61 @@ export class InMemoryPlanningRepository implements PlanningRepository {
   }
 }
 
-export class SupabasePlanningRepository implements PlanningRepository {
-  constructor(private readonly client: SupabaseClient) {}
+export class PostgresPlanningRepository implements PlanningRepository {
+  constructor(private readonly database: DatabasePool) {}
 
   async listPockets(userId: string, includeArchived = false): Promise<Pocket[]> {
-    let query = this.client
-      .from('pockets')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-    if (!includeArchived) query = query.neq('status', 'archived')
-    const { data, error } = await query
-    if (error) throw new Error(`Could not list pockets: ${error.message}`)
-    return (data ?? []).map((row: Record<string, unknown>) => mapPocket(row))
+    const result = await this.run('list pockets', () => this.database.query(
+      `SELECT * FROM pockets
+       WHERE user_id = $1${includeArchived ? '' : " AND status <> 'archived'"}
+       ORDER BY created_at DESC`,
+      [userId],
+    ))
+    return result.rows.map((row) => mapPocket(row))
   }
 
   async getPocket(userId: string, pocketId: string): Promise<Pocket | null> {
-    const { data, error } = await this.client
-      .from('pockets')
-      .select('*')
-      .eq('id', pocketId)
-      .eq('user_id', userId)
-      .maybeSingle()
-    if (error) throw new Error(`Could not load pocket: ${error.message}`)
-    return data ? mapPocket(data) : null
+    const result = await this.run('load pocket', () => this.database.query(
+      `SELECT * FROM pockets WHERE id = $1 AND user_id = $2`,
+      [pocketId, userId],
+    ))
+    return result.rows[0] ? mapPocket(result.rows[0]) : null
   }
 
   async createPocket(userId: string, draft: PocketDraft): Promise<Pocket> {
-    const { data, error } = await this.client
-      .from('pockets')
-      .insert({
-        user_id: userId,
-        name: draft.name,
-        type: draft.type,
-        unit: draft.unit,
-        target_amount: draft.targetAmount,
-        planned_amount: '0',
-        deadline: draft.deadline || null,
-        status: 'active',
-      })
-      .select('*')
-      .single()
-    if (error) throw new Error(`Could not create pocket: ${error.message}`)
-    return mapPocket(data)
+    const result = await this.run('create pocket', () => this.database.query(
+      `INSERT INTO pockets
+        (user_id, name, type, unit, target_amount, planned_amount, deadline, status)
+       VALUES ($1, $2, $3, $4, $5, 0, $6, 'active')
+       RETURNING *`,
+      [userId, draft.name, draft.type, draft.unit, draft.targetAmount, draft.deadline || null],
+    ))
+    return mapPocket(requireRow(result.rows[0], 'Pocket'))
   }
 
   async updatePocket(userId: string, pocketId: string, draft: PocketDraft): Promise<Pocket> {
     const current = await this.requirePocket(userId, pocketId)
     const nextStatus = calculatePocketStatus({ ...current, targetAmount: draft.targetAmount })
-    const { data, error } = await this.client
-      .from('pockets')
-      .update({
-        name: draft.name,
-        type: draft.type,
-        unit: draft.unit,
-        target_amount: draft.targetAmount,
-        deadline: draft.deadline || null,
-        status: nextStatus,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', pocketId)
-      .eq('user_id', userId)
-      .select('*')
-      .single()
-    if (error) throw new Error(`Could not update pocket: ${error.message}`)
-    return mapPocket(data)
+    const result = await this.run('update pocket', () => this.database.query(
+      `UPDATE pockets
+       SET name = $3, type = $4, unit = $5, target_amount = $6,
+           deadline = $7, status = $8, updated_at = NOW()
+       WHERE id = $1 AND user_id = $2
+       RETURNING *`,
+      [pocketId, userId, draft.name, draft.type, draft.unit, draft.targetAmount, draft.deadline || null, nextStatus],
+    ))
+    return mapPocket(requireRow(result.rows[0], 'Pocket'))
   }
 
   async archivePocket(userId: string, pocketId: string): Promise<Pocket | null> {
-    const { data, error } = await this.client
-      .from('pockets')
-      .update({ status: 'archived', archived_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('id', pocketId)
-      .eq('user_id', userId)
-      .select('*')
-      .maybeSingle()
-    if (error) throw new Error(`Could not archive pocket: ${error.message}`)
-    return data ? mapPocket(data) : null
+    const result = await this.run('archive pocket', () => this.database.query(
+      `UPDATE pockets
+       SET status = 'archived', archived_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND user_id = $2
+       RETURNING *`,
+      [pocketId, userId],
+    ))
+    return result.rows[0] ? mapPocket(result.rows[0]) : null
   }
 
   async addPocketAllocation(
@@ -340,68 +318,81 @@ export class SupabasePlanningRepository implements PlanningRepository {
     pocketId: string,
     draft: PocketAllocationDraft,
   ): Promise<{ pocket: Pocket; entry: PocketEntry }> {
-    const { data, error } = await this.client.rpc('add_pocket_entry', {
-      p_pocket_id: pocketId,
-      p_user_id: userId,
-      p_amount: draft.amount,
-      p_direction: draft.direction,
-      p_note: draft.note || null,
-    })
-    if (error) throw new Error(`Could not add pocket allocation: ${error.message}`)
-    const pocket = await this.requirePocket(userId, pocketId)
-    const row = Array.isArray(data) ? data[0] : data
-    return {
-      pocket,
-      entry: {
-        id: String(row?.entry_id ?? randomUUID()),
-        pocketId,
-        userId,
-        amount: draft.amount,
-        direction: draft.direction,
-        note: draft.note || undefined,
-        createdAt: String(row?.entry_created_at ?? new Date().toISOString()),
-      },
-    }
+    return this.run('add pocket allocation', () => withTransaction(this.database, async (client) => {
+      const locked = await client.query(
+        `SELECT * FROM pockets WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+        [pocketId, userId],
+      )
+      const current = locked.rows[0]
+      if (!current) throw new PlanningRepositoryError('Pocket was not found.', 404)
+      const pocket = mapPocket(current)
+      if (pocket.status === 'archived') throw new PlanningRepositoryError('Archived pockets cannot receive allocations.', 409)
+
+      let plannedAmount: string
+      try {
+        plannedAmount = draft.direction === 'allocation'
+          ? addMoney(pocket.plannedAmount, draft.amount)
+          : subtractMoney(pocket.plannedAmount, draft.amount)
+      } catch (error) {
+        throw new PlanningRepositoryError(error instanceof Error ? error.message : 'Allocation is invalid.')
+      }
+      const now = new Date().toISOString()
+      const nextStatus = calculatePocketStatus({ ...pocket, plannedAmount })
+      const entryResult = await client.query(
+        `INSERT INTO pocket_entries (pocket_id, user_id, amount, direction, note)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, created_at`,
+        [pocketId, userId, draft.amount, draft.direction, draft.note || null],
+      )
+      const updatedResult = await client.query(
+        `UPDATE pockets
+         SET planned_amount = $3, status = $4, updated_at = $5
+         WHERE id = $1 AND user_id = $2
+         RETURNING *`,
+        [pocketId, userId, plannedAmount, nextStatus, now],
+      )
+      const entry = requireRow(entryResult.rows[0], 'Pocket entry')
+      return {
+        pocket: mapPocket(requireRow(updatedResult.rows[0], 'Pocket')),
+        entry: {
+          id: String(entry.id),
+          pocketId,
+          userId,
+          amount: draft.amount,
+          direction: draft.direction,
+          note: draft.note || undefined,
+          createdAt: timestampString(entry.created_at),
+        },
+      }
+    }))
   }
 
   async listReminders(userId: string): Promise<Reminder[]> {
-    const { data, error } = await this.client
-      .from('reminders')
-      .select('*')
-      .eq('user_id', userId)
-      .order('due_at', { ascending: true })
-    if (error) throw new Error(`Could not list reminders: ${error.message}`)
-    return (data ?? []).map((row: Record<string, unknown>) => mapReminder(row))
+    const result = await this.run('list reminders', () => this.database.query(
+      `SELECT * FROM reminders WHERE user_id = $1 ORDER BY due_at ASC`,
+      [userId],
+    ))
+    return result.rows.map((row) => mapReminder(row))
   }
 
   async getReminder(userId: string, reminderId: string): Promise<Reminder | null> {
-    const { data, error } = await this.client
-      .from('reminders')
-      .select('*')
-      .eq('id', reminderId)
-      .eq('user_id', userId)
-      .maybeSingle()
-    if (error) throw new Error(`Could not load reminder: ${error.message}`)
-    return data ? mapReminder(data) : null
+    const result = await this.run('load reminder', () => this.database.query(
+      `SELECT * FROM reminders WHERE id = $1 AND user_id = $2`,
+      [reminderId, userId],
+    ))
+    return result.rows[0] ? mapReminder(result.rows[0]) : null
   }
 
   async createReminder(userId: string, draft: ReminderDraft): Promise<Reminder> {
     await this.assertLinkedPocket(userId, draft)
-    const { data, error } = await this.client
-      .from('reminders')
-      .insert({
-        user_id: userId,
-        linked_object_type: draft.linkedObjectType,
-        linked_object_id: draft.linkedObjectId || null,
-        title: draft.title,
-        due_at: draft.dueAt,
-        repeat_rule: draft.repeatRule || null,
-        status: 'open',
-      })
-      .select('*')
-      .single()
-    if (error) throw new Error(`Could not create reminder: ${error.message}`)
-    return mapReminder(data)
+    const result = await this.run('create reminder', () => this.database.query(
+      `INSERT INTO reminders
+        (user_id, linked_object_type, linked_object_id, title, due_at, repeat_rule, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'open')
+       RETURNING *`,
+      [userId, draft.linkedObjectType, draft.linkedObjectId || null, draft.title, draft.dueAt, draft.repeatRule || null],
+    ))
+    return mapReminder(requireRow(result.rows[0], 'Reminder'))
   }
 
   async updateReminder(
@@ -410,89 +401,76 @@ export class SupabasePlanningRepository implements PlanningRepository {
     draft: ReminderDraft,
     status: ReminderStatus,
   ): Promise<Reminder | null> {
+    const current = await this.getReminder(userId, reminderId)
+    if (!current) return null
     await this.assertLinkedPocket(userId, draft)
-    const { data, error } = await this.client
-      .from('reminders')
-      .update({
-        linked_object_type: draft.linkedObjectType,
-        linked_object_id: draft.linkedObjectId || null,
-        title: draft.title,
-        due_at: status === 'done' && draft.repeatRule ? advanceReminderDueAt(draft.dueAt, draft.repeatRule) : draft.dueAt,
-        repeat_rule: draft.repeatRule || null,
-        status: status === 'done' && draft.repeatRule ? 'open' : status,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', reminderId)
-      .eq('user_id', userId)
-      .select('*')
-      .maybeSingle()
-    if (error) throw new Error(`Could not update reminder: ${error.message}`)
-    return data ? mapReminder(data) : null
+    const repeats = status === 'done' && Boolean(draft.repeatRule)
+    const dueAt = repeats ? advanceReminderDueAt(draft.dueAt, draft.repeatRule) : draft.dueAt
+    const nextStatus = repeats ? 'open' : status
+    const result = await this.run('update reminder', () => this.database.query(
+      `UPDATE reminders
+       SET linked_object_type = $3, linked_object_id = $4, title = $5,
+           due_at = $6, repeat_rule = $7, status = $8, updated_at = NOW()
+       WHERE id = $1 AND user_id = $2
+       RETURNING *`,
+      [reminderId, userId, draft.linkedObjectType, draft.linkedObjectId || null, draft.title, dueAt, draft.repeatRule || null, nextStatus],
+    ))
+    return result.rows[0] ? mapReminder(result.rows[0]) : null
   }
 
   async deleteReminder(userId: string, reminderId: string): Promise<boolean> {
-    const { data, error } = await this.client
-      .from('reminders')
-      .delete()
-      .eq('id', reminderId)
-      .eq('user_id', userId)
-      .select('id')
-    if (error) throw new Error(`Could not delete reminder: ${error.message}`)
-    return Array.isArray(data) && data.length > 0
+    const result = await this.run('delete reminder', () => this.database.query(
+      `DELETE FROM reminders WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [reminderId, userId],
+    ))
+    return result.rowCount === 1 || result.rows.length === 1
   }
 
   async listSpendRules(userId: string): Promise<SpendRule[]> {
-    const { data, error } = await this.client
-      .from('spend_rules')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-    if (error) throw new Error(`Could not list spend rules: ${error.message}`)
-    return (data ?? []).map((row: Record<string, unknown>) => mapSpendRule(row))
+    const result = await this.run('list spend rules', () => this.database.query(
+      `SELECT * FROM spend_rules WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId],
+    ))
+    return result.rows.map((row) => mapSpendRule(row))
   }
 
   async getSpendRule(userId: string, ruleId: string): Promise<SpendRule | null> {
-    const { data, error } = await this.client
-      .from('spend_rules')
-      .select('*')
-      .eq('id', ruleId)
-      .eq('user_id', userId)
-      .maybeSingle()
-    if (error) throw new Error(`Could not load spend rule: ${error.message}`)
-    return data ? mapSpendRule(data) : null
+    const result = await this.run('load spend rule', () => this.database.query(
+      `SELECT * FROM spend_rules WHERE id = $1 AND user_id = $2`,
+      [ruleId, userId],
+    ))
+    return result.rows[0] ? mapSpendRule(result.rows[0]) : null
   }
 
   async createSpendRule(userId: string, draft: SpendRuleDraft): Promise<SpendRule> {
-    const { data, error } = await this.client
-      .from('spend_rules')
-      .insert({ user_id: userId, category: draft.category, unit: draft.unit, limit_amount: draft.limitAmount, period: draft.period, warning_threshold: draft.warningThreshold, enabled: draft.enabled })
-      .select('*')
-      .single()
-    if (error) throw new Error(`Could not create spend rule: ${error.message}`)
-    return mapSpendRule(data)
+    const result = await this.run('create spend rule', () => this.database.query(
+      `INSERT INTO spend_rules
+        (user_id, category, unit, limit_amount, period, warning_threshold, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [userId, draft.category, draft.unit, draft.limitAmount, draft.period, draft.warningThreshold, draft.enabled],
+    ))
+    return mapSpendRule(requireRow(result.rows[0], 'Spend rule'))
   }
 
   async updateSpendRule(userId: string, ruleId: string, draft: SpendRuleDraft): Promise<SpendRule | null> {
-    const { data, error } = await this.client
-      .from('spend_rules')
-      .update({ category: draft.category, unit: draft.unit, limit_amount: draft.limitAmount, period: draft.period, warning_threshold: draft.warningThreshold, enabled: draft.enabled, updated_at: new Date().toISOString() })
-      .eq('id', ruleId)
-      .eq('user_id', userId)
-      .select('*')
-      .maybeSingle()
-    if (error) throw new Error(`Could not update spend rule: ${error.message}`)
-    return data ? mapSpendRule(data) : null
+    const result = await this.run('update spend rule', () => this.database.query(
+      `UPDATE spend_rules
+       SET category = $3, unit = $4, limit_amount = $5, period = $6,
+           warning_threshold = $7, enabled = $8, updated_at = NOW()
+       WHERE id = $1 AND user_id = $2
+       RETURNING *`,
+      [ruleId, userId, draft.category, draft.unit, draft.limitAmount, draft.period, draft.warningThreshold, draft.enabled],
+    ))
+    return result.rows[0] ? mapSpendRule(result.rows[0]) : null
   }
 
   async deleteSpendRule(userId: string, ruleId: string): Promise<boolean> {
-    const { data, error } = await this.client
-      .from('spend_rules')
-      .delete()
-      .eq('id', ruleId)
-      .eq('user_id', userId)
-      .select('id')
-    if (error) throw new Error(`Could not delete spend rule: ${error.message}`)
-    return Array.isArray(data) && data.length > 0
+    const result = await this.run('delete spend rule', () => this.database.query(
+      `DELETE FROM spend_rules WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [ruleId, userId],
+    ))
+    return result.rowCount === 1 || result.rows.length === 1
   }
 
   private async requirePocket(userId: string, pocketId: string): Promise<Pocket> {
@@ -506,6 +484,15 @@ export class SupabasePlanningRepository implements PlanningRepository {
       throw new PlanningRepositoryError('Reminder pocket was not found.', 404)
     }
   }
+
+  private async run<T>(label: string, operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (error) {
+      if (error instanceof PlanningRepositoryError) throw error
+      throw new Error(`Could not ${label}: ${errorMessage(error)}`, { cause: error })
+    }
+  }
 }
 
 function mapPocket(row: Record<string, unknown>): Pocket {
@@ -517,11 +504,11 @@ function mapPocket(row: Record<string, unknown>): Pocket {
     unit: row.unit as Pocket['unit'],
     targetAmount: String(row.target_amount),
     plannedAmount: String(row.planned_amount),
-    deadline: row.deadline ? String(row.deadline) : undefined,
+    deadline: row.deadline ? timestampString(row.deadline) : undefined,
     status: row.status as Pocket['status'],
-    archivedAt: row.archived_at ? String(row.archived_at) : undefined,
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
+    archivedAt: row.archived_at ? timestampString(row.archived_at) : undefined,
+    createdAt: timestampString(row.created_at),
+    updatedAt: timestampString(row.updated_at),
   }
 }
 
@@ -532,11 +519,11 @@ function mapReminder(row: Record<string, unknown>): Reminder {
     linkedObjectType: row.linked_object_type as Reminder['linkedObjectType'],
     linkedObjectId: row.linked_object_id ? String(row.linked_object_id) : undefined,
     title: String(row.title),
-    dueAt: String(row.due_at),
+    dueAt: timestampString(row.due_at),
     repeatRule: row.repeat_rule ? String(row.repeat_rule) : undefined,
     status: row.status as Reminder['status'],
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
+    createdAt: timestampString(row.created_at),
+    updatedAt: timestampString(row.updated_at),
   }
 }
 
@@ -550,7 +537,20 @@ function mapSpendRule(row: Record<string, unknown>): SpendRule {
     period: row.period as SpendRule['period'],
     warningThreshold: Number(row.warning_threshold),
     enabled: Boolean(row.enabled),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
+    createdAt: timestampString(row.created_at),
+    updatedAt: timestampString(row.updated_at),
   }
+}
+
+function requireRow(row: Record<string, unknown> | undefined, label: string): Record<string, unknown> {
+  if (!row) throw new Error(`${label} was not returned by the database.`)
+  return row
+}
+
+function timestampString(value: unknown): string {
+  return value instanceof Date ? value.toISOString() : String(value)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
