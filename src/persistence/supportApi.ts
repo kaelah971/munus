@@ -71,7 +71,9 @@ export class RemoteSupportApi implements SupportApi {
   updateSupportDraft(id: string, input: SupportDraftInput): Promise<SupportDraft> { return this.read(`/support-drafts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }) }
 
   async getPublicRequest(publicRequestId: string): Promise<PublicSupportRequest | null> {
-    const response = await this.request(`/request/${encodeURIComponent(publicRequestId)}`, {})
+    const response = await this.request(`/request/${encodeURIComponent(publicRequestId)}`, {
+      headers: { accept: 'application/json' },
+    })
     if (response.status === 404) return null
     return (await response.json()) as PublicSupportRequest
   }

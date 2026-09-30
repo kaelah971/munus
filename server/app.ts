@@ -1,3 +1,5 @@
+import { readFile, stat } from 'node:fs/promises'
+import { extname, relative, resolve, sep } from 'node:path'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { MunusSession } from '../src/domain/auth'
 import type { MunusServerConfig } from './config'
@@ -41,6 +43,7 @@ export interface MunusServerDependencies {
   planning: PlanningRepository
   support: SupportRepository
   auth: MunusAuthService
+  staticDir?: string
   config: Pick<
     MunusServerConfig,
     'cookieName' | 'cookieSecure' | 'defaultNetwork' | 'corsOrigin'
@@ -67,7 +70,7 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, support, config } = dependencies
+  const { auth, repository, planning, support, staticDir, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
@@ -78,6 +81,7 @@ export async function handleRequest(
 
   const publicRequestPath = matchPath(url.pathname, /^\/(?:request|support-requests\/public)\/([^/]+)$/)
   if (request.method === 'GET' && publicRequestPath) {
+    if (await serveFrontend(staticDir, url.pathname, response, acceptsHtml(request))) return
     const publicRequest = await support.getPublicSupportRequest(decodeURIComponent(publicRequestPath[1]))
     if (!publicRequest) {
       sendError(response, 404, 'This support request is unavailable or expired.')
@@ -444,6 +448,7 @@ export async function handleRequest(
       return
     }
 
+    if (request.method === 'GET' && await serveFrontend(staticDir, url.pathname, response, acceptsHtml(request))) return
     sendError(response, 404, 'Munus route not found.')
   } catch (error: unknown) {
     if (
@@ -523,6 +528,79 @@ function parseNetwork(value: unknown, fallback: 'mainnet' | 'testnet'): 'mainnet
     throw new RequestValidationError('network must be mainnet or testnet.')
   }
   return value
+}
+
+function acceptsHtml(request: IncomingMessage): boolean {
+  return request.headers.accept?.includes('text/html') ?? false
+}
+
+async function serveFrontend(
+  staticDir: string | undefined,
+  pathname: string,
+  response: ServerResponse,
+  allowSpaFallback: boolean,
+): Promise<boolean> {
+  if (!staticDir) return false
+
+  let decodedPath: string
+  try {
+    decodedPath = decodeURIComponent(pathname)
+  } catch {
+    return false
+  }
+
+  const root = resolve(staticDir)
+  const requestedFile = resolve(root, decodedPath === '/' ? 'index.html' : decodedPath.replace(/^\/+/, ''))
+  const relativeRequestedFile = relative(root, requestedFile)
+  if (
+    relativeRequestedFile === '..' ||
+    relativeRequestedFile.startsWith(`..${sep}`) ||
+    relativeRequestedFile.startsWith('/') ||
+    relativeRequestedFile.startsWith('\\')
+  ) {
+    return false
+  }
+
+  let filePath = requestedFile
+  let isIndexFallback = false
+  try {
+    if (!(await stat(filePath)).isFile()) return false
+  } catch {
+    if (!allowSpaFallback || /\.[^/]+$/.test(decodedPath)) return false
+    filePath = resolve(root, 'index.html')
+    isIndexFallback = true
+    try {
+      if (!(await stat(filePath)).isFile()) return false
+    } catch {
+      return false
+    }
+  }
+
+  const body = await readFile(filePath)
+  response.writeHead(200, {
+    'content-type': contentType(filePath),
+    'cache-control': isIndexFallback || extname(filePath).toLowerCase() === '.html'
+      ? 'no-cache'
+      : 'public, max-age=31536000, immutable',
+  })
+  response.end(body)
+  return true
+}
+
+function contentType(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case '.css': return 'text/css; charset=utf-8'
+    case '.js': return 'text/javascript; charset=utf-8'
+    case '.json': return 'application/json; charset=utf-8'
+    case '.svg': return 'image/svg+xml'
+    case '.png': return 'image/png'
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg'
+    case '.webp': return 'image/webp'
+    case '.ico': return 'image/x-icon'
+    case '.html': return 'text/html; charset=utf-8'
+    default: return 'application/octet-stream'
+  }
 }
 
 function applyCorsHeaders(

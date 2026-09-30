@@ -19,6 +19,7 @@ export interface MunusServerConfig {
 
 export interface ServerEnv {
   MUNUS_SERVER_PORT?: string
+  PORT?: string
   MUNUS_COOKIE_NAME?: string
   MUNUS_COOKIE_SECURE?: string
   MUNUS_CHALLENGE_TTL_SECONDS?: string
@@ -36,7 +37,8 @@ export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfi
     env.SUPABASE_SERVICE_ROLE_KEY,
     'SUPABASE_SERVICE_ROLE_KEY',
   )
-  const port = positiveInteger(env.MUNUS_SERVER_PORT ?? '8787', 'MUNUS_SERVER_PORT')
+  const portSource = env.MUNUS_SERVER_PORT ?? env.PORT ?? '8787'
+  const port = positiveInteger(portSource, env.MUNUS_SERVER_PORT ? 'MUNUS_SERVER_PORT' : 'PORT')
   const challengeTtlSeconds = positiveInteger(
     env.MUNUS_CHALLENGE_TTL_SECONDS ?? '300',
     'MUNUS_CHALLENGE_TTL_SECONDS',

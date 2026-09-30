@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { resolve } from 'node:path'
 import { createMunusServer } from './app'
 import { MunusAuthService } from './authService'
 import { loadServerConfig } from './config'
@@ -17,8 +18,15 @@ const auth = new MunusAuthService(repository, {
   challengeTtlMs: config.challengeTtlMs,
   sessionTtlMs: config.sessionTtlMs,
 })
-const server = createMunusServer({ repository, planning, support, auth, config })
+const server = createMunusServer({
+  repository,
+  planning,
+  support,
+  auth,
+  staticDir: resolve(process.cwd(), 'dist'),
+  config,
+})
 
-server.listen(config.port, () => {
-  console.log(`Munus API listening on http://localhost:${config.port}`)
+server.listen(config.port, '0.0.0.0', () => {
+  console.log(`Munus listening on port ${config.port}`)
 })

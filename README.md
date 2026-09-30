@@ -48,3 +48,7 @@ Life Pockets, in-app reminders, and Spend Guard now persist through the authenti
 Contacts, Support Mode, soft support boundaries, structured Request Help records, reviewable support drafts, and privacy-safe public request links now persist through the authenticated API and `0004_support_layer.sql`. Contacts are manual-only and archivable. Support requests and drafts never authorize NIM movement, provider fulfilment, or payment approval; all amounts remain planning data.
 
 Apply migrations `0001` through `0004` before deploying the production API. Payments, provider fulfilment, and verified Activity transactions remain intentionally unimplemented.
+
+## Public beta deployment
+
+The one-origin Render deployment serves the Vite `dist/` build and Node API from the same long-running service, preserving secure HttpOnly sessions and client-route refreshes. See [`docs/deployment.md`](docs/deployment.md) and `render.yaml` for the build/runtime commands, environment contract, safe Supabase migration process, smoke test, and Nimiq Pay testing note.

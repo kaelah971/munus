@@ -1,4 +1,7 @@
 // @vitest-environment node
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { KeyPair } from '@nimiq/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createMunusServer } from './app'
@@ -20,7 +23,7 @@ afterEach(async () => {
   )
 })
 
-async function createTestServer() {
+async function createTestServer(options: { staticDir?: string } = {}) {
   const repository = new InMemoryMunusRepository()
   const planning = new InMemoryPlanningRepository()
   const support = new InMemorySupportRepository()
@@ -33,6 +36,7 @@ async function createTestServer() {
     planning,
     support,
     auth,
+    staticDir: options.staticDir,
     config: {
       cookieName: 'munus_test_session',
       cookieSecure: false,
@@ -128,6 +132,31 @@ describe('Munus production API', () => {
     expect(await afterLogout.json()).toEqual({ session: null })
     const unauthenticatedProfile = await fetch(`${baseUrl}/profile`, { headers: { cookie } })
     expect(unauthenticatedProfile.status).toBe(401)
+  })
+
+  it('serves the built app for root, deep links, and static assets', async () => {
+    const staticDir = await mkdtemp(join(tmpdir(), 'munus-static-'))
+    await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="root"></div>')
+    await writeFile(join(staticDir, 'assets.js'), 'console.log("munus")')
+
+    try {
+      const { baseUrl } = await createTestServer({ staticDir })
+      const root = await fetch(`${baseUrl}/`, { headers: { accept: 'text/html' } })
+      expect(root.status).toBe(200)
+      expect(root.headers.get('content-type')).toContain('text/html')
+      expect(await root.text()).toContain('<div id="root"></div>')
+
+      const deepLink = await fetch(`${baseUrl}/support`, { headers: { accept: 'text/html' } })
+      expect(deepLink.status).toBe(200)
+      expect(await deepLink.text()).toContain('<div id="root"></div>')
+
+      const asset = await fetch(`${baseUrl}/assets.js`)
+      expect(asset.status).toBe(200)
+      expect(asset.headers.get('content-type')).toContain('text/javascript')
+      expect(await asset.text()).toContain('munus')
+    } finally {
+      await rm(staticDir, { recursive: true, force: true })
+    }
   })
 
   it('persists owned pocket, reminder, and spend-guard routes', async () => {
