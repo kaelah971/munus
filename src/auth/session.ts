@@ -1,5 +1,10 @@
 import { munusConfig } from '../config'
-import type { AuthChallenge, AuthGateway, MunusSession } from '../domain/auth'
+import type {
+  AuthChallenge,
+  AuthGateway,
+  MunusNetwork,
+  MunusSession,
+} from '../domain/auth'
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000
 
@@ -11,7 +16,7 @@ export class AuthUnavailableError extends Error {
 }
 
 export function createAuthGateway(): AuthGateway {
-  if (munusConfig.apiBaseUrl) {
+  if (munusConfig.productionAuth || munusConfig.apiBaseUrl) {
     return createRemoteAuthGateway(munusConfig.apiBaseUrl)
   }
 
@@ -41,6 +46,10 @@ class UnavailableAuthGateway implements AuthGateway {
     throw new AuthUnavailableError()
   }
 
+  async restoreSession(): Promise<MunusSession | null> {
+    return null
+  }
+
   async signOut(): Promise<void> {
     // There is no local or remote session to revoke.
   }
@@ -52,8 +61,9 @@ class LocalDevelopmentAuthGateway implements AuthGateway {
   async signIn(
     walletAddress: string,
     sign: (message: string) => Promise<{ publicKey: string; signature: string }>,
+    network: MunusNetwork = 'mainnet',
   ): Promise<MunusSession> {
-    const challenge = createLocalChallenge(walletAddress)
+    const challenge = createLocalChallenge(walletAddress, network)
     const signed = await sign(challenge.message)
 
     if (!signed.publicKey || !signed.signature) {
@@ -65,10 +75,16 @@ class LocalDevelopmentAuthGateway implements AuthGateway {
       id: `local-session-${stableId(walletAddress)}-${now}`,
       userId: `local-user-${stableId(walletAddress)}`,
       walletAddress,
+      network,
       issuedAt: now,
       expiresAt: now + 24 * 60 * 60 * 1000,
       trust: 'development-only-unverified',
     }
+  }
+
+  async restoreSession(): Promise<MunusSession | null> {
+    // LocalSessionStore owns development session restoration in the client.
+    return null
   }
 
   async signOut(): Promise<void> {
@@ -84,11 +100,13 @@ class RemoteAuthGateway implements AuthGateway {
   async signIn(
     walletAddress: string,
     sign: (message: string) => Promise<{ publicKey: string; signature: string }>,
+    network: MunusNetwork = 'mainnet',
   ): Promise<MunusSession> {
     const challenge = await requestJson<AuthChallenge>(this.baseUrl, '/auth/challenge', {
       walletAddress,
+      network,
     })
-    assertChallenge(challenge, walletAddress)
+    assertChallenge(challenge, walletAddress, network)
     const signed = await sign(challenge.message)
     const session = await requestJson<unknown>(this.baseUrl, '/auth/verify', {
       challengeId: challenge.id,
@@ -97,7 +115,18 @@ class RemoteAuthGateway implements AuthGateway {
       signature: signed.signature,
     })
 
-    return parseServerSession(session, walletAddress)
+    return parseServerSession(session, challenge.walletAddress)
+  }
+
+  async restoreSession(): Promise<MunusSession | null> {
+    const response = await requestJson<{ session?: unknown }>(
+      this.baseUrl,
+      '/auth/session',
+      undefined,
+      'GET',
+    )
+    if (!response.session) return null
+    return parseServerSession(response.session)
   }
 
   async signOut(): Promise<void> {
@@ -105,7 +134,7 @@ class RemoteAuthGateway implements AuthGateway {
   }
 }
 
-function createLocalChallenge(walletAddress: string): AuthChallenge {
+function createLocalChallenge(walletAddress: string, network: MunusNetwork): AuthChallenge {
   const now = Date.now()
   const expiresAt = now + CHALLENGE_TTL_MS
   const id = createId()
@@ -113,28 +142,35 @@ function createLocalChallenge(walletAddress: string): AuthChallenge {
   return {
     id,
     walletAddress,
+    network,
     expiresAt,
     message: [
       'Sign in to Munus.',
       `Wallet: ${walletAddress}`,
+      `Network: ${network}`,
       `Nonce: ${id}`,
       `Expires: ${new Date(expiresAt).toISOString()}`,
     ].join('\n'),
   }
 }
 
-function assertChallenge(challenge: AuthChallenge, walletAddress: string): void {
+function assertChallenge(
+  challenge: AuthChallenge,
+  walletAddress: string,
+  network: MunusNetwork,
+): void {
   if (
     !challenge.id ||
     !challenge.message ||
     challenge.walletAddress !== walletAddress ||
+    challenge.network !== network ||
     challenge.expiresAt <= Date.now()
   ) {
     throw new Error('Munus authentication returned an invalid or expired challenge.')
   }
 }
 
-function parseServerSession(value: unknown, walletAddress: string): MunusSession {
+function parseServerSession(value: unknown, expectedWalletAddress?: string): MunusSession {
   if (!value || typeof value !== 'object') {
     throw new Error('Munus authentication returned an invalid session.')
   }
@@ -143,9 +179,13 @@ function parseServerSession(value: unknown, walletAddress: string): MunusSession
   if (
     typeof session.id !== 'string' ||
     typeof session.userId !== 'string' ||
+    typeof session.walletAddress !== 'string' ||
+    typeof session.network !== 'string' ||
+    (session.network !== 'mainnet' && session.network !== 'testnet') ||
     typeof session.issuedAt !== 'number' ||
     typeof session.expiresAt !== 'number' ||
-    session.expiresAt <= Date.now()
+    session.expiresAt <= Date.now() ||
+    (expectedWalletAddress !== undefined && session.walletAddress !== expectedWalletAddress)
   ) {
     throw new Error('Munus authentication returned an incomplete session.')
   }
@@ -153,7 +193,8 @@ function parseServerSession(value: unknown, walletAddress: string): MunusSession
   return {
     id: session.id,
     userId: session.userId,
-    walletAddress,
+    walletAddress: session.walletAddress,
+    network: session.network,
     issuedAt: session.issuedAt,
     expiresAt: session.expiresAt,
     trust: 'server-verified',
@@ -181,6 +222,7 @@ async function requestJson<T>(
     throw new Error(`Munus authentication request failed (${response.status}).`)
   }
 
+  if (response.status === 204) return undefined as T
   return (await response.json()) as T
 }
 
@@ -195,5 +237,6 @@ function stableId(value: string): string {
     hash ^= character.charCodeAt(0)
     hash = Math.imul(hash, 16777619)
   }
+
   return (hash >>> 0).toString(16)
 }

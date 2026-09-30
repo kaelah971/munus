@@ -176,9 +176,13 @@ export function shortenNimiqAccount(account: string): string {
   return `${compactAccount.slice(0, 8)}…${compactAccount.slice(-6)}`
 }
 
-function readHostNetwork(): NimiqNetwork {
+export function getNimiqNetwork(): NimiqNetwork {
   const network = getHostNetwork()
   return network ?? 'unknown'
+}
+
+function readHostNetwork(): NimiqNetwork {
+  return getNimiqNetwork()
 }
 
 function isNimiqPayUnavailable(error: unknown): boolean {

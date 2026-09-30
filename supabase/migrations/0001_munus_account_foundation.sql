@@ -1,6 +1,8 @@
 -- Munus account foundation.
--- Wallet authentication is verified by the backend, which should mint a
--- Supabase-compatible session before these user-owned policies are used.
+-- Wallet authentication is verified by the Munus API. The API uses a
+-- server-only Supabase service-role client and enforces ownership from its
+-- validated session user_id; these auth.uid() policies are not treated as the
+-- primary boundary unless Supabase Auth JWTs are introduced later.
 
 create extension if not exists pgcrypto;
 

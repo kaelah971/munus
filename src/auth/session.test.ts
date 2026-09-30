@@ -22,6 +22,33 @@ describe('Munus wallet authentication boundary', () => {
     })
   })
 
+  it('restores a server session without reading a browser token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        session: {
+          id: 'session-1',
+          userId: 'user-1',
+          walletAddress: 'NQ01',
+          network: 'mainnet',
+          issuedAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(createRemoteAuthGateway('https://api.example.test').restoreSession()).resolves.toMatchObject({
+      id: 'session-1',
+      trust: 'server-verified',
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.example.test/auth/session',
+      expect.objectContaining({ method: 'GET', credentials: 'include' }),
+    )
+  })
+
   it('sends challenge signatures to the remote session boundary', async () => {
     const fetchMock = vi
       .fn()
@@ -31,6 +58,7 @@ describe('Munus wallet authentication boundary', () => {
         json: async () => ({
           id: 'challenge-1',
           walletAddress: 'NQ01',
+          network: 'mainnet',
           message: 'Sign this exact challenge',
           expiresAt: Date.now() + 60_000,
         }),
@@ -41,6 +69,8 @@ describe('Munus wallet authentication boundary', () => {
         json: async () => ({
           id: 'session-1',
           userId: 'user-1',
+          walletAddress: 'NQ01',
+          network: 'mainnet',
           issuedAt: Date.now(),
           expiresAt: Date.now() + 60_000,
         }),

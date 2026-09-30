@@ -9,6 +9,14 @@ npm install
 npm run dev
 ```
 
+The production-capable API runs separately:
+
+```bash
+npm run server:dev
+```
+
+Set `VITE_MUNUS_API_BASE_URL=http://localhost:8787` and `MUNUS_CORS_ORIGIN=http://localhost:5173` when the Vite client needs to call the local API cross-origin. For deployment, serve the Vite build and API behind the same origin and keep the Supabase service-role key only in the server environment.
+
 Focused checks:
 
 ```bash
@@ -18,15 +26,15 @@ npm run lint
 npm run build
 ```
 
-## Slice 2 foundation
+## Slice 3 account backend
 
-The current slice establishes:
+The current slice adds:
 
-- wallet-authenticated Munus account boundaries using a backend challenge/signature/session contract;
-- a clearly marked local development auth adapter, never presented as production verification;
-- local development persistence for profile, preferences, session metadata, and app-lock records;
-- a Supabase schema with users, profiles, preferences, one-time challenges, sessions, and ownership RLS;
-- real Nimiq Pay account and balance retrieval through the installed Mini App SDK;
-- a bank-style Home dashboard, five-destination navigation, Profile & Settings, profile onboarding/editing, and a Web Crypto PBKDF2 app lock.
+- a same-origin-compatible Node API for wallet challenge, signature verification, session restore, logout, and profile read/write;
+- Nimiq Ed25519 verification through the installed `@nimiq/core` primitives, including address derivation and exact challenge bytes;
+- random opaque HttpOnly-cookie sessions with server-side expiry/revocation and SHA-256 token hashes in Supabase;
+- durable users, profiles, challenges, and sessions through the Supabase migrations;
+- production client cutover that restores the session from the cookie and loads/saves profiles through `RemoteProfileApi`;
+- explicit startup validation for server-only configuration.
 
-The browser fallback never invents a wallet address, balance, authentication, or activity. Payments and provider fulfilment are intentionally not implemented in this slice.
+`VITE_MUNUS_LOCAL_AUTH=true` remains a development-only, unverified fallback. Production builds never silently use local auth or localStorage as session truth. Payments, Pockets, contacts, Activity transactions, and provider fulfilment remain intentionally unimplemented.

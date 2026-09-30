@@ -1,8 +1,10 @@
 export type AuthSessionTrust = 'server-verified' | 'development-only-unverified'
+export type MunusNetwork = 'mainnet' | 'testnet'
 
 export interface AuthChallenge {
   id: string
   walletAddress: string
+  network: MunusNetwork
   message: string
   expiresAt: number
 }
@@ -18,6 +20,7 @@ export interface MunusSession {
   id: string
   userId: string
   walletAddress: string
+  network: MunusNetwork
   issuedAt: number
   expiresAt: number
   trust: AuthSessionTrust
@@ -32,9 +35,14 @@ export type AuthState =
 
 export interface AuthGateway {
   readonly mode: 'remote' | 'local-development' | 'unavailable'
-  signIn(walletAddress: string, sign: (message: string) => Promise<{
-    publicKey: string
-    signature: string
-  }>): Promise<MunusSession>
-  signOut(session: MunusSession): Promise<void>
+  signIn(
+    walletAddress: string,
+    sign: (message: string) => Promise<{
+      publicKey: string
+      signature: string
+    }>,
+    network?: MunusNetwork,
+  ): Promise<MunusSession>
+  restoreSession(): Promise<MunusSession | null>
+  signOut(session?: MunusSession): Promise<void>
 }

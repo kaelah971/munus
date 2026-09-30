@@ -47,6 +47,40 @@ button:focus-visible {
   min-height: 100dvh;
 }
 
+.page-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 14px;
+  width: min(100% - 40px, 540px);
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: 32px 0;
+}
+
+.page-state h1,
+.page-state p {
+  margin: 0;
+}
+
+.page-state h1 {
+  max-width: 460px;
+  font-size: clamp(2rem, 8vw, 3rem);
+  line-height: 1;
+  letter-spacing: -0.06em;
+}
+
+.page-state p:not(.eyebrow) {
+  max-width: 440px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.page-state .quiet-button {
+  margin-top: -4px;
+}
+
 .app-shell {
   display: flex;
   justify-content: center;

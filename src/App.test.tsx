@@ -55,6 +55,7 @@ describe('Munus account dashboard', () => {
         id: 'session-1',
         userId: 'user-1',
         walletAddress: 'NQ12 3456 7890 1234 5678 9012 3456 7890 1234',
+        network: 'mainnet',
         issuedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
         trust: 'development-only-unverified',
