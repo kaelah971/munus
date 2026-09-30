@@ -1,5 +1,6 @@
 export { AppLockScreen } from './AppLockScreen'
 export { EmptyPage } from './EmptyPage'
+export { PocketsPage } from './PocketsPage'
 export { HomePage } from './HomePage'
 export { OnboardingPage } from './OnboardingPage'
 export { PayPage } from './PayPage'

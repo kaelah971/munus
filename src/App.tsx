@@ -11,6 +11,7 @@ import {
   HomePage,
   OnboardingPage,
   PayPage,
+  PocketsPage,
   ProfilePage,
   ProfileSetupPage,
 } from './pages'
@@ -21,7 +22,17 @@ import {
   type ProfileDraft,
 } from './domain/profile'
 import type { MunusSession } from './domain/auth'
+import type {
+  PocketAllocationDraft,
+  PocketDraft,
+  PlanningData,
+  ReminderDraft,
+  ReminderStatus,
+  SpendRuleDraft,
+} from './domain/planning'
 import { profileStore } from './persistence/profileStore'
+import { LocalPlanningApi } from './persistence/planningStore'
+import { RemotePlanningApi, type PlanningApi } from './persistence/planningApi'
 import { RemoteProfileApi } from './persistence/profileApi'
 import { sessionStore } from './persistence/sessionStore'
 import { preferencesStore } from './persistence/preferencesStore'
@@ -31,6 +42,16 @@ import { createPinRecord, verifyPin, type PinRecord } from './security/appLock'
 const ONBOARDING_STORAGE_KEY = 'munus:onboarding-complete'
 const usesRemotePersistence = munusConfig.productionAuth || Boolean(munusConfig.apiBaseUrl)
 const remoteProfileApi = new RemoteProfileApi(munusConfig.apiBaseUrl)
+
+function emptyPlanningData(): PlanningData {
+  return { pockets: [], reminders: [], spendRules: [] }
+}
+
+function createPlanningApi(userId: string): PlanningApi {
+  return usesRemotePersistence
+    ? new RemotePlanningApi(munusConfig.apiBaseUrl)
+    : new LocalPlanningApi(userId)
+}
 
 function readOnboardingState(): boolean {
   if (typeof window === 'undefined') return false
@@ -75,9 +96,13 @@ export function App() {
   const [authError, setAuthError] = useState<string | null>(null)
   const [authHydrating, setAuthHydrating] = useState(usesRemotePersistence)
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null)
+  const [planning, setPlanning] = useState<PlanningData>(emptyPlanningData)
+  const [planningLoading, setPlanningLoading] = useState(() => !usesRemotePersistence && Boolean(sessionStore.get()))
+  const [planningError, setPlanningError] = useState<string | null>(null)
 
   const { state: connection, retry: retryConnection } = useNimiq()
   const wallet = useNimiqWallet(connection)
+  const sessionUserId = session?.userId
 
   useEffect(() => {
     if (!usesRemotePersistence) return
@@ -102,6 +127,7 @@ export function App() {
         if (!active) return
 
         const restoredPin = pinStore.get(restoredSession.userId)
+        setPlanningLoading(true)
         setSession(restoredSession)
         setProfile(restoredProfile)
         setPinRecord(restoredPin)
@@ -124,6 +150,23 @@ export function App() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    if (!sessionUserId) return
+
+    let active = true
+    void createPlanningApi(sessionUserId).load().then((data) => {
+      if (active) setPlanning(data)
+    }).catch((error: unknown) => {
+      if (active) setPlanningError(error instanceof Error ? error.message : 'Munus could not load your planning context.')
+    }).finally(() => {
+      if (active) setPlanningLoading(false)
+    })
+
+    return () => {
+      active = false
+    }
+  }, [sessionUserId])
 
   async function signIn() {
     const walletAddress = connection.accounts[0]
@@ -149,6 +192,7 @@ export function App() {
       const nextPin = pinStore.get(nextSession.userId)
 
       if (!usesRemotePersistence) sessionStore.save(nextSession)
+      setPlanningLoading(true)
       setSession(nextSession)
       setProfile(nextProfile)
       setPinRecord(nextPin)
@@ -179,7 +223,77 @@ export function App() {
     setUnlocked(true)
     setAuthError(null)
     setProfileLoadError(null)
+    setPlanning(emptyPlanningData())
+    setPlanningLoading(false)
+    setPlanningError(null)
     setDestination('home')
+  }
+
+  function planningApiForCurrentSession(): PlanningApi {
+    if (!session) throw new Error('Connect a Munus account before using Life Pockets.')
+    return createPlanningApi(session.userId)
+  }
+
+  async function createPocket(draft: PocketDraft) {
+    const pocket = await planningApiForCurrentSession().createPocket(draft)
+    setPlanning((current) => ({ ...current, pockets: [pocket, ...current.pockets] }))
+  }
+
+  async function updatePocket(id: string, draft: PocketDraft) {
+    const pocket = await planningApiForCurrentSession().updatePocket(id, draft)
+    setPlanning((current) => ({
+      ...current,
+      pockets: current.pockets.map((item) => item.id === id ? pocket : item),
+    }))
+  }
+
+  async function archivePocket(id: string) {
+    await planningApiForCurrentSession().archivePocket(id)
+    setPlanning((current) => ({ ...current, pockets: current.pockets.filter((pocket) => pocket.id !== id) }))
+  }
+
+  async function addPocketAllocation(id: string, draft: PocketAllocationDraft) {
+    const result = await planningApiForCurrentSession().addPocketAllocation(id, draft)
+    setPlanning((current) => ({
+      ...current,
+      pockets: current.pockets.map((pocket) => pocket.id === id ? result.pocket : pocket),
+    }))
+  }
+
+  async function createReminder(draft: ReminderDraft) {
+    const reminder = await planningApiForCurrentSession().createReminder(draft)
+    setPlanning((current) => ({ ...current, reminders: [...current.reminders, reminder] }))
+  }
+
+  async function updateReminder(id: string, draft: ReminderDraft, status: ReminderStatus) {
+    const reminder = await planningApiForCurrentSession().updateReminder(id, draft, status)
+    setPlanning((current) => ({
+      ...current,
+      reminders: current.reminders.map((item) => item.id === id ? reminder : item),
+    }))
+  }
+
+  async function deleteReminder(id: string) {
+    await planningApiForCurrentSession().deleteReminder(id)
+    setPlanning((current) => ({ ...current, reminders: current.reminders.filter((reminder) => reminder.id !== id) }))
+  }
+
+  async function createSpendRule(draft: SpendRuleDraft) {
+    const rule = await planningApiForCurrentSession().createSpendRule(draft)
+    setPlanning((current) => ({ ...current, spendRules: [rule, ...current.spendRules] }))
+  }
+
+  async function updateSpendRule(id: string, draft: SpendRuleDraft) {
+    const rule = await planningApiForCurrentSession().updateSpendRule(id, draft)
+    setPlanning((current) => ({
+      ...current,
+      spendRules: current.spendRules.map((item) => item.id === id ? rule : item),
+    }))
+  }
+
+  async function deleteSpendRule(id: string) {
+    await planningApiForCurrentSession().deleteSpendRule(id)
+    setPlanning((current) => ({ ...current, spendRules: current.spendRules.filter((rule) => rule.id !== id) }))
   }
 
   async function saveProfile(draft: ProfileDraft, destinationAfterSave: AppDestination = 'home') {
@@ -306,7 +420,32 @@ export function App() {
     return <PayPage connection={connection} onNavigate={setDestination} />
   }
 
-  if (destination === 'pockets' || destination === 'activity') {
+  if (destination === 'pockets') {
+    return (
+      <PocketsPage
+        authenticated={Boolean(session)}
+        connection={connection}
+        error={planningError}
+        loading={planningLoading}
+        onAddAllocation={addPocketAllocation}
+        onArchivePocket={archivePocket}
+        onCreatePocket={createPocket}
+        onCreateReminder={createReminder}
+        onCreateSpendRule={createSpendRule}
+        onDeleteReminder={deleteReminder}
+        onDeleteSpendRule={deleteSpendRule}
+        onNavigate={setDestination}
+        onUpdatePocket={updatePocket}
+        onUpdateReminder={updateReminder}
+        onUpdateSpendRule={updateSpendRule}
+        pockets={planning.pockets}
+        reminders={planning.reminders}
+        spendRules={planning.spendRules}
+      />
+    )
+  }
+
+  if (destination === 'activity') {
     return <EmptyPage connection={connection} destination={destination} onNavigate={setDestination} />
   }
 
@@ -320,7 +459,10 @@ export function App() {
       onProfile={() => setDestination('profile')}
       onRetryConnection={retryConnection}
       onSignIn={() => void signIn()}
+      planningLoading={planningLoading}
+      pockets={planning.pockets}
       profile={profile}
+      reminders={planning.reminders}
       session={session}
       wallet={wallet}
     />

@@ -10,6 +10,7 @@ Munus now includes a small same-origin Node API in `server/`. It does not move t
 - `POST /auth/logout` revokes the server session and clears the cookie.
 - `GET /profile` and `PUT`/`PATCH /profile` read/write only the profile owned by the validated session.
 - `GET /preferences` and `PUT`/`PATCH /preferences` persist non-secret user preferences for the validated session.
+- `/pockets`, `/reminders`, and `/spend-rules` provide authenticated planning CRUD; pocket allocations use a row-locked Supabase function so totals cannot race.
 
 The server verifies that the supplied Ed25519 public key derives the challenged Nimiq address and that its signature verifies the exact UTF-8 challenge message. No wallet transaction is involved.
 

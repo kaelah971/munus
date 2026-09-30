@@ -1297,6 +1297,292 @@ button:focus-visible {
   width: 100%;
 }
 
+.pockets-toolbar,
+.section-heading-row,
+.pocket-progress-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pockets-toolbar {
+  margin: 28px 0 14px;
+}
+
+.pockets-toolbar .primary-button {
+  width: auto;
+  margin: 0;
+}
+
+.pocket-list,
+.planning-list,
+.home-pocket-list {
+  display: grid;
+  gap: 9px;
+}
+
+.pocket-row,
+.home-pocket-row,
+.home-planning-row {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+
+.pocket-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+}
+
+.pocket-row:hover,
+.home-pocket-row:hover,
+.home-planning-row:hover {
+  border-color: #505054;
+  background: var(--surface-highlight);
+}
+
+.pocket-row-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: #2b2923;
+  color: var(--warning);
+}
+
+.pocket-row-main,
+.pocket-row-amount,
+.home-pocket-row > span:first-child,
+.home-planning-row span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.pocket-row strong,
+.home-pocket-row strong,
+.home-planning-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pocket-row small,
+.home-pocket-row small,
+.home-planning-row small,
+.section-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pocket-row-amount {
+  justify-items: end;
+  text-align: right;
+}
+
+.progress-track {
+  display: block;
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #39393d;
+}
+
+.progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--warning);
+}
+
+.progress-track--large {
+  height: 8px;
+  margin-top: 12px;
+}
+
+.pocket-detail {
+  display: grid;
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.back-link,
+.section-link {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 7px;
+  padding: 0;
+}
+
+.back-link svg {
+  transform: rotate(180deg);
+}
+
+.section-link {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.pocket-detail-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pocket-detail-heading h2 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+
+.pocket-progress-card,
+.planning-form {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.pocket-progress-value strong {
+  font-size: 25px;
+  letter-spacing: -0.04em;
+}
+
+.pocket-progress-value span,
+.pocket-progress-card > p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pocket-progress-card > p {
+  margin: 12px 0 0;
+}
+
+.planning-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 30px;
+}
+
+.planning-section .section-heading-row {
+  margin: 0;
+}
+
+.planning-section .quiet-button {
+  margin: 0;
+}
+
+.planning-form {
+  display: grid;
+  gap: 16px;
+}
+
+.planning-form--compact {
+  padding: 14px;
+}
+
+.planning-form .primary-button {
+  width: auto;
+  justify-self: start;
+  margin: 0;
+}
+
+.planning-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.planning-row:last-child {
+  border-bottom: 0;
+}
+
+.planning-row > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.planning-row small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.planning-row--done {
+  opacity: 0.55;
+}
+
+.planning-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.planning-row-actions .quiet-button {
+  margin: 0;
+}
+
+.status-note,
+.loading-copy {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.home-pocket-row,
+.home-planning-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+}
+
+.home-pocket-progress {
+  display: grid;
+  align-items: center;
+  width: 105px;
+  gap: 4px;
+  text-align: right;
+}
+
+.home-pocket-progress .progress-track {
+  height: 4px;
+}
+
+.home-planning-row {
+  display: flex;
+  justify-content: flex-start;
+  gap: 11px;
+}
+
+.home-planning-row > svg {
+  flex: 0 0 auto;
+  color: var(--warning);
+}
+
 @media (max-width: 410px) {
   .top-bar-actions {
     gap: 5px;

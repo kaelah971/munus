@@ -37,4 +37,10 @@ The current slice adds:
 - production client cutover that restores the session from the cookie and loads/saves profiles through `RemoteProfileApi`;
 - explicit startup validation for server-only configuration.
 
-`VITE_MUNUS_LOCAL_AUTH=true` remains a development-only, unverified fallback. Production builds never silently use local auth or localStorage as session truth. Payments, Pockets, contacts, Activity transactions, and provider fulfilment remain intentionally unimplemented.
+`VITE_MUNUS_LOCAL_AUTH=true` remains a development-only, unverified fallback. Production builds never silently use local auth or localStorage as session truth.
+
+## Slice 4 planning layer
+
+Life Pockets, in-app reminders, and Spend Guard now persist through the authenticated planning API and Supabase migration. Pockets record planned allocations only: they do not lock, move, reserve, or earn NIM. Spend Guard is a soft planning limit and does not block wallet transactions. Actual spend remains unavailable until verified payment activity exists; the UI never fabricates it.
+
+Payments, provider fulfilment, contacts, and Activity transactions remain intentionally unimplemented.

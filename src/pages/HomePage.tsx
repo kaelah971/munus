@@ -12,6 +12,13 @@ import {
 } from '../components/Primitives'
 import type { MunusSession } from '../domain/auth'
 import type { MunusProfile } from '../domain/profile'
+import {
+  calculatePocketProgress,
+  formatPlanningAmount,
+  isDueSoon,
+  type Pocket,
+  type Reminder,
+} from '../domain/planning'
 import type { AppDestination } from '../navigation'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 
@@ -22,6 +29,9 @@ export function HomePage({
   profile,
   authBusy,
   authError,
+  planningLoading,
+  pockets,
+  reminders,
   onNavigate,
   onProfile,
   onRetryConnection,
@@ -34,6 +44,9 @@ export function HomePage({
   profile: MunusProfile | null
   authBusy: boolean
   authError: string | null
+  planningLoading: boolean
+  pockets: Pocket[]
+  reminders: Reminder[]
   onNavigate: (destination: AppDestination) => void
   onProfile: () => void
   onRetryConnection: () => void
@@ -42,6 +55,9 @@ export function HomePage({
 }) {
   const [notice, setNotice] = useState<string | null>(null)
   const greeting = profile ? `Good to see you, ${profile.displayName}.` : 'Your everyday money, in one place.'
+  const activePockets = pockets.filter((pocket) => pocket.status !== 'archived').slice(0, 3)
+  const dueSoonReminder = reminders.find((reminder) => reminder.status === 'open' && isDueSoon(reminder.dueAt))
+  const dueSoonPocket = pockets.find((pocket) => pocket.deadline && isDueSoon(pocket.deadline) && pocket.status !== 'archived')
 
   return (
     <div className="app-shell">
@@ -89,8 +105,14 @@ export function HomePage({
           {connection.status !== 'ready' ? <ConnectionCard onRetry={onRetryConnection} state={connection} /> : null}
 
           <div className="home-sections">
-            <section><SectionHeading>Due soon</SectionHeading><EmptyState description="Nothing is scheduled yet. Upcoming essentials will appear here." icon="calendar" title="Your schedule is clear" /></section>
-            <section><SectionHeading>Life Pockets</SectionHeading><EmptyState description="A quiet place for recurring essentials. Pockets are not live yet." icon="pocket" title="Pockets are waiting" /></section>
+            <section>
+              <div className="section-heading-row"><SectionHeading>Due soon</SectionHeading>{dueSoonReminder || dueSoonPocket ? <button className="section-link" type="button" onClick={() => onNavigate('pockets')}>View plans</button> : null}</div>
+              {planningLoading ? <p className="section-copy">Checking your plans…</p> : dueSoonReminder ? <button className="home-planning-row" type="button" onClick={() => onNavigate('pockets')}><Icon name="calendar" size={18} /><span><strong>{dueSoonReminder.title}</strong><small>Due {formatDate(dueSoonReminder.dueAt)}</small></span></button> : dueSoonPocket ? <button className="home-planning-row" type="button" onClick={() => onNavigate('pockets')}><Icon name="pocket" size={18} /><span><strong>{dueSoonPocket.name}</strong><small>Target due {formatDate(dueSoonPocket.deadline ?? '')}</small></span></button> : <EmptyState description="Nothing is scheduled yet. Upcoming essentials will appear here." icon="calendar" title="Your schedule is clear" />}
+            </section>
+            <section>
+              <div className="section-heading-row"><SectionHeading>Life Pockets</SectionHeading>{pockets.length ? <button className="section-link" type="button" onClick={() => onNavigate('pockets')}>See all</button> : null}</div>
+              {planningLoading ? <p className="section-copy">Loading your planning context…</p> : activePockets.length ? <div className="home-pocket-list">{activePockets.map((pocket) => <HomePocketRow key={pocket.id} pocket={pocket} onClick={() => onNavigate('pockets')} />)}</div> : <EmptyState description="Give an upcoming need a place to grow. Nothing is reserved or moved." icon="pocket" title="Start a Life Pocket" />}
+            </section>
             <section><SectionHeading>Recent activity</SectionHeading><EmptyState description="Wallet activity will appear here when there is activity to review." icon="receipt" title="No activity yet" /></section>
             <section><SectionHeading>Needs review</SectionHeading><EmptyState description="No items have been added for review." icon="review" title="Nothing needs your attention" /></section>
           </div>
@@ -99,4 +121,14 @@ export function HomePage({
       </div>
     </div>
   )
+}
+
+function HomePocketRow({ pocket, onClick }: { pocket: Pocket; onClick: () => void }) {
+  const progress = calculatePocketProgress(pocket.targetAmount, pocket.plannedAmount)
+  return <button className="home-pocket-row" type="button" onClick={onClick}><span><strong>{pocket.name}</strong><small>{formatPlanningAmount(pocket.plannedAmount, pocket.unit)} of {formatPlanningAmount(pocket.targetAmount, pocket.unit)}</small></span><span className="home-pocket-progress"><span className="progress-track"><span style={{ width: `${progress}%` }} /></span><small>{Math.round(progress)}%</small></span></button>
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 'date not set' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }

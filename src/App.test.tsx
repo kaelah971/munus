@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 
@@ -93,5 +93,46 @@ describe('Munus account dashboard', () => {
     fireEvent.click(screen.getByRole('button', { name: /sign out of munus/i }))
     expect(screen.getByRole('heading', { name: /your everyday money/i })).toBeInTheDocument()
     expect(screen.getByText(/set up your munus account/i)).toBeInTheDocument()
+  })
+
+  it('renders persisted pocket and due-soon planning context after refresh', async () => {
+    const dueAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
+    window.localStorage.setItem('munus:onboarding-complete', 'true')
+    window.localStorage.setItem('munus:session', JSON.stringify({
+      id: 'session-1',
+      userId: 'user-1',
+      walletAddress: 'NQ12 3456 7890 1234 5678 9012 3456 7890 1234',
+      network: 'mainnet',
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      trust: 'development-only-unverified',
+    }))
+    window.localStorage.setItem('munus:profile:user-1', JSON.stringify({
+      userId: 'user-1',
+      displayName: 'Ada',
+      country: 'NG',
+      localCurrency: 'NGN',
+      preferredPaymentAsset: 'NIM',
+      language: 'en',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }))
+    window.localStorage.setItem('munus:planning:user-1', JSON.stringify({
+      pockets: [{ id: 'pocket-1', userId: 'user-1', name: 'Rent', type: 'Rent', unit: 'NGN', targetAmount: '10000', plannedAmount: '2500', deadline: dueAt, status: 'active', createdAt: dueAt, updatedAt: dueAt }],
+      reminders: [{ id: 'reminder-1', userId: 'user-1', linkedObjectType: 'pocket', linkedObjectId: 'pocket-1', title: 'Review rent plan', dueAt, status: 'open', createdAt: dueAt, updatedAt: dueAt }],
+      spendRules: [],
+    }))
+
+    const first = render(<App />)
+    await waitFor(() => expect(screen.getByText('Rent')).toBeInTheDocument())
+    expect(screen.getByText('Review rent plan')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Pockets' }))
+    expect(screen.getByRole('heading', { name: 'Life Pockets' })).toBeInTheDocument()
+    expect(screen.getByText('2500 NGN')).toBeInTheDocument()
+
+    first.unmount()
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Rent')).toBeInTheDocument())
+    expect(screen.getByText('Review rent plan')).toBeInTheDocument()
   })
 })

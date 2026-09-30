@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createMunusServer } from './app'
 import { MunusAuthService } from './authService'
 import { InMemoryMunusRepository } from './repository'
+import { InMemoryPlanningRepository } from './planningRepository'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -20,12 +21,14 @@ afterEach(async () => {
 
 async function createTestServer() {
   const repository = new InMemoryMunusRepository()
+  const planning = new InMemoryPlanningRepository()
   const auth = new MunusAuthService(repository, {
     challengeTtlMs: 5 * 60 * 1000,
     sessionTtlMs: 24 * 60 * 60 * 1000,
   })
   const server = createMunusServer({
     repository,
+    planning,
     auth,
     config: {
       cookieName: 'munus_test_session',
@@ -122,6 +125,47 @@ describe('Munus production API', () => {
     expect(await afterLogout.json()).toEqual({ session: null })
     const unauthenticatedProfile = await fetch(`${baseUrl}/profile`, { headers: { cookie } })
     expect(unauthenticatedProfile.status).toBe(401)
+  })
+
+  it('persists owned pocket, reminder, and spend-guard routes', async () => {
+    const { baseUrl } = await createTestServer()
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const pocketResponse = await fetch(`${baseUrl}/pockets`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...profileDraft, name: 'Data plan', type: 'Data', unit: 'NGN', targetAmount: '1000', deadline: '' }),
+    })
+    expect(pocketResponse.status).toBe(201)
+    const pocket = await pocketResponse.json() as { id: string; plannedAmount: string }
+
+    const allocation = await fetch(`${baseUrl}/pockets/${pocket.id}/allocations`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '100.10', direction: 'allocation', note: 'First plan' }),
+    })
+    expect(await allocation.json()).toMatchObject({ pocket: { plannedAmount: '100.1' } })
+
+    const reminder = await fetch(`${baseUrl}/reminders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ linkedObjectType: 'pocket', linkedObjectId: pocket.id, title: 'Review data', dueAt: '2026-02-01T00:00:00.000Z', repeatRule: '' }),
+    })
+    expect(reminder.status).toBe(201)
+    const reminderBody = await reminder.json() as { id: string }
+    const markedDone = await fetch(`${baseUrl}/reminders/${reminderBody.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'done' }),
+    })
+    expect(await markedDone.json()).toMatchObject({ status: 'done' })
+
+    const rule = await fetch(`${baseUrl}/spend-rules`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ category: 'Data', limitAmount: '5000', unit: 'NGN', period: 'monthly', warningThreshold: 80, enabled: true }),
+    })
+    expect(rule.status).toBe(201)
+    expect(await (await fetch(`${baseUrl}/pockets` , { headers: { cookie } })).json()).toMatchObject({ pockets: [{ plannedAmount: '100.1' }] })
   })
 
   it('derives profile ownership from the session, not the request body', async () => {
