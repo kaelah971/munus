@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { BottomNav } from '../components/BottomNav'
 import { ConnectionCard, ConnectionPill } from '../components/ConnectionStatus'
 import { ProfileAvatar } from '../components/ProfileAvatar'
@@ -32,6 +31,8 @@ export function HomePage({
   planningLoading,
   pockets,
   reminders,
+  supportRequests,
+  supportDrafts,
   onNavigate,
   onProfile,
   onRetryConnection,
@@ -47,13 +48,16 @@ export function HomePage({
   planningLoading: boolean
   pockets: Pocket[]
   reminders: Reminder[]
+  supportRequests: { id: string; requestedProduct: string; status: string }[]
+  supportDrafts: { id: string; recipientName: string; status: string }[]
   onNavigate: (destination: AppDestination) => void
   onProfile: () => void
   onRetryConnection: () => void
   onSignIn: () => void
   onCopyAddress: () => void
 }) {
-  const [notice, setNotice] = useState<string | null>(null)
+  const pendingSupportRequest = supportRequests.find((request) => request.status === 'pending')
+  const draftSupport = supportDrafts.find((draft) => draft.status === 'draft')
   const greeting = profile ? `Good to see you, ${profile.displayName}.` : 'Your everyday money, in one place.'
   const activePockets = pockets.filter((pocket) => pocket.status !== 'archived').slice(0, 3)
   const dueSoonReminder = reminders.find((reminder) => reminder.status === 'open' && isDueSoon(reminder.dueAt))
@@ -89,10 +93,9 @@ export function HomePage({
             <div className="quick-actions">
               <button className="quick-action" onClick={() => onNavigate('pay')} type="button"><Icon name="wallet" size={19} /><span>Pay</span></button>
               <button className="quick-action" onClick={() => onNavigate('pockets')} type="button"><Icon name="pocket" size={19} /><span>Save</span></button>
-              <button className="quick-action" onClick={() => setNotice('Support will have a dedicated home here. Nothing has been opened yet.')} type="button"><Icon name="info" size={19} /><span>Support</span></button>
-              <button className="quick-action" onClick={() => setNotice('Request links are not live yet. No request has been sent.')} type="button"><Icon name="arrow" size={19} /><span>Request</span></button>
+              <button className="quick-action" onClick={() => onNavigate('support')} type="button"><Icon name="info" size={19} /><span>Support</span></button>
+              <button className="quick-action" onClick={() => onNavigate('request')} type="button"><Icon name="arrow" size={19} /><span>Request</span></button>
             </div>
-            {notice ? <p className="quick-action-notice" role="status">{notice}</p> : null}
           </section>
 
           <HighlightCard
@@ -113,6 +116,7 @@ export function HomePage({
               <div className="section-heading-row"><SectionHeading>Life Pockets</SectionHeading>{pockets.length ? <button className="section-link" type="button" onClick={() => onNavigate('pockets')}>See all</button> : null}</div>
               {planningLoading ? <p className="section-copy">Loading your planning context…</p> : activePockets.length ? <div className="home-pocket-list">{activePockets.map((pocket) => <HomePocketRow key={pocket.id} pocket={pocket} onClick={() => onNavigate('pockets')} />)}</div> : <EmptyState description="Give an upcoming need a place to grow. Nothing is reserved or moved." icon="pocket" title="Start a Life Pocket" />}
             </section>
+            <section><SectionHeading>Support context</SectionHeading>{pendingSupportRequest ? <button className="home-planning-row" type="button" onClick={() => onNavigate('request')}><Icon name="arrow" size={18} /><span><strong>{pendingSupportRequest.requestedProduct}</strong><small>Request waiting for your review</small></span></button> : draftSupport ? <button className="home-planning-row" type="button" onClick={() => onNavigate('support')}><Icon name="info" size={18} /><span><strong>Support draft for {draftSupport.recipientName}</strong><small>Review before any payment</small></span></button> : <EmptyState description="Prepare a specific support draft or request help from someone you trust." icon="info" title="Support is ready when you are" />}</section>
             <section><SectionHeading>Recent activity</SectionHeading><EmptyState description="Wallet activity will appear here when there is activity to review." icon="receipt" title="No activity yet" /></section>
             <section><SectionHeading>Needs review</SectionHeading><EmptyState description="No items have been added for review." icon="review" title="Nothing needs your attention" /></section>
           </div>

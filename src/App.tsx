@@ -14,6 +14,8 @@ import {
   PocketsPage,
   ProfilePage,
   ProfileSetupPage,
+  PublicRequestPage,
+  SupportPage,
 } from './pages'
 import {
   createProfile,
@@ -30,9 +32,18 @@ import type {
   ReminderStatus,
   SpendRuleDraft,
 } from './domain/planning'
+import type {
+  ContactDraft,
+  SupportDraftInput,
+  SupportRequestDraft,
+  SupportRequestStatus,
+  SupportRuleDraft,
+} from './domain/support'
 import { profileStore } from './persistence/profileStore'
 import { LocalPlanningApi } from './persistence/planningStore'
 import { RemotePlanningApi, type PlanningApi } from './persistence/planningApi'
+import { RemoteSupportApi, type SupportApi, type SupportData } from './persistence/supportApi'
+import { LocalSupportApi } from './persistence/supportStore'
 import { RemoteProfileApi } from './persistence/profileApi'
 import { sessionStore } from './persistence/sessionStore'
 import { preferencesStore } from './persistence/preferencesStore'
@@ -47,10 +58,26 @@ function emptyPlanningData(): PlanningData {
   return { pockets: [], reminders: [], spendRules: [] }
 }
 
+function emptySupportData(): SupportData {
+  return { contacts: [], supportRules: [], supportRequests: [], supportDrafts: [] }
+}
+
 function createPlanningApi(userId: string): PlanningApi {
   return usesRemotePersistence
     ? new RemotePlanningApi(munusConfig.apiBaseUrl)
     : new LocalPlanningApi(userId)
+}
+
+function createSupportApi(userId: string): SupportApi {
+  return usesRemotePersistence
+    ? new RemoteSupportApi(munusConfig.apiBaseUrl)
+    : new LocalSupportApi(userId)
+}
+
+function readPublicRequestId(): string | null {
+  if (typeof window === 'undefined') return null
+  const match = window.location.pathname.match(/^\/request\/([^/]+)$/)
+  return match ? decodeURIComponent(match[1]) : null
 }
 
 function readOnboardingState(): boolean {
@@ -99,6 +126,9 @@ export function App() {
   const [planning, setPlanning] = useState<PlanningData>(emptyPlanningData)
   const [planningLoading, setPlanningLoading] = useState(() => !usesRemotePersistence && Boolean(sessionStore.get()))
   const [planningError, setPlanningError] = useState<string | null>(null)
+  const [support, setSupport] = useState<SupportData>(emptySupportData)
+  const [supportLoading, setSupportLoading] = useState(() => !usesRemotePersistence && Boolean(sessionStore.get()))
+  const [supportError, setSupportError] = useState<string | null>(null)
 
   const { state: connection, retry: retryConnection } = useNimiq()
   const wallet = useNimiqWallet(connection)
@@ -128,6 +158,7 @@ export function App() {
 
         const restoredPin = pinStore.get(restoredSession.userId)
         setPlanningLoading(true)
+        setSupportLoading(true)
         setSession(restoredSession)
         setProfile(restoredProfile)
         setPinRecord(restoredPin)
@@ -168,6 +199,23 @@ export function App() {
     }
   }, [sessionUserId])
 
+  useEffect(() => {
+    if (!sessionUserId) return
+
+    let active = true
+    void createSupportApi(sessionUserId).load().then((data) => {
+      if (active) setSupport(data)
+    }).catch((error: unknown) => {
+      if (active) setSupportError(error instanceof Error ? error.message : 'Munus could not load your support context.')
+    }).finally(() => {
+      if (active) setSupportLoading(false)
+    })
+
+    return () => {
+      active = false
+    }
+  }, [sessionUserId])
+
   async function signIn() {
     const walletAddress = connection.accounts[0]
     if (!walletAddress) {
@@ -193,6 +241,7 @@ export function App() {
 
       if (!usesRemotePersistence) sessionStore.save(nextSession)
       setPlanningLoading(true)
+      setSupportLoading(true)
       setSession(nextSession)
       setProfile(nextProfile)
       setPinRecord(nextPin)
@@ -226,6 +275,9 @@ export function App() {
     setPlanning(emptyPlanningData())
     setPlanningLoading(false)
     setPlanningError(null)
+    setSupport(emptySupportData())
+    setSupportLoading(false)
+    setSupportError(null)
     setDestination('home')
   }
 
@@ -296,6 +348,71 @@ export function App() {
     setPlanning((current) => ({ ...current, spendRules: current.spendRules.filter((rule) => rule.id !== id) }))
   }
 
+  function supportApiForCurrentSession(): SupportApi {
+    if (!session) throw new Error('Connect a Munus account before using Support Mode.')
+    return createSupportApi(session.userId)
+  }
+
+  async function createContact(draft: ContactDraft) {
+    const contact = await supportApiForCurrentSession().createContact(draft)
+    setSupport((current) => ({ ...current, contacts: [contact, ...current.contacts] }))
+  }
+
+  async function updateContact(id: string, draft: ContactDraft) {
+    const contact = await supportApiForCurrentSession().updateContact(id, draft)
+    setSupport((current) => ({ ...current, contacts: current.contacts.map((item) => item.id === id ? contact : item) }))
+  }
+
+  async function archiveContact(id: string) {
+    await supportApiForCurrentSession().archiveContact(id)
+    setSupport((current) => ({ ...current, contacts: current.contacts.filter((contact) => contact.id !== id) }))
+  }
+
+  async function createSupportRule(draft: SupportRuleDraft) {
+    const rule = await supportApiForCurrentSession().createSupportRule(draft)
+    setSupport((current) => ({ ...current, supportRules: [rule, ...current.supportRules] }))
+  }
+
+  async function updateSupportRule(id: string, draft: SupportRuleDraft) {
+    const rule = await supportApiForCurrentSession().updateSupportRule(id, draft)
+    setSupport((current) => ({ ...current, supportRules: current.supportRules.map((item) => item.id === id ? rule : item) }))
+  }
+
+  async function deleteSupportRule(id: string) {
+    await supportApiForCurrentSession().deleteSupportRule(id)
+    setSupport((current) => ({ ...current, supportRules: current.supportRules.filter((rule) => rule.id !== id) }))
+  }
+
+  async function createSupportRequest(draft: SupportRequestDraft) {
+    const request = await supportApiForCurrentSession().createSupportRequest(draft)
+    setSupport((current) => ({ ...current, supportRequests: [request, ...current.supportRequests] }))
+  }
+
+  async function updateSupportRequest(id: string, draft: SupportRequestDraft, status: SupportRequestStatus) {
+    const request = await supportApiForCurrentSession().updateSupportRequest(id, draft, status)
+    setSupport((current) => ({ ...current, supportRequests: current.supportRequests.map((item) => item.id === id ? request : item) }))
+  }
+
+  async function cancelSupportRequest(id: string) {
+    const request = await supportApiForCurrentSession().cancelSupportRequest(id)
+    setSupport((current) => ({ ...current, supportRequests: current.supportRequests.map((item) => item.id === id ? request : item) }))
+  }
+
+  async function convertRequestToDraft(id: string) {
+    const draft = await supportApiForCurrentSession().convertRequestToDraft(id)
+    setSupport((current) => ({ ...current, supportDrafts: [draft, ...current.supportDrafts], supportRequests: current.supportRequests.map((item) => item.id === id ? { ...item, status: 'prepared' } : item) }))
+  }
+
+  async function createSupportDraft(input: SupportDraftInput) {
+    const draft = await supportApiForCurrentSession().createSupportDraft(input)
+    setSupport((current) => ({ ...current, supportDrafts: [draft, ...current.supportDrafts] }))
+  }
+
+  async function updateSupportDraft(id: string, input: SupportDraftInput) {
+    const draft = await supportApiForCurrentSession().updateSupportDraft(id, input)
+    setSupport((current) => ({ ...current, supportDrafts: current.supportDrafts.map((item) => item.id === id ? draft : item) }))
+  }
+
   async function saveProfile(draft: ProfileDraft, destinationAfterSave: AppDestination = 'home') {
     if (!session) throw new Error('Connect a Munus account before saving a profile.')
 
@@ -344,6 +461,11 @@ export function App() {
   function copyWalletAddress() {
     if (!wallet.address || !navigator.clipboard) return
     void navigator.clipboard.writeText(wallet.address)
+  }
+
+  const publicRequestId = readPublicRequestId()
+  if (publicRequestId) {
+    return <PublicRequestPage apiBaseUrl={munusConfig.apiBaseUrl} publicRequestId={publicRequestId} />
   }
 
   if (!onboardingComplete) {
@@ -445,6 +567,36 @@ export function App() {
     )
   }
 
+  if (destination === 'support' || destination === 'request' || destination === 'contacts') {
+    return (
+      <SupportPage
+        authenticated={Boolean(session)}
+        connection={connection}
+        contacts={support.contacts}
+        error={supportError}
+        initialMode={destination}
+        key={destination}
+        loading={supportLoading}
+        onArchiveContact={archiveContact}
+        onCancelSupportRequest={cancelSupportRequest}
+        onConvertRequest={convertRequestToDraft}
+        onCreateContact={createContact}
+        onCreateSupportDraft={createSupportDraft}
+        onCreateSupportRequest={createSupportRequest}
+        onCreateSupportRule={createSupportRule}
+        onDeleteSupportRule={deleteSupportRule}
+        onNavigate={setDestination}
+        onUpdateContact={updateContact}
+        onUpdateSupportDraft={updateSupportDraft}
+        onUpdateSupportRequest={updateSupportRequest}
+        onUpdateSupportRule={updateSupportRule}
+        supportDrafts={support.supportDrafts}
+        supportRequests={support.supportRequests}
+        supportRules={support.supportRules}
+      />
+    )
+  }
+
   if (destination === 'activity') {
     return <EmptyPage connection={connection} destination={destination} onNavigate={setDestination} />
   }
@@ -464,6 +616,8 @@ export function App() {
       profile={profile}
       reminders={planning.reminders}
       session={session}
+      supportDrafts={support.supportDrafts}
+      supportRequests={support.supportRequests}
       wallet={wallet}
     />
   )

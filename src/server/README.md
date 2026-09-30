@@ -11,8 +11,11 @@ Munus now includes a small same-origin Node API in `server/`. It does not move t
 - `GET /profile` and `PUT`/`PATCH /profile` read/write only the profile owned by the validated session.
 - `GET /preferences` and `PUT`/`PATCH /preferences` persist non-secret user preferences for the validated session.
 - `/pockets`, `/reminders`, and `/spend-rules` provide authenticated planning CRUD; pocket allocations use a row-locked Supabase function so totals cannot race.
+- `/contacts` provides manual Nigeria-first contact CRUD with archive semantics; `/support-rules` stores soft support warnings only.
+- `/support-requests` provides authenticated pending/approved/declined/cancelled/prepared request lifecycle routes; `/support-drafts` stores reviewable non-payment intents.
+- `GET /request/:publicRequestId` exposes a deliberately safe, opaque public projection with masked phone data. It never exposes wallet addresses or authorizes payment.
 
-The server verifies that the supplied Ed25519 public key derives the challenged Nimiq address and that its signature verifies the exact UTF-8 challenge message. No wallet transaction is involved.
+The server verifies that the supplied Ed25519 public key derives the challenged Nimiq address and that its signature verifies the exact UTF-8 challenge message. No wallet transaction is involved. Support routes likewise never call Nimiq Pay or a provider; they only save plans and review states.
 
 ## Supabase trust boundary
 

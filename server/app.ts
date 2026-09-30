@@ -8,6 +8,10 @@ import {
   type PlanningRepository,
 } from './planningRepository'
 import {
+  SupportRepositoryError,
+  type SupportRepository,
+} from './supportRepository'
+import {
   PlanningValidationError,
   parseAllocation,
   parsePocketDraft,
@@ -16,6 +20,14 @@ import {
   parseReminderStatus,
   parseSpendRuleDraft,
 } from './planningValidation'
+import {
+  parseContactDraft,
+  parseRequestStatus,
+  parseSupportDraftInput,
+  parseSupportRequestDraft,
+  parseSupportRuleDraft,
+  SupportValidationError,
+} from './supportValidation'
 import {
   RequestValidationError,
   parsePreferences,
@@ -27,6 +39,7 @@ const MAX_BODY_BYTES = 16 * 1024
 export interface MunusServerDependencies {
   repository: MunusRepository
   planning: PlanningRepository
+  support: SupportRepository
   auth: MunusAuthService
   config: Pick<
     MunusServerConfig,
@@ -54,12 +67,23 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, config } = dependencies
+  const { auth, repository, planning, support, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
     response.writeHead(204)
     response.end()
+    return
+  }
+
+  const publicRequestPath = matchPath(url.pathname, /^\/(?:request|support-requests\/public)\/([^/]+)$/)
+  if (request.method === 'GET' && publicRequestPath) {
+    const publicRequest = await support.getPublicSupportRequest(decodeURIComponent(publicRequestPath[1]))
+    if (!publicRequest) {
+      sendError(response, 404, 'This support request is unavailable or expired.')
+      return
+    }
+    sendJson(response, 200, publicRequest)
     return
   }
 
@@ -103,6 +127,136 @@ export async function handleRequest(
       clearCookie(response, config.cookieName, config.cookieSecure)
       response.writeHead(204)
       response.end()
+      return
+    }
+
+    const contactPath = matchPath(url.pathname, /^\/contacts(?:\/([^/]+))?$/)
+    if (contactPath && ['GET', 'POST', 'PATCH', 'DELETE'].includes(request.method ?? '')) {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const contactId = contactPath[1] ? decodeURIComponent(contactPath[1]) : undefined
+      if (!contactId && request.method === 'GET') {
+        sendJson(response, 200, { contacts: await support.listContacts(session.userId, url.searchParams.get('includeArchived') === 'true') })
+        return
+      }
+      if (!contactId && request.method === 'POST') {
+        sendJson(response, 201, await support.createContact(session.userId, parseContactDraft(await readJson(request))))
+        return
+      }
+      if (contactId && request.method === 'GET') {
+        const contact = await support.getContact(session.userId, contactId)
+        if (!contact) { sendError(response, 404, 'Contact was not found.'); return }
+        sendJson(response, 200, contact)
+        return
+      }
+      if (contactId && request.method === 'PATCH') {
+        const current = await support.getContact(session.userId, contactId)
+        if (!current) { sendError(response, 404, 'Contact was not found.'); return }
+        const contact = await support.updateContact(session.userId, contactId, parseContactDraft(await readJson(request), current))
+        if (!contact) { sendError(response, 404, 'Contact was not found.'); return }
+        sendJson(response, 200, contact)
+        return
+      }
+      if (contactId && request.method === 'DELETE') {
+        const contact = await support.archiveContact(session.userId, contactId)
+        if (!contact) { sendError(response, 404, 'Contact was not found.'); return }
+        sendJson(response, 200, contact)
+        return
+      }
+    }
+
+    const supportRulePath = matchPath(url.pathname, /^\/support-rules(?:\/([^/]+))?$/)
+    if (supportRulePath && ['GET', 'POST', 'PATCH', 'DELETE'].includes(request.method ?? '')) {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const ruleId = supportRulePath[1] ? decodeURIComponent(supportRulePath[1]) : undefined
+      if (!ruleId && request.method === 'GET') {
+        sendJson(response, 200, { supportRules: await support.listSupportRules(session.userId) })
+        return
+      }
+      if (!ruleId && request.method === 'POST') {
+        sendJson(response, 201, await support.createSupportRule(session.userId, parseSupportRuleDraft(await readJson(request))))
+        return
+      }
+      if (ruleId && request.method === 'PATCH') {
+        const current = await support.getSupportRule(session.userId, ruleId)
+        if (!current) { sendError(response, 404, 'Support rule was not found.'); return }
+        const rule = await support.updateSupportRule(session.userId, ruleId, parseSupportRuleDraft(await readJson(request), current))
+        if (!rule) { sendError(response, 404, 'Support rule was not found.'); return }
+        sendJson(response, 200, rule)
+        return
+      }
+      if (ruleId && request.method === 'DELETE') {
+        if (!await support.deleteSupportRule(session.userId, ruleId)) { sendError(response, 404, 'Support rule was not found.'); return }
+        response.writeHead(204); response.end(); return
+      }
+    }
+
+    if (request.method === 'GET' && url.pathname === '/support-requests') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 200, { supportRequests: await support.listSupportRequests(session.userId) })
+      return
+    }
+    if (request.method === 'POST' && url.pathname === '/support-requests') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 201, await support.createSupportRequest(session.userId, parseSupportRequestDraft(await readJson(request))))
+      return
+    }
+
+    const supportRequestPath = matchPath(url.pathname, /^\/support-requests\/([^/]+)(\/convert)?$/)
+    if (supportRequestPath && ['PATCH', 'POST', 'DELETE'].includes(request.method ?? '')) {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const requestId = decodeURIComponent(supportRequestPath[1])
+      const isConvert = Boolean(supportRequestPath[2])
+      if (isConvert && request.method === 'POST') {
+        const draft = await support.convertRequestToDraft(session.userId, requestId)
+        if (!draft) { sendError(response, 404, 'Support request was not found.'); return }
+        sendJson(response, 201, draft)
+        return
+      }
+      const current = await support.getSupportRequest(session.userId, requestId)
+      if (!current) { sendError(response, 404, 'Support request was not found.'); return }
+      if (request.method === 'DELETE') {
+        const draft = parseSupportRequestDraft({ contactId: current.contactId ?? '', category: current.category, requestedAmount: current.requestedAmount, requestedProduct: current.requestedProduct, phone: current.phone ?? '', network: current.network ?? '', country: 'NG', message: current.message ?? '', expiresAt: current.expiresAt ?? '' })
+        const cancelled = await support.updateSupportRequest(session.userId, requestId, draft, 'cancelled')
+        sendJson(response, 200, cancelled)
+        return
+      }
+      const body = await readJson(request)
+      const record = asRecord(body)
+      const status = record.status === undefined ? current.status : parseRequestStatus(record.status)
+      const updated = await support.updateSupportRequest(session.userId, requestId, parseSupportRequestDraft(body, current), status)
+      if (!updated) { sendError(response, 404, 'Support request was not found.'); return }
+      sendJson(response, 200, updated)
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === '/support-drafts') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 200, { supportDrafts: await support.listSupportDrafts(session.userId) })
+      return
+    }
+    if (request.method === 'POST' && url.pathname === '/support-drafts') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 201, await support.createSupportDraft(session.userId, parseSupportDraftInput(await readJson(request))))
+      return
+    }
+
+    const supportDraftPath = matchPath(url.pathname, /^\/support-drafts\/([^/]+)$/)
+    if (supportDraftPath && request.method === 'PATCH') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const draftId = decodeURIComponent(supportDraftPath[1])
+      const current = (await support.listSupportDrafts(session.userId)).find((draft) => draft.id === draftId)
+      if (!current) { sendError(response, 404, 'Support draft was not found.'); return }
+      const updated = await support.updateSupportDraft(session.userId, draftId, parseSupportDraftInput(await readJson(request), current))
+      if (!updated) { sendError(response, 404, 'Support draft was not found.'); return }
+      sendJson(response, 200, updated)
       return
     }
 
@@ -296,9 +450,11 @@ export async function handleRequest(
       error instanceof AuthServiceError ||
       error instanceof RequestValidationError ||
       error instanceof PlanningValidationError ||
-      error instanceof PlanningRepositoryError
+      error instanceof PlanningRepositoryError ||
+      error instanceof SupportValidationError ||
+      error instanceof SupportRepositoryError
     ) {
-      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError
+      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError
         ? error.statusCode
         : 400
       sendError(response, statusCode, error.message)

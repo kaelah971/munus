@@ -5,6 +5,7 @@ import { createMunusServer } from './app'
 import { MunusAuthService } from './authService'
 import { InMemoryMunusRepository } from './repository'
 import { InMemoryPlanningRepository } from './planningRepository'
+import { InMemorySupportRepository } from './supportRepository'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -22,6 +23,7 @@ afterEach(async () => {
 async function createTestServer() {
   const repository = new InMemoryMunusRepository()
   const planning = new InMemoryPlanningRepository()
+  const support = new InMemorySupportRepository()
   const auth = new MunusAuthService(repository, {
     challengeTtlMs: 5 * 60 * 1000,
     sessionTtlMs: 24 * 60 * 60 * 1000,
@@ -29,6 +31,7 @@ async function createTestServer() {
   const server = createMunusServer({
     repository,
     planning,
+    support,
     auth,
     config: {
       cookieName: 'munus_test_session',
@@ -166,6 +169,45 @@ describe('Munus production API', () => {
     })
     expect(rule.status).toBe(201)
     expect(await (await fetch(`${baseUrl}/pockets` , { headers: { cookie } })).json()).toMatchObject({ pockets: [{ plannedAmount: '100.1' }] })
+  })
+
+  it('keeps support contacts and requests reviewable without payment actions', async () => {
+    const { baseUrl } = await createTestServer()
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const contactResponse = await fetch(`${baseUrl}/contacts`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Mum', relationship: 'Parent', phone: '08012345678', network: 'MTN', usualProductType: 'Airtime', usualAmount: '1000', notes: '' }),
+    })
+    expect(contactResponse.status).toBe(201)
+    const contact = await contactResponse.json() as { id: string }
+
+    const requestResponse = await fetch(`${baseUrl}/support-requests`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ contactId: contact.id, category: 'Airtime', requestedAmount: '100', requestedProduct: 'Airtime for today', phone: '08012345678', network: 'MTN', message: 'Please help.' }),
+    })
+    expect(requestResponse.status).toBe(201)
+    const createdRequest = await requestResponse.json() as { id: string; publicRequestId: string; status: string }
+    expect(createdRequest.status).toBe('pending')
+
+    const publicResponse = await fetch(`${baseUrl}/request/${createdRequest.publicRequestId}`)
+    expect(publicResponse.status).toBe(200)
+    expect(await publicResponse.json()).toEqual(expect.objectContaining({ requestedAmount: '100', phone: '080•••5678' }))
+    expect(await (await fetch(`${baseUrl}/request/${createdRequest.publicRequestId}`)).json()).not.toHaveProperty('id')
+
+    const approved = await fetch(`${baseUrl}/support-requests/${createdRequest.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ contactId: contact.id, category: 'Airtime', requestedAmount: '100', requestedProduct: 'Airtime for today', phone: '08012345678', network: 'MTN', message: 'Please help.', status: 'approved' }),
+    })
+    expect(await approved.json()).toMatchObject({ status: 'approved' })
+
+    const converted = await fetch(`${baseUrl}/support-requests/${createdRequest.id}/convert`, { method: 'POST', headers: { cookie } })
+    expect(converted.status).toBe(201)
+    expect(await converted.json()).toMatchObject({ source: 'request', amount: '100' })
+    const requests = await (await fetch(`${baseUrl}/support-requests`, { headers: { cookie } })).json() as { supportRequests: Array<{ status: string }> }
+    expect(requests.supportRequests[0].status).toBe('prepared')
   })
 
   it('derives profile ownership from the session, not the request body', async () => {

@@ -43,4 +43,8 @@ The current slice adds:
 
 Life Pockets, in-app reminders, and Spend Guard now persist through the authenticated planning API and Supabase migration. Pockets record planned allocations only: they do not lock, move, reserve, or earn NIM. Spend Guard is a soft planning limit and does not block wallet transactions. Actual spend remains unavailable until verified payment activity exists; the UI never fabricates it.
 
-Payments, provider fulfilment, contacts, and Activity transactions remain intentionally unimplemented.
+## Slice 5 support layer
+
+Contacts, Support Mode, soft support boundaries, structured Request Help records, reviewable support drafts, and privacy-safe public request links now persist through the authenticated API and `0004_support_layer.sql`. Contacts are manual-only and archivable. Support requests and drafts never authorize NIM movement, provider fulfilment, or payment approval; all amounts remain planning data.
+
+Apply migrations `0001` through `0004` before deploying the production API. Payments, provider fulfilment, and verified Activity transactions remain intentionally unimplemented.
