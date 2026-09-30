@@ -2,8 +2,10 @@ services:
   - type: web
     name: munus-public-beta
     runtime: node
+    region: ohio
     plan: starter
     buildCommand: npm ci && npm run build
+    preDeployCommand: npm run db:migrate
     startCommand: npm run server:start
     healthCheckPath: /
     envVars:
