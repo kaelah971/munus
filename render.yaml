@@ -3,10 +3,10 @@ services:
     name: munus-public-beta
     runtime: node
     region: ohio
-    plan: starter
+    plan: free
     buildCommand: npm ci && npm run build
-    preDeployCommand: npm run db:migrate
-    startCommand: npm run server:start
+
+    startCommand: npm run db:migrate && npm run server:start
     healthCheckPath: /
     envVars:
       - key: NODE_ENV
