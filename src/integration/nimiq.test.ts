@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { NimiqProvider } from '@nimiq/mini-app-sdk'
 import {
+  formatNimFromLuna,
   initializeNimiqPay,
+  loadNimiqWallet,
+  requestNimiqSignature,
   shortenNimiqAccount,
 } from './nimiq'
 
@@ -10,11 +13,7 @@ describe('Nimiq Pay integration boundary', () => {
     const listAccounts = vi.fn().mockResolvedValue([
       'NQ12 3456 7890 1234 5678 9012 3456 7890 1234',
     ])
-    const sendBasicTransaction = vi.fn()
-    const provider = {
-      listAccounts,
-      sendBasicTransaction,
-    } as unknown as NimiqProvider
+    const provider = { listAccounts } as unknown as NimiqProvider
 
     const state = await initializeNimiqPay({
       initialize: vi.fn().mockResolvedValue(provider),
@@ -25,33 +24,68 @@ describe('Nimiq Pay integration boundary', () => {
       'NQ12 3456 7890 1234 5678 9012 3456 7890 1234',
     ])
     expect(listAccounts).toHaveBeenCalledOnce()
-    expect(sendBasicTransaction).not.toHaveBeenCalled()
   })
 
-  it('explains an injected-provider timeout as unavailable', async () => {
-    const state = await initializeNimiqPay({
+  it('keeps browser/provider failures truthful', async () => {
+    const unavailable = await initializeNimiqPay({
       initialize: vi
         .fn()
         .mockRejectedValue(
           new Error('Nimiq provider was not injected. Are you running inside a Nimiq app?'),
         ),
     })
-
-    expect(state).toEqual({ status: 'unavailable', accounts: [] })
-  })
-
-  it('keeps provider errors distinct from browser unavailability', async () => {
-    const state = await initializeNimiqPay({
+    const error = await initializeNimiqPay({
       initialize: vi.fn().mockRejectedValue(new Error('Wallet request was rejected.')),
     })
 
-    expect(state.status).toBe('error')
-    expect(state.error).toBe('Wallet request was rejected.')
+    expect(unavailable).toEqual({ status: 'unavailable', accounts: [] })
+    expect(error).toMatchObject({ status: 'error', error: 'Wallet request was rejected.' })
   })
 
-  it('shortens only the visual account label', () => {
-    const account = 'NQ12 3456 7890 1234 5678 9012 3456 7890 1234'
+  it('loads a real zero balance distinctly from a positive balance', async () => {
+    const address = 'NQ12 3456 7890 1234 5678 9012 3456 7890 1234'
+    const provider = {
+      getBalance: vi.fn().mockResolvedValueOnce(0).mockResolvedValueOnce(123456),
+    } as unknown as NimiqProvider
+    const connection = { accounts: [address], provider, status: 'ready' as const }
 
-    expect(shortenNimiqAccount(account)).toBe('NQ123456…901234')
+    const zero = await loadNimiqWallet(connection)
+    const available = await loadNimiqWallet(connection)
+
+    expect(zero).toMatchObject({ status: 'zero', address, lunaBalance: 0, nimBalance: '0' })
+    expect(available).toMatchObject({
+      status: 'available',
+      address,
+      lunaBalance: 123456,
+      nimBalance: '1.23456',
+    })
+  })
+
+  it('returns an error state when balance retrieval fails', async () => {
+    const provider = {
+      getBalance: vi.fn().mockRejectedValue(new Error('consensus unavailable')),
+    } as unknown as NimiqProvider
+
+    const state = await loadNimiqWallet({
+      accounts: ['NQ01'],
+      provider,
+      status: 'ready',
+    })
+
+    expect(state).toMatchObject({ status: 'error', error: 'consensus unavailable' })
+  })
+
+  it('does not sign without a ready account', async () => {
+    await expect(
+      requestNimiqSignature({ accounts: [], status: 'unavailable' }, 'Munus login'),
+    ).rejects.toThrow(/connect a nimiq pay account/i)
+  })
+
+  it('formats luna without floating-point conversion', () => {
+    expect(formatNimFromLuna(100_000)).toBe('1')
+    expect(formatNimFromLuna(1)).toBe('0.00001')
+    expect(shortenNimiqAccount('NQ12 3456 7890 1234 5678 9012 3456 7890 1234')).toBe(
+      'NQ123456…901234',
+    )
   })
 })

@@ -20,6 +20,7 @@ export type IconName =
   | 'refresh'
   | 'review'
   | 'spark'
+  | 'user'
   | 'wallet'
   | 'wifi'
 
@@ -108,6 +109,12 @@ export function Icon({
       </>
     ),
     spark: <path d="m12 2 1.9 7.1L21 11l-7.1 1.9L12 20l-1.9-7.1L3 11l7.1-1.9L12 2Z" />,
+    user: (
+      <>
+        <circle cx="12" cy="8" r="3.5" />
+        <path d="M5 21a7 7 0 0 1 14 0" />
+      </>
+    ),
     wallet: (
       <>
         <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H19a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6.5A2.5 2.5 0 0 1 4 17.5v-11Z" />
@@ -206,9 +213,11 @@ export function QuietButton({
 }
 
 export function TopBar({
+  action,
   connection,
   onBack,
 }: {
+  action?: ReactNode
   connection?: ReactNode
   onBack?: () => void
 }) {
@@ -227,7 +236,10 @@ export function TopBar({
         ) : null}
         <BrandLockup />
       </div>
-      {connection ? <div className="top-bar-connection">{connection}</div> : null}
+      <div className="top-bar-actions">
+        {connection ? <div className="top-bar-connection">{connection}</div> : null}
+        {action ? <div className="top-bar-action">{action}</div> : null}
+      </div>
     </header>
   )
 }
@@ -261,24 +273,38 @@ export function ListRow({
   description,
   meta,
   disabled = false,
+  onClick,
 }: {
   icon: IconName
   title: string
   description: string
   meta?: ReactNode
   disabled?: boolean
+  onClick?: () => void
 }) {
-  return (
-    <article
-      aria-disabled={disabled || undefined}
-      className={`list-row${disabled ? ' list-row--disabled' : ''}`}
-    >
+  const className = `list-row${disabled ? ' list-row--disabled' : ''}${onClick ? ' list-row--action' : ''}`
+  const content = (
+    <>
       <IconBadge icon={icon} />
       <div className="list-row-copy">
         <h3>{title}</h3>
         <p>{description}</p>
       </div>
       {meta ? <div className="list-row-meta">{meta}</div> : null}
+    </>
+  )
+
+  if (onClick) {
+    return (
+      <button className={className} onClick={onClick} type="button">
+        {content}
+      </button>
+    )
+  }
+
+  return (
+    <article aria-disabled={disabled || undefined} className={className}>
+      {content}
     </article>
   )
 }

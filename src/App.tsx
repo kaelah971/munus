@@ -1,43 +1,35 @@
 import { useState } from 'react'
-import {
-  BrandLockup,
-  EmptyState,
-  HighlightCard,
-  Icon,
-  IconBadge,
-  ListRow,
-  PrimaryButton,
-  QuietButton,
-  SectionHeading,
-  StatusPill,
-  TopBar,
-  type IconName,
-} from './components/Primitives'
-import {
-  shortenNimiqAccount,
-  type NimiqConnectionState,
-} from './integration/nimiq'
-import {
-  ESSENTIAL_CATEGORIES,
-  type EssentialCategoryId,
-} from './domain/payment'
+import { createAuthGateway } from './auth/session'
+import { requestNimiqSignature } from './integration/nimiq'
 import { useNimiq } from './hooks/useNimiq'
-
-type AppScreen = 'home' | 'essentials'
+import { useNimiqWallet } from './hooks/useNimiqWallet'
+import type { AppDestination } from './navigation'
+import {
+  AppLockScreen,
+  EmptyPage,
+  HomePage,
+  OnboardingPage,
+  PayPage,
+  ProfilePage,
+  ProfileSetupPage,
+} from './pages'
+import {
+  createProfile,
+  updateProfile,
+  type MunusProfile,
+  type ProfileDraft,
+} from './domain/profile'
+import type { MunusSession } from './domain/auth'
+import { profileStore } from './persistence/profileStore'
+import { sessionStore } from './persistence/sessionStore'
+import { preferencesStore } from './persistence/preferencesStore'
+import { pinStore } from './persistence/pinStore'
+import { createPinRecord, verifyPin, type PinRecord } from './security/appLock'
 
 const ONBOARDING_STORAGE_KEY = 'munus:onboarding-complete'
 
-const categoryIcons: Record<EssentialCategoryId, IconName> = {
-  airtime: 'phone',
-  data: 'data',
-  electricity: 'bolt',
-  'cable-internet': 'wifi',
-}
-
 function readOnboardingState(): boolean {
-  if (typeof window === 'undefined') {
-    return false
-  }
+  if (typeof window === 'undefined') return false
 
   try {
     return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true'
@@ -50,334 +42,127 @@ function saveOnboardingState() {
   try {
     window.localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true')
   } catch {
-    // Private browsing can disable local storage. The in-memory state still works.
+    // The current session can still continue if local storage is unavailable.
   }
-}
-
-function ConnectionPill({ state }: { state: NimiqConnectionState }) {
-  if (state.status === 'initializing') {
-    return <StatusPill label="Connecting" />
-  }
-
-  if (state.status === 'ready') {
-    return (
-      <StatusPill
-        label={state.accounts.length > 0 ? 'Nimiq Pay connected' : 'Nimiq Pay ready'}
-        tone="ready"
-      />
-    )
-  }
-
-  if (state.status === 'error') {
-    return <StatusPill label="Needs attention" tone="attention" />
-  }
-
-  return <StatusPill label="Browser preview" tone="attention" />
-}
-
-function ConnectionCard({
-  state,
-  onRetry,
-}: {
-  state: NimiqConnectionState
-  onRetry: () => void
-}) {
-  const account = state.accounts[0]
-
-  return (
-    <section aria-live="polite" className="connection-card">
-      <div className="connection-card-header">
-        <div className="connection-card-title">
-          <IconBadge icon="wallet" tone="ready" />
-          <div>
-            <p className="card-eyebrow">Wallet connection</p>
-            <h2>Nimiq Pay</h2>
-          </div>
-        </div>
-        <ConnectionPill state={state} />
-      </div>
-
-      {state.status === 'initializing' ? (
-        <p className="connection-copy">
-          Checking for an injected Nimiq Pay connection. You can keep browsing while Munus checks.
-        </p>
-      ) : null}
-
-      {state.status === 'ready' && account ? (
-        <div className="account-display">
-          <span>Account shared with Munus</span>
-          <code title={account}>{shortenNimiqAccount(account)}</code>
-        </div>
-      ) : null}
-
-      {state.status === 'ready' && !account ? (
-        <p className="connection-copy">
-          Nimiq Pay is available, but no account has been shared with Munus yet.
-        </p>
-      ) : null}
-
-      {state.status === 'unavailable' ? (
-        <p className="connection-copy">
-          This is a browser preview. Open Munus inside Nimiq Pay to connect an account; no wallet
-          address is shown here.
-        </p>
-      ) : null}
-
-      {state.status === 'error' ? (
-        <p className="connection-copy">
-          Munus could not read the Nimiq Pay connection. No payment was attempted.
-        </p>
-      ) : null}
-
-      {state.status === 'unavailable' || state.status === 'error' ? (
-        <QuietButton onClick={onRetry}>
-          <Icon name="refresh" size={17} />
-          Check again
-        </QuietButton>
-      ) : null}
-    </section>
-  )
-}
-
-function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
-  return (
-    <div className="app-shell">
-      <main className="app-frame onboarding-screen">
-        <div className="onboarding-topbar">
-          <BrandLockup />
-          <StatusPill label="NIM first" tone="ready" />
-        </div>
-
-        <div className="onboarding-content">
-          <div className="onboarding-mark" aria-hidden="true">
-            <span>M</span>
-          </div>
-          <p className="eyebrow">Everyday essentials, made deliberate</p>
-          <h1>Put NIM to work in everyday life.</h1>
-          <p className="onboarding-lede">
-            Munus helps you plan, pay, and prove the essentials you choose to handle.
-          </p>
-
-          <div className="principles-card">
-            <div className="principle-row">
-              <span className="principle-number">01</span>
-              <div>
-                <strong>Plan it.</strong>
-                <span>See what needs handling.</span>
-              </div>
-            </div>
-            <div className="principle-row">
-              <span className="principle-number">02</span>
-              <div>
-                <strong>Pay it.</strong>
-                <span>Use NIM when a flow is live.</span>
-              </div>
-            </div>
-            <div className="principle-row">
-              <span className="principle-number">03</span>
-              <div>
-                <strong>Prove it.</strong>
-                <span>Keep a clear record.</span>
-              </div>
-            </div>
-          </div>
-
-          <PrimaryButton onClick={onComplete}>
-            Open Munus
-            <Icon name="arrow" size={19} />
-          </PrimaryButton>
-          <p className="onboarding-footnote">
-            Built for Nimiq Pay. Browser preview works without a wallet.
-          </p>
-        </div>
-      </main>
-    </div>
-  )
-}
-
-function HomeScreen({
-  connection,
-  onRetry,
-  onPayEssentials,
-  onNavigate,
-}: {
-  connection: NimiqConnectionState
-  onRetry: () => void
-  onPayEssentials: () => void
-  onNavigate: (screen: AppScreen) => void
-}) {
-  return (
-    <div className="app-shell">
-      <div className="app-frame">
-        <TopBar connection={<ConnectionPill state={connection} />} />
-
-        <main className="screen-content" aria-labelledby="home-title">
-          <section className="hero-block">
-            <p className="eyebrow">Put NIM to work in everyday life.</p>
-            <h1 id="home-title">What do you need to handle today?</h1>
-            <p className="hero-lede">
-              A calm starting point for the essentials that matter now.
-            </p>
-            <PrimaryButton onClick={onPayEssentials}>
-              Pay an essential
-              <Icon name="arrow" size={19} />
-            </PrimaryButton>
-          </section>
-
-          <HighlightCard
-            description="Munus keeps the path clear: choose an essential, use NIM when the payment flow is ready, and keep the proof close."
-            eyebrow="The Munus way"
-            icon="spark"
-            title="Plan it. Pay it. Prove it."
-          />
-
-          <ConnectionCard onRetry={onRetry} state={connection} />
-
-          <div className="home-sections">
-            <section>
-              <SectionHeading>Due soon</SectionHeading>
-              <EmptyState
-                description="Nothing is scheduled yet. Upcoming essentials will appear here."
-                icon="calendar"
-                title="Your schedule is clear"
-              />
-            </section>
-
-            <section>
-              <SectionHeading>Life Pockets</SectionHeading>
-              <EmptyState
-                description="A quiet place for recurring essentials. This is not live in the foundation preview."
-                icon="pocket"
-                title="Pockets are waiting"
-              />
-            </section>
-
-            <section>
-              <SectionHeading>Recent receipts</SectionHeading>
-              <EmptyState
-                description="Completed payments will appear here once the payment flow is live."
-                icon="receipt"
-                title="No receipts yet"
-              />
-            </section>
-
-            <section>
-              <SectionHeading>Needs review</SectionHeading>
-              <EmptyState
-                description="No items have been added for review."
-                icon="review"
-                title="Nothing needs your attention"
-              />
-            </section>
-          </div>
-        </main>
-
-        <BottomNav onNavigate={onNavigate} screen="home" />
-      </div>
-    </div>
-  )
-}
-
-function EssentialsScreen({
-  connection,
-  onNavigate,
-}: {
-  connection: NimiqConnectionState
-  onNavigate: (screen: AppScreen) => void
-}) {
-  return (
-    <div className="app-shell">
-      <div className="app-frame">
-        <TopBar
-          connection={<ConnectionPill state={connection} />}
-          onBack={() => onNavigate('home')}
-        />
-
-        <main className="screen-content" aria-labelledby="essentials-title">
-          <section className="screen-intro">
-            <p className="eyebrow">Everyday essentials</p>
-            <h1 id="essentials-title">Pay Essentials</h1>
-            <p>
-              Choose a category to see what Munus is preparing. Nothing here sends NIM or connects
-              to a provider yet.
-            </p>
-          </section>
-
-          <section aria-label="Essential categories" className="category-list">
-            {ESSENTIAL_CATEGORIES.map((category) => (
-              <ListRow
-                description={category.description}
-                disabled
-                icon={categoryIcons[category.id]}
-                key={category.id}
-                meta={
-                  <StatusPill
-                    label={category.availability === 'next' ? 'Coming next' : 'Not live'}
-                  />
-                }
-                title={category.name}
-              />
-            ))}
-          </section>
-
-          <div className="truth-note" role="note">
-            <IconBadge icon="info" />
-            <p>
-              Airtime and data are planned for the next payment slice. Electricity and cable/internet
-              are not available in this preview.
-            </p>
-          </div>
-        </main>
-
-        <BottomNav onNavigate={onNavigate} screen="essentials" />
-      </div>
-    </div>
-  )
-}
-
-function BottomNav({
-  screen,
-  onNavigate,
-}: {
-  screen: AppScreen
-  onNavigate: (screen: AppScreen) => void
-}) {
-  return (
-    <nav aria-label="Primary navigation" className="bottom-nav">
-      <button
-        aria-current={screen === 'home' ? 'page' : undefined}
-        className={screen === 'home' ? 'bottom-nav-item bottom-nav-item--active' : 'bottom-nav-item'}
-        onClick={() => onNavigate('home')}
-        type="button"
-      >
-        <Icon name="home" size={19} />
-        <span>Home</span>
-      </button>
-      <button
-        aria-current={screen === 'essentials' ? 'page' : undefined}
-        className={
-          screen === 'essentials'
-            ? 'bottom-nav-item bottom-nav-item--active'
-            : 'bottom-nav-item'
-        }
-        onClick={() => onNavigate('essentials')}
-        type="button"
-      >
-        <Icon name="wallet" size={19} />
-        <span>Pay Essentials</span>
-      </button>
-    </nav>
-  )
 }
 
 export function App() {
   const [onboardingComplete, setOnboardingComplete] = useState(readOnboardingState)
-  const [screen, setScreen] = useState<AppScreen>('home')
-  const { state: connection, retry } = useNimiq()
+  const [session, setSession] = useState<MunusSession | null>(() => sessionStore.get())
+  const [profile, setProfile] = useState<MunusProfile | null>(() => {
+    const savedSession = sessionStore.get()
+    return savedSession ? profileStore.get(savedSession.userId) : null
+  })
+  const [pinRecord, setPinRecord] = useState<PinRecord | null>(() => {
+    const savedSession = sessionStore.get()
+    return savedSession ? pinStore.get(savedSession.userId) : null
+  })
+  const [unlocked, setUnlocked] = useState(() => {
+    const savedSession = sessionStore.get()
+    return !savedSession || !pinStore.get(savedSession.userId)
+  })
+  const [destination, setDestination] = useState<AppDestination>('home')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState<string | null>(null)
+
+  const { state: connection, retry: retryConnection } = useNimiq()
+  const wallet = useNimiqWallet(connection)
+
+  async function signIn() {
+    const walletAddress = connection.accounts[0]
+    if (!walletAddress) {
+      setAuthError('Open Munus inside Nimiq Pay and share an account before connecting.')
+      return
+    }
+
+    setAuthBusy(true)
+    setAuthError(null)
+    try {
+      const gateway = createAuthGateway()
+      const nextSession = await gateway.signIn(
+        walletAddress,
+        (message) => requestNimiqSignature(connection, message),
+      )
+      const nextProfile = profileStore.get(nextSession.userId)
+      const nextPin = pinStore.get(nextSession.userId)
+      sessionStore.save(nextSession)
+      setSession(nextSession)
+      setProfile(nextProfile)
+      setPinRecord(nextPin)
+      setUnlocked(!nextPin)
+      setDestination('home')
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Munus could not connect this account.')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  function signOut() {
+    const currentSession = session
+    sessionStore.clear()
+    setSession(null)
+    setProfile(null)
+    setPinRecord(null)
+    setUnlocked(true)
+    setAuthError(null)
+    setDestination('home')
+
+    if (currentSession) {
+      void createAuthGateway().signOut(currentSession).catch(() => {
+        // Local state is already cleared if a remote revoke is unavailable.
+      })
+    }
+  }
+
+  async function saveProfile(draft: ProfileDraft, destinationAfterSave: AppDestination = 'home') {
+    if (!session) throw new Error('Connect a Munus account before saving a profile.')
+    const nextProfile = profile
+      ? updateProfile(profile, draft)
+      : createProfile(session.userId, draft)
+    profileStore.save(nextProfile)
+    setProfile(nextProfile)
+    setDestination(destinationAfterSave)
+  }
+
+  async function savePin(pin: string) {
+    if (!session) throw new Error('Connect a Munus account before enabling app lock.')
+    const nextRecord = await createPinRecord(pin)
+    pinStore.save(session.userId, nextRecord)
+    preferencesStore.save({
+      ...preferencesStore.get(session.userId),
+      appLockEnabled: true,
+    })
+    setPinRecord(nextRecord)
+    setUnlocked(true)
+  }
+
+  function removePin() {
+    if (!session) return
+    pinStore.clear(session.userId)
+    preferencesStore.save({
+      ...preferencesStore.get(session.userId),
+      appLockEnabled: false,
+    })
+    setPinRecord(null)
+    setUnlocked(true)
+  }
+
+  async function unlock(pin: string): Promise<boolean> {
+    if (!pinRecord) return true
+    const valid = await verifyPin(pin, pinRecord)
+    if (valid) setUnlocked(true)
+    return valid
+  }
+
+  function copyWalletAddress() {
+    if (!wallet.address || !navigator.clipboard) return
+    void navigator.clipboard.writeText(wallet.address)
+  }
 
   if (!onboardingComplete) {
     return (
-      <OnboardingScreen
+      <OnboardingPage
         onComplete={() => {
           saveOnboardingState()
           setOnboardingComplete(true)
@@ -386,16 +171,60 @@ export function App() {
     )
   }
 
-  if (screen === 'essentials') {
-    return <EssentialsScreen connection={connection} onNavigate={setScreen} />
+  if (session && pinRecord && !unlocked) {
+    return <AppLockScreen onSignOut={() => void signOut()} onUnlock={unlock} />
+  }
+
+  if (session && !profile) {
+    return (
+      <ProfileSetupPage
+        onSignOut={() => void signOut()}
+        onSubmit={saveProfile}
+        walletAddress={session.walletAddress}
+      />
+    )
+  }
+
+  if (destination === 'profile') {
+    return (
+      <ProfilePage
+        authBusy={authBusy}
+        authError={authError}
+        connection={connection}
+        onNavigate={setDestination}
+        onRemovePin={removePin}
+        onSave={(draft) => saveProfile(draft, 'profile')}
+        onSavePin={savePin}
+        onSignIn={() => void signIn()}
+        onSignOut={() => void signOut()}
+        pinRecord={pinRecord}
+        profile={profile}
+        session={session}
+      />
+    )
+  }
+
+  if (destination === 'pay') {
+    return <PayPage connection={connection} onNavigate={setDestination} />
+  }
+
+  if (destination === 'pockets' || destination === 'activity') {
+    return <EmptyPage connection={connection} destination={destination} onNavigate={setDestination} />
   }
 
   return (
-    <HomeScreen
+    <HomePage
+      authBusy={authBusy}
+      authError={authError}
       connection={connection}
-      onNavigate={setScreen}
-      onPayEssentials={() => setScreen('essentials')}
-      onRetry={retry}
+      onCopyAddress={copyWalletAddress}
+      onNavigate={setDestination}
+      onProfile={() => setDestination('profile')}
+      onRetryConnection={retryConnection}
+      onSignIn={() => void signIn()}
+      profile={profile}
+      session={session}
+      wallet={wallet}
     />
   )
 }

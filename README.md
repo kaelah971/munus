@@ -1,6 +1,6 @@
 # Munus
 
-Munus is a NIM-first everyday essentials Mini App for Nimiq Pay. The Slice 1 foundation runs in a normal browser for development and detects the injected Nimiq Pay provider when hosted by Nimiq Pay.
+Munus is a NIM-first everyday-money Mini App for Nimiq Pay. It is non-custodial: Nimiq Pay controls keys and wallet approvals, while Munus owns the application profile, preferences, and finance-management context.
 
 ## Run locally
 
@@ -18,8 +18,15 @@ npm run lint
 npm run build
 ```
 
-## Slice 1 scope
+## Slice 2 foundation
 
-This release includes first-use onboarding, the Home shell, the Pay Essentials entry screen, truthful empty states, and a small `src/integration/nimiq.ts` boundary. It only initializes Nimiq Pay and lists accounts when the host makes them available. It does not send transactions, call fulfilment providers, or show fabricated wallet data.
+The current slice establishes:
 
-The next Fast-Build slice is the smallest NIM quote/payment proof flow for one supported essential.
+- wallet-authenticated Munus account boundaries using a backend challenge/signature/session contract;
+- a clearly marked local development auth adapter, never presented as production verification;
+- local development persistence for profile, preferences, session metadata, and app-lock records;
+- a Supabase schema with users, profiles, preferences, one-time challenges, sessions, and ownership RLS;
+- real Nimiq Pay account and balance retrieval through the installed Mini App SDK;
+- a bank-style Home dashboard, five-destination navigation, Profile & Settings, profile onboarding/editing, and a Web Crypto PBKDF2 app lock.
+
+The browser fallback never invents a wallet address, balance, authentication, or activity. Payments and provider fulfilment are intentionally not implemented in this slice.
