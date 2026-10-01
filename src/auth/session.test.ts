@@ -49,6 +49,41 @@ describe('Munus wallet authentication boundary', () => {
     )
   })
 
+  it('surfaces the safe backend auth reason instead of a generic 401', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'challenge-1',
+          walletAddress: 'NQ01',
+          network: 'mainnet',
+          message: 'Sign this exact challenge',
+          expiresAt: Date.now() + 60_000,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: async () => ({
+          code: 'AUTH_INVALID_SIGNATURE',
+          error: 'Munus could not verify the Nimiq Pay signature.',
+        }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const sign = vi.fn().mockResolvedValue({ publicKey: 'public-key', signature: 'signature' })
+    try {
+      await createRemoteAuthGateway('https://api.example.test').signIn('NQ01', sign)
+      throw new Error('Expected remote sign-in to fail.')
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toBe('Munus could not verify the Nimiq Pay signature.')
+      expect((error as Error).message).not.toContain('request failed (401)')
+    }
+  })
+
   it('sends challenge signatures to the remote session boundary', async () => {
     const fetchMock = vi
       .fn()

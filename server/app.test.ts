@@ -134,6 +134,35 @@ describe('Munus production API', () => {
     expect(unauthenticatedProfile.status).toBe(401)
   })
 
+  it('returns a safe auth error code for an invalid challenge signature', async () => {
+    const { baseUrl } = await createTestServer()
+    const pair = KeyPair.generate()
+    const walletAddress = pair.toAddress().toUserFriendlyAddress()
+    const challengeResponse = await fetch(`${baseUrl}/auth/challenge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ walletAddress, network: 'mainnet' }),
+    })
+    const challenge = await challengeResponse.json() as { id: string; message: string }
+    const invalidSignature = pair.sign(new TextEncoder().encode('not the challenge'))
+    const verifyResponse = await fetch(`${baseUrl}/auth/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        challengeId: challenge.id,
+        walletAddress,
+        publicKey: pair.publicKey.toHex(),
+        signature: invalidSignature.toHex(),
+      }),
+    })
+
+    expect(verifyResponse.status).toBe(401)
+    await expect(verifyResponse.json()).resolves.toEqual({
+      code: 'AUTH_INVALID_SIGNATURE',
+      error: 'Munus could not verify the Nimiq Pay signature.',
+    })
+  })
+
   it('serves the built app for root, deep links, and static assets', async () => {
     const staticDir = await mkdtemp(join(tmpdir(), 'munus-static-'))
     await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="root"></div>')

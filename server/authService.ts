@@ -8,6 +8,10 @@ import type {
 } from './repository'
 import { normalizeNimiqAddress, verifyNimiqSignature } from './nimiqSignature'
 
+export type AuthErrorCode =
+  | 'AUTH_SIGNER_ADDRESS_MISMATCH'
+  | 'AUTH_INVALID_SIGNATURE'
+
 export interface AuthServiceOptions {
   challengeTtlMs: number
   sessionTtlMs: number
@@ -36,6 +40,7 @@ export class AuthServiceError extends Error {
   constructor(
     message: string,
     readonly statusCode: number,
+    readonly code?: AuthErrorCode,
   ) {
     super(message)
     this.name = 'AuthServiceError'
@@ -71,7 +76,6 @@ export class MunusAuthService {
       nonce,
       message: [
         'Sign in to Munus.',
-        `Wallet: ${walletAddress}`,
         `Network: ${input.network}`,
         `Nonce: ${nonce}`,
         `Expires: ${new Date(expiresAt).toISOString()}`,
@@ -106,17 +110,27 @@ export class MunusAuthService {
 
     const suppliedAddress = normalizeAddressOrThrow(input.walletAddress)
     if (suppliedAddress !== challenge.walletAddress) {
-      throw new AuthServiceError('Wallet address does not match the challenge.', 401)
+      throw new AuthServiceError(
+        'The Nimiq account that signed does not match the challenged account.',
+        401,
+        'AUTH_SIGNER_ADDRESS_MISMATCH',
+      )
     }
 
+    // The signed public key is the cryptographic identity. Nimiq Pay's sign()
+    // method does not accept an account selector, so accounts[0] is only the
+    // client-side challenge hint and must not determine the authenticated user.
     const verified = verifyNimiqSignature({
-      walletAddress: challenge.walletAddress,
       publicKey: input.publicKey,
       signature: input.signature,
       message: challenge.message,
     })
-    if (!verified) {
-      throw new AuthServiceError('Munus could not verify the wallet signature.', 401)
+    if (!verified.valid) {
+      throw new AuthServiceError(
+        'Munus could not verify the Nimiq Pay signature.',
+        401,
+        'AUTH_INVALID_SIGNATURE',
+      )
     }
 
     // The conditional repository operation makes consumption single-use even if
@@ -126,7 +140,7 @@ export class MunusAuthService {
       throw new AuthServiceError('Munus challenge has already been used.', 409)
     }
 
-    const user = await this.repository.getOrCreateUser(challenge.walletAddress, challenge.network)
+    const user = await this.repository.getOrCreateUser(verified.walletAddress, challenge.network)
     const token = this.randomToken()
     const record: SessionRecord = {
       id: randomUUID(),

@@ -4,21 +4,23 @@ export function normalizeNimiqAddress(walletAddress: string): string {
   return Address.fromAny(walletAddress).toUserFriendlyAddress()
 }
 
+export type NimiqSignatureVerification =
+  | { valid: true; walletAddress: string }
+  | { valid: false }
+
 export function verifyNimiqSignature(input: {
-  walletAddress: string
   publicKey: string
   signature: string
   message: string
-}): boolean {
+}): NimiqSignatureVerification {
   try {
-    const expectedAddress = normalizeNimiqAddress(input.walletAddress)
     const publicKey = PublicKey.fromHex(input.publicKey)
-    const derivedAddress = publicKey.toAddress().toUserFriendlyAddress()
-    if (derivedAddress !== expectedAddress) return false
-
+    const walletAddress = publicKey.toAddress().toUserFriendlyAddress()
     const signature = Signature.fromHex(input.signature)
-    return publicKey.verify(signature, new TextEncoder().encode(input.message))
+    const valid = publicKey.verify(signature, new TextEncoder().encode(input.message))
+
+    return valid ? { valid: true, walletAddress } : { valid: false }
   } catch {
-    return false
+    return { valid: false }
   }
 }

@@ -45,7 +45,8 @@ describe('Munus production wallet authentication', () => {
       network: 'mainnet',
     })
 
-    expect(challenge.message).toContain(`Wallet: ${fixture.walletAddress}`)
+    expect(challenge.message).not.toContain('Wallet:')
+    expect(challenge.message).toContain('Network: mainnet')
     expect(challenge.message).toContain('Nonce:')
     expect(challenge.expiresAt).toBe(1_700_000_000_000 + challengeTtlMs)
 
@@ -68,9 +69,58 @@ describe('Munus production wallet authentication', () => {
     ).rejects.toMatchObject({ statusCode: 410 })
   })
 
-  it('rejects a wrong signer and accepts the correct signature once', async () => {
+  it('derives the authenticated address from the signer, not the challenged account hint', async () => {
     const fixture = createFixture()
-    const wrongSigner = KeyPair.generate()
+    const signer = KeyPair.generate()
+    const signerAddress = signer.toAddress().toUserFriendlyAddress()
+    const challenge = await fixture.auth.createChallenge({
+      walletAddress: fixture.walletAddress,
+      network: 'mainnet',
+    })
+
+    const verified = await fixture.auth.verifyChallenge({
+      challengeId: challenge.id,
+      walletAddress: fixture.walletAddress,
+      ...fixture.sign(challenge.message, signer),
+    })
+    expect(verified.session).toMatchObject({
+      walletAddress: signerAddress,
+      trust: 'server-verified',
+    })
+    expect(verified.token).toBe('opaque-session-token')
+
+    await expect(
+      fixture.auth.verifyChallenge({
+        challengeId: challenge.id,
+        walletAddress: fixture.walletAddress,
+        ...fixture.sign(challenge.message, signer),
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 })
+  })
+
+  it('rejects a verify request whose supplied account no longer matches the challenge', async () => {
+    const fixture = createFixture()
+    const otherAccount = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const challenge = await fixture.auth.createChallenge({
+      walletAddress: fixture.walletAddress,
+      network: 'mainnet',
+    })
+
+    await expect(
+      fixture.auth.verifyChallenge({
+        challengeId: challenge.id,
+        walletAddress: otherAccount,
+        ...fixture.sign(challenge.message),
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 401,
+      code: 'AUTH_SIGNER_ADDRESS_MISMATCH',
+      message: 'The Nimiq account that signed does not match the challenged account.',
+    })
+  })
+
+  it('returns a safe invalid-signature error for a signed preimage mismatch', async () => {
+    const fixture = createFixture()
     const challenge = await fixture.auth.createChallenge({
       walletAddress: fixture.walletAddress,
       network: 'mainnet',
@@ -80,28 +130,13 @@ describe('Munus production wallet authentication', () => {
       fixture.auth.verifyChallenge({
         challengeId: challenge.id,
         walletAddress: fixture.walletAddress,
-        ...fixture.sign(challenge.message, wrongSigner),
+        ...fixture.sign('altered challenge'),
       }),
-    ).rejects.toMatchObject({ statusCode: 401 })
-
-    const verified = await fixture.auth.verifyChallenge({
-      challengeId: challenge.id,
-      walletAddress: fixture.walletAddress,
-      ...fixture.sign(challenge.message),
+    ).rejects.toMatchObject({
+      statusCode: 401,
+      code: 'AUTH_INVALID_SIGNATURE',
+      message: 'Munus could not verify the Nimiq Pay signature.',
     })
-    expect(verified.session).toMatchObject({
-      walletAddress: fixture.walletAddress,
-      trust: 'server-verified',
-    })
-    expect(verified.token).toBe('opaque-session-token')
-
-    await expect(
-      fixture.auth.verifyChallenge({
-        challengeId: challenge.id,
-        walletAddress: fixture.walletAddress,
-        ...fixture.sign(challenge.message),
-      }),
-    ).rejects.toMatchObject({ statusCode: 409 })
   })
 
   it('rejects an expired server session', async () => {

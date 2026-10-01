@@ -115,7 +115,7 @@ class RemoteAuthGateway implements AuthGateway {
       signature: signed.signature,
     })
 
-    return parseServerSession(session, challenge.walletAddress)
+    return parseServerSession(session)
   }
 
   async restoreSession(): Promise<MunusSession | null> {
@@ -170,7 +170,7 @@ function assertChallenge(
   }
 }
 
-function parseServerSession(value: unknown, expectedWalletAddress?: string): MunusSession {
+function parseServerSession(value: unknown): MunusSession {
   if (!value || typeof value !== 'object') {
     throw new Error('Munus authentication returned an invalid session.')
   }
@@ -184,8 +184,7 @@ function parseServerSession(value: unknown, expectedWalletAddress?: string): Mun
     (session.network !== 'mainnet' && session.network !== 'testnet') ||
     typeof session.issuedAt !== 'number' ||
     typeof session.expiresAt !== 'number' ||
-    session.expiresAt <= Date.now() ||
-    (expectedWalletAddress !== undefined && session.walletAddress !== expectedWalletAddress)
+    session.expiresAt <= Date.now()
   ) {
     throw new Error('Munus authentication returned an incomplete session.')
   }
@@ -199,6 +198,13 @@ function parseServerSession(value: unknown, expectedWalletAddress?: string): Mun
     expiresAt: session.expiresAt,
     trust: 'server-verified',
   }
+}
+
+type SafeAuthErrorCode = 'AUTH_SIGNER_ADDRESS_MISMATCH' | 'AUTH_INVALID_SIGNATURE'
+
+const safeAuthErrorMessages: Record<SafeAuthErrorCode, string> = {
+  AUTH_SIGNER_ADDRESS_MISMATCH: 'The Nimiq account that signed does not match the challenged account.',
+  AUTH_INVALID_SIGNATURE: 'Munus could not verify the Nimiq Pay signature.',
 }
 
 async function requestJson<T>(
@@ -219,6 +225,23 @@ async function requestJson<T>(
   })
 
   if (!response.ok) {
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      payload = undefined
+    }
+
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const errorCode = (payload as { code?: unknown }).code
+      if (typeof errorCode === 'string' && errorCode in safeAuthErrorMessages) {
+        throw new Error(safeAuthErrorMessages[errorCode as SafeAuthErrorCode])
+      }
+
+      const serverMessage = (payload as { error?: unknown }).error
+      if (typeof serverMessage === 'string') throw new Error(serverMessage)
+    }
+
     throw new Error(`Munus authentication request failed (${response.status}).`)
   }
 

@@ -81,6 +81,28 @@ describe('Nimiq Pay integration boundary', () => {
     ).rejects.toThrow(/connect a nimiq pay account/i)
   })
 
+  it('surfaces a resolved Mini App ErrorResponse instead of accepting it as a signature', async () => {
+    const provider = {
+      sign: vi.fn().mockResolvedValue({
+        error: { type: 'PERMISSION_DENIED', message: 'Signing was cancelled in Nimiq Pay.' },
+      }),
+    } as unknown as NimiqProvider
+
+    await expect(
+      requestNimiqSignature({ accounts: ['NQ01'], provider, status: 'ready' }, 'Munus login'),
+    ).rejects.toThrow('Signing was cancelled in Nimiq Pay.')
+  })
+
+  it('preserves provider cancellation/rejection truthfully', async () => {
+    const provider = {
+      sign: vi.fn().mockRejectedValue(new Error('User cancelled the Nimiq Pay request.')),
+    } as unknown as NimiqProvider
+
+    await expect(
+      requestNimiqSignature({ accounts: ['NQ01'], provider, status: 'ready' }, 'Munus login'),
+    ).rejects.toThrow('User cancelled the Nimiq Pay request.')
+  })
+
   it('formats luna without floating-point conversion', () => {
     expect(formatNimFromLuna(100_000)).toBe('1')
     expect(formatNimFromLuna(1)).toBe('0.00001')

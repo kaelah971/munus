@@ -462,7 +462,7 @@ export async function handleRequest(
       const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError
         ? error.statusCode
         : 400
-      sendError(response, statusCode, error.message)
+      sendError(response, statusCode, error.message, error instanceof AuthServiceError ? error.code : undefined)
       return
     }
 
@@ -627,8 +627,8 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
   response.end(body)
 }
 
-function sendError(response: ServerResponse, status: number, message: string): void {
-  sendJson(response, status, { error: message })
+function sendError(response: ServerResponse, status: number, message: string, code?: string): void {
+  sendJson(response, status, code ? { error: message, code } : { error: message })
 }
 
 function sendCookie(

@@ -1,6 +1,7 @@
 import {
   getHostNetwork,
   init,
+  type ErrorResponse,
   type NimiqProvider,
   type SignatureResult,
 } from '@nimiq/mini-app-sdk'
@@ -110,7 +111,17 @@ export async function requestNimiqSignature(
     throw new Error('Connect a Nimiq Pay account before signing in to Munus.')
   }
 
-  return connection.provider.sign(message)
+  try {
+    const result = await connection.provider.sign(message) as unknown
+    if (isNimiqErrorResponse(result)) throw new Error(result.error.message)
+    if (!isSignatureResult(result)) {
+      throw new Error('Nimiq Pay did not return a usable challenge signature.')
+    }
+    return result
+  } catch (error) {
+    if (isNimiqErrorResponse(error)) throw new Error(error.error.message, { cause: error })
+    throw error
+  }
 }
 
 export async function loadNimiqWallet(
@@ -193,6 +204,26 @@ function isNimiqPayUnavailable(error: unknown): boolean {
     message.includes('not running inside a nimiq app') ||
     message.includes('running inside nimiq pay')
   )
+}
+
+function isNimiqErrorResponse(value: unknown): value is ErrorResponse {
+  if (!value || typeof value !== 'object' || !('error' in value)) return false
+  const error = (value as { error?: unknown }).error
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'type' in error &&
+    typeof (error as { type?: unknown }).type === 'string' &&
+    'message' in error &&
+    typeof (error as { message?: unknown }).message === 'string',
+  )
+}
+
+function isSignatureResult(value: unknown): value is SignatureResult {
+  if (!value || typeof value !== 'object') return false
+  const result = value as Partial<SignatureResult>
+  return typeof result.publicKey === 'string' && result.publicKey.length > 0
+    && typeof result.signature === 'string' && result.signature.length > 0
 }
 
 function getErrorMessage(error: unknown): string {
