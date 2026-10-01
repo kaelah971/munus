@@ -32,14 +32,19 @@ export function OnboardingPage({ onComplete }: { onComplete: () => void }) {
             </div>
           )}
           <div className="onboarding-hero-copy">
+            <p className="onboarding-eyebrow">Everyday money, in one place</p>
             <h1 id="onboarding-title">Keep everyday<br />{' '}moving.</h1>
             <p className="onboarding-lede">
-              Your everyday money, in one place.
+              Plan the essentials, pay with NIM, and keep your receipts in one place.
             </p>
             <PrimaryButton onClick={onComplete}>
               Open Munus <Icon name="arrow" size={18} />
             </PrimaryButton>
-            <p className="onboarding-preview">Open inside Nimiq Pay to connect your wallet</p>
+            <p className="onboarding-reassurance">
+              Your wallet stays in Nimiq Pay.<br />
+              You approve everything there.
+            </p>
+            <p className="onboarding-preview">Open inside Nimiq Pay to connect your wallet.</p>
           </div>
         </section>
 
