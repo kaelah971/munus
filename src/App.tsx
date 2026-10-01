@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createAuthGateway } from './auth/session'
 import { munusConfig } from './config'
 import { requestNimiqSignature, getNimiqNetwork } from './integration/nimiq'
@@ -13,13 +13,14 @@ import {
   PayPage,
   PocketsPage,
   ProfilePage,
-  ProfileSetupPage,
   PublicRequestPage,
   SupportPage,
 } from './pages'
 import {
   createProfile,
   updateProfile,
+  DEFAULT_PROFILE_DRAFT,
+  profileToDraft,
   type MunusProfile,
   type ProfileDraft,
 } from './domain/profile'
@@ -49,6 +50,11 @@ import { sessionStore } from './persistence/sessionStore'
 import { preferencesStore } from './persistence/preferencesStore'
 import { pinStore } from './persistence/pinStore'
 import { createPinRecord, verifyPin, type PinRecord } from './security/appLock'
+import { MobileAppShell } from './components/MobileAppShell'
+import { NameSetupPage } from './pages/NameSetupPage'
+import { WalletConnectionPage } from './pages/WalletConnectionPage'
+import { ContactsPage } from './pages/ContactsPage'
+import { isValidDisplayName, readPendingName, storePendingName } from './persistence/pendingName'
 
 const ONBOARDING_STORAGE_KEY = 'munus:onboarding-complete'
 const usesRemotePersistence = munusConfig.productionAuth || Boolean(munusConfig.apiBaseUrl)
@@ -80,16 +86,6 @@ function readPublicRequestId(): string | null {
   return match ? decodeURIComponent(match[1]) : null
 }
 
-function readOnboardingState(): boolean {
-  if (typeof window === 'undefined') return false
-
-  try {
-    return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true'
-  } catch {
-    return false
-  }
-}
-
 function saveOnboardingState() {
   try {
     window.localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true')
@@ -99,7 +95,16 @@ function saveOnboardingState() {
 }
 
 export function App() {
-  const [onboardingComplete, setOnboardingComplete] = useState(readOnboardingState)
+  const [pendingName, setPendingName] = useState(() => {
+    const savedSession = usesRemotePersistence ? null : sessionStore.get()
+    const savedProfile = savedSession ? profileStore.get(savedSession.userId) : null
+    if (savedProfile && isValidDisplayName(savedProfile.displayName)) {
+      storePendingName('')
+      return ''
+    }
+    return readPendingName()
+  })
+  const [entryStep, setEntryStep] = useState<'welcome' | 'name' | 'connect'>(() => readPendingName() ? 'connect' : 'welcome')
   const [session, setSession] = useState<MunusSession | null>(() =>
     usesRemotePersistence ? null : sessionStore.get(),
   )
@@ -120,6 +125,7 @@ export function App() {
   })
   const [destination, setDestination] = useState<AppDestination>('home')
   const [authBusy, setAuthBusy] = useState(false)
+  const [profileSaving, setProfileSaving] = useState(false)
   const [authError, setAuthError] = useState<string | null>(null)
   const [authHydrating, setAuthHydrating] = useState(usesRemotePersistence)
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null)
@@ -129,13 +135,20 @@ export function App() {
   const [support, setSupport] = useState<SupportData>(emptySupportData)
   const [supportLoading, setSupportLoading] = useState(() => !usesRemotePersistence && Boolean(sessionStore.get()))
   const [supportError, setSupportError] = useState<string | null>(null)
+  const [hideBalances, setHideBalances] = useState(() => {
+    const saved = sessionStore.get()
+    return saved ? preferencesStore.get(saved.userId).hideBalances : false
+  })
+  const [contactIntent, setContactIntent] = useState<{ view: 'list' | 'add' | 'detail'; id?: string; returnTo: AppDestination }>({ view: 'list', returnTo: 'home' })
+  const [supportContactId, setSupportContactId] = useState<string | undefined>()
+  const authGeneration = useRef(0)
 
   const { state: connection, retry: retryConnection } = useNimiq()
   const wallet = useNimiqWallet(connection)
   const sessionUserId = session?.userId
 
   useEffect(() => {
-    if (!usesRemotePersistence) return
+    if (!usesRemotePersistence || readPublicRequestId()) return
 
     let active = true
     const gateway = createAuthGateway()
@@ -152,17 +165,21 @@ export function App() {
           setUnlocked(true)
           return
         }
-
-        const restoredProfile = await remoteProfileApi.getProfile()
-        if (!active) return
-
         const restoredPin = pinStore.get(restoredSession.userId)
         setPlanningLoading(true)
         setSupportLoading(true)
         setSession(restoredSession)
-        setProfile(restoredProfile)
         setPinRecord(restoredPin)
         setUnlocked(!restoredPin)
+        setHideBalances(preferencesStore.get(restoredSession.userId).hideBalances)
+        const restoredProfile = await remoteProfileApi.getProfile()
+        if (!active) return
+        setProfile(restoredProfile)
+        if (restoredProfile && isValidDisplayName(restoredProfile.displayName)) {
+          storePendingName('')
+          setPendingName('')
+          saveOnboardingState()
+        }
         setProfileLoadError(null)
       } catch (error) {
         if (!active) return
@@ -217,6 +234,10 @@ export function App() {
   }, [sessionUserId])
 
   async function signIn() {
+    if (session) {
+      await finishNameSetup(session, profile)
+      return
+    }
     const walletAddress = connection.accounts[0]
     if (!walletAddress) {
       setAuthError('Open Munus inside Nimiq Pay and share an account before connecting.')
@@ -226,6 +247,7 @@ export function App() {
     setAuthBusy(true)
     setAuthError(null)
     setProfileLoadError(null)
+    const generation = authGeneration.current
     try {
       const gateway = createAuthGateway()
       const network = getNimiqNetwork() === 'testnet' ? 'testnet' : 'mainnet'
@@ -234,38 +256,125 @@ export function App() {
         (message) => requestNimiqSignature(connection, message),
         network,
       )
-      const nextProfile = usesRemotePersistence
-        ? await remoteProfileApi.getProfile()
-        : profileStore.get(nextSession.userId)
+      if (generation !== authGeneration.current) return
       const nextPin = pinStore.get(nextSession.userId)
 
       if (!usesRemotePersistence) sessionStore.save(nextSession)
       setPlanningLoading(true)
       setSupportLoading(true)
       setSession(nextSession)
-      setProfile(nextProfile)
       setPinRecord(nextPin)
       setUnlocked(!nextPin)
+      setHideBalances(preferencesStore.get(nextSession.userId).hideBalances)
       setDestination('home')
+      let nextProfile: MunusProfile | null
+      try {
+        nextProfile = usesRemotePersistence ? await remoteProfileApi.getProfile() : profileStore.get(nextSession.userId)
+      } catch (error) {
+        if (generation !== authGeneration.current) return
+        setProfileLoadError(error instanceof Error ? error.message : 'Munus could not load your profile.')
+        return
+      }
+      if (generation !== authGeneration.current) return
+      setProfile(nextProfile)
+      if (nextProfile && isValidDisplayName(nextProfile.displayName)) clearSetupDraft()
+      if (!nextPin) await persistSetupProfile(nextSession, nextProfile, generation)
     } catch (error) {
+      if (generation !== authGeneration.current) return
       setAuthError(error instanceof Error ? error.message : 'Munus could not connect this account.')
     } finally {
-      setAuthBusy(false)
+      if (generation === authGeneration.current) {
+        setProfileSaving(false)
+        setAuthBusy(false)
+      }
+    }
+  }
+
+  function clearSetupDraft() {
+    storePendingName('')
+    setPendingName('')
+    saveOnboardingState()
+  }
+
+  async function persistSetupProfile(currentSession: MunusSession, currentProfile: MunusProfile | null, generation = authGeneration.current) {
+    if (generation !== authGeneration.current) return
+    if (currentProfile && isValidDisplayName(currentProfile.displayName)) {
+      setProfile(currentProfile)
+    } else {
+      if (!isValidDisplayName(pendingName)) {
+        setEntryStep('name')
+        return
+      }
+      setProfileSaving(true)
+      const draft = { ...(currentProfile ? profileToDraft(currentProfile) : DEFAULT_PROFILE_DRAFT), displayName: pendingName }
+      const savedProfile = usesRemotePersistence
+        ? await remoteProfileApi.saveProfile(draft)
+        : currentProfile ? { ...updateProfile(currentProfile, draft), avatarReference: currentProfile.avatarReference } : createProfile(currentSession.userId, draft)
+      if (generation !== authGeneration.current) return
+      if (!isValidDisplayName(savedProfile.displayName)) throw new Error('Your profile was not saved with a valid name. Please try again.')
+      if (!usesRemotePersistence) profileStore.save(savedProfile)
+      setProfile(savedProfile)
+    }
+    clearSetupDraft()
+    setDestination('home')
+  }
+
+  async function finishNameSetup(currentSession: MunusSession, currentProfile: MunusProfile | null) {
+    setAuthBusy(true)
+    setAuthError(null)
+    const generation = authGeneration.current
+    try {
+      await persistSetupProfile(currentSession, currentProfile, generation)
+    } catch (error) {
+      if (generation !== authGeneration.current) return
+      setAuthError(error instanceof Error ? error.message : 'Munus could not save your profile.')
+    } finally {
+      if (generation === authGeneration.current) {
+        setProfileSaving(false)
+        setAuthBusy(false)
+      }
+    }
+  }
+
+  async function retryProfileLoad() {
+    if (!session) {
+      window.location.reload()
+      return
+    }
+    setAuthBusy(true)
+    const generation = authGeneration.current
+    try {
+      const loaded = usesRemotePersistence ? await remoteProfileApi.getProfile() : profileStore.get(session.userId)
+      if (generation !== authGeneration.current) return
+      setProfile(loaded)
+      setProfileLoadError(null)
+      if (!pinRecord || unlocked) await persistSetupProfile(session, loaded, generation)
+    } catch (error) {
+      if (generation !== authGeneration.current) return
+      setProfileLoadError(error instanceof Error ? error.message : 'Munus could not load your profile.')
+    } finally {
+      if (generation === authGeneration.current) {
+        setProfileSaving(false)
+        setAuthBusy(false)
+      }
     }
   }
 
   async function signOut() {
     const currentSession = session
-    if (currentSession && usesRemotePersistence) {
+    if (usesRemotePersistence) {
       try {
-        await createAuthGateway().signOut(currentSession)
+        await createAuthGateway().signOut(currentSession ?? undefined)
       } catch (error) {
         setAuthError(error instanceof Error ? error.message : 'Munus could not revoke this session.')
         return
       }
     }
 
+    authGeneration.current += 1
     sessionStore.clear()
+    setAuthBusy(false)
+    setProfileSaving(false)
     setSession(null)
     setProfile(null)
     setPinRecord(null)
@@ -279,6 +388,11 @@ export function App() {
     setSupportLoading(false)
     setSupportError(null)
     setDestination('home')
+    setPendingName('')
+    storePendingName('')
+    setEntryStep('welcome')
+    setHideBalances(false)
+    setSupportContactId(undefined)
   }
 
   function planningApiForCurrentSession(): PlanningApi {
@@ -459,8 +573,30 @@ export function App() {
   }
 
   function copyWalletAddress() {
-    if (!wallet.address || !navigator.clipboard) return
-    void navigator.clipboard.writeText(wallet.address)
+    const address = session?.walletAddress
+    if (!address || !navigator.clipboard) return
+    void navigator.clipboard.writeText(address).catch(() => setAuthError('Your browser could not copy the address. Please try again.'))
+  }
+
+  function navigate(next: AppDestination) {
+    if (next === 'contacts') {
+      openContacts('list')
+      return
+    }
+    setSupportContactId(undefined)
+    setDestination(next)
+  }
+
+  function openContacts(view: 'list' | 'add' | 'detail' = 'list', id?: string) {
+    setContactIntent({ view, id, returnTo: destination === 'contacts' ? contactIntent.returnTo : destination })
+    setDestination('contacts')
+  }
+
+  function toggleBalances() {
+    if (!session) return
+    const next = !hideBalances
+    preferencesStore.save({ ...preferencesStore.get(session.userId), hideBalances: next })
+    setHideBalances(next)
   }
 
   const publicRequestId = readPublicRequestId()
@@ -468,157 +604,91 @@ export function App() {
     return <PublicRequestPage apiBaseUrl={munusConfig.apiBaseUrl} publicRequestId={publicRequestId} />
   }
 
-  if (!onboardingComplete) {
-    return (
-      <OnboardingPage
-        onComplete={() => {
-          saveOnboardingState()
-          setOnboardingComplete(true)
-        }}
-      />
-    )
-  }
-
   if (authHydrating) {
-    return (
-      <main className="page-state" aria-live="polite">
-        <p className="eyebrow">Munus</p>
-        <h1>Restoring your account</h1>
-        <p>Checking your secure session and profile.</p>
-      </main>
-    )
-  }
-
-  if (profileLoadError && session) {
-    return (
-      <main className="page-state">
-        <p className="eyebrow">Munus</p>
-        <h1>We could not load your profile</h1>
-        <p>{profileLoadError}</p>
-        <button className="primary-button" type="button" onClick={() => window.location.reload()}>
-          Try again
-        </button>
-        <button className="quiet-button" type="button" onClick={signOut}>
-          Sign out
-        </button>
-      </main>
-    )
+    return <main className="page-state" aria-live="polite"><p className="eyebrow">Munus</p><h1>Restoring your account</h1><p>Checking your secure session and profile.</p></main>
   }
 
   if (session && pinRecord && !unlocked) {
     return <AppLockScreen onSignOut={() => void signOut()} onUnlock={unlock} />
   }
 
-  if (session && !profile) {
-    return (
-      <ProfileSetupPage
-        onSignOut={() => void signOut()}
-        onSubmit={saveProfile}
-        walletAddress={session.walletAddress}
-      />
-    )
+  if (profileLoadError) {
+    return <main className="page-state">
+      <h1>We could not load your profile</h1><p>{profileLoadError}</p>
+      <button className="primary-button" type="button" disabled={authBusy} onClick={() => void retryProfileLoad()}>{authBusy ? 'Checking profile…' : 'Try again'}</button>
+      {authError && <p className="inline-error" role="alert">{authError}</p>}
+      <button className="quiet-button" type="button" disabled={authBusy} onClick={() => void signOut()}>Sign out</button>
+    </main>
   }
 
+  if (!session || !profile || !isValidDisplayName(profile.displayName)) {
+    const step = session && entryStep === 'welcome' ? (pendingName ? 'connect' : 'name') : entryStep
+    if (step === 'welcome') return <OnboardingPage onComplete={() => setEntryStep('name')} />
+    if (step === 'name') return <NameSetupPage initialName={pendingName} onBack={() => {
+      setAuthError(null)
+      if (session) void signOut()
+      else setEntryStep('welcome')
+    }} onContinue={(name) => {
+      setPendingName(name)
+      storePendingName(name)
+      setAuthError(null)
+      setEntryStep('connect')
+    }} />
+    return <WalletConnectionPage connection={connection} authenticated={Boolean(session)} busy={authBusy} saving={profileSaving} error={authError} onConnect={() => void signIn()} onRetryConnection={retryConnection} onBack={() => { setAuthError(null); setEntryStep('name') }} />
+  }
+
+  let content: ReactNode
   if (destination === 'profile') {
-    return (
-      <ProfilePage
-        authBusy={authBusy}
-        authError={authError}
-        connection={connection}
-        onNavigate={setDestination}
-        onRemovePin={removePin}
-        onSave={(draft) => saveProfile(draft, 'profile')}
-        onSavePin={savePin}
-        onSignIn={() => void signIn()}
-        onSignOut={() => void signOut()}
-        pinRecord={pinRecord}
-        profile={profile}
-        session={session}
-      />
-    )
-  }
-
-  if (destination === 'pay') {
-    return <PayPage connection={connection} onNavigate={setDestination} />
-  }
-
-  if (destination === 'pockets') {
-    return (
-      <PocketsPage
-        authenticated={Boolean(session)}
-        connection={connection}
-        error={planningError}
-        loading={planningLoading}
-        onAddAllocation={addPocketAllocation}
-        onArchivePocket={archivePocket}
-        onCreatePocket={createPocket}
-        onCreateReminder={createReminder}
-        onCreateSpendRule={createSpendRule}
-        onDeleteReminder={deleteReminder}
-        onDeleteSpendRule={deleteSpendRule}
-        onNavigate={setDestination}
-        onUpdatePocket={updatePocket}
-        onUpdateReminder={updateReminder}
-        onUpdateSpendRule={updateSpendRule}
-        pockets={planning.pockets}
-        reminders={planning.reminders}
-        spendRules={planning.spendRules}
-      />
-    )
-  }
-
-  if (destination === 'support' || destination === 'request' || destination === 'contacts') {
-    return (
-      <SupportPage
-        authenticated={Boolean(session)}
-        connection={connection}
-        contacts={support.contacts}
-        error={supportError}
-        initialMode={destination}
-        key={destination}
-        loading={supportLoading}
-        onArchiveContact={archiveContact}
-        onCancelSupportRequest={cancelSupportRequest}
-        onConvertRequest={convertRequestToDraft}
-        onCreateContact={createContact}
-        onCreateSupportDraft={createSupportDraft}
-        onCreateSupportRequest={createSupportRequest}
-        onCreateSupportRule={createSupportRule}
-        onDeleteSupportRule={deleteSupportRule}
-        onNavigate={setDestination}
-        onUpdateContact={updateContact}
-        onUpdateSupportDraft={updateSupportDraft}
-        onUpdateSupportRequest={updateSupportRequest}
-        onUpdateSupportRule={updateSupportRule}
-        supportDrafts={support.supportDrafts}
-        supportRequests={support.supportRequests}
-        supportRules={support.supportRules}
-      />
-    )
-  }
-
-  if (destination === 'activity') {
-    return <EmptyPage connection={connection} destination={destination} onNavigate={setDestination} />
-  }
-
-  return (
-    <HomePage
-      authBusy={authBusy}
-      authError={authError}
-      connection={connection}
-      onCopyAddress={copyWalletAddress}
-      onNavigate={setDestination}
-      onProfile={() => setDestination('profile')}
-      onRetryConnection={retryConnection}
-      onSignIn={() => void signIn()}
-      planningLoading={planningLoading}
-      pockets={planning.pockets}
-      profile={profile}
-      reminders={planning.reminders}
-      session={session}
-      supportDrafts={support.supportDrafts}
-      supportRequests={support.supportRequests}
-      wallet={wallet}
+    content = <ProfilePage
+      authBusy={authBusy} authError={authError} connection={connection}
+      onNavigate={navigate} onRemovePin={removePin} onSave={(draft) => saveProfile(draft, 'profile')}
+      onSavePin={savePin} onSignIn={() => void signIn()} onSignOut={() => void signOut()}
+      pinRecord={pinRecord} profile={profile} session={session} wallet={wallet}
+      hideBalances={hideBalances} onToggleBalances={toggleBalances}
+      onOpenContacts={() => openContacts('list')} onCopyAddress={copyWalletAddress}
     />
-  )
+  } else if (destination === 'pay') {
+    content = <PayPage />
+  } else if (destination === 'pockets') {
+    content = <PocketsPage
+      authenticated connection={connection} error={planningError} loading={planningLoading}
+      onAddAllocation={addPocketAllocation} onArchivePocket={archivePocket} onCreatePocket={createPocket}
+      onCreateReminder={createReminder} onCreateSpendRule={createSpendRule} onDeleteReminder={deleteReminder}
+      onDeleteSpendRule={deleteSpendRule} onNavigate={navigate} onUpdatePocket={updatePocket}
+      onUpdateReminder={updateReminder} onUpdateSpendRule={updateSpendRule}
+      pockets={planning.pockets} reminders={planning.reminders} spendRules={planning.spendRules}
+    />
+  } else if (destination === 'contacts') {
+    content = <ContactsPage
+      key={`${contactIntent.view}:${contactIntent.id ?? ''}`} contacts={support.contacts} loading={supportLoading} error={supportError}
+      initialView={contactIntent.view} initialContactId={contactIntent.id}
+      onBack={() => navigate(contactIntent.returnTo)} onCreateContact={createContact} onUpdateContact={updateContact}
+      onArchiveContact={archiveContact} onSupportContact={(id) => { setSupportContactId(id); setDestination('support') }}
+    />
+  } else if (destination === 'support' || destination === 'request') {
+    content = supportContactId && supportLoading ? <p role="status">Loading your contact…</p> : <SupportPage
+      authenticated connection={connection} contacts={support.contacts} error={supportError} initialMode={destination}
+      initialContactId={supportContactId} key={`${destination}:${supportContactId ?? ''}`} loading={supportLoading}
+      onOpenContacts={(view) => openContacts(view)} onArchiveContact={archiveContact}
+      onCancelSupportRequest={cancelSupportRequest} onConvertRequest={convertRequestToDraft}
+      onCreateContact={createContact} onCreateSupportDraft={createSupportDraft} onCreateSupportRequest={createSupportRequest}
+      onCreateSupportRule={createSupportRule} onDeleteSupportRule={deleteSupportRule} onNavigate={navigate}
+      onUpdateContact={updateContact} onUpdateSupportDraft={updateSupportDraft} onUpdateSupportRequest={updateSupportRequest}
+      onUpdateSupportRule={updateSupportRule} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests} supportRules={support.supportRules}
+    />
+  } else if (destination === 'activity') {
+    content = <EmptyPage destination="activity" />
+  } else {
+    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances}
+      pockets={planning.pockets} reminders={planning.reminders} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests}
+      contacts={support.contacts} contactsLoading={supportLoading} contactsError={supportError}
+      onNavigate={navigate} onProfile={() => navigate('profile')}
+      onOpenContacts={openContacts} />
+  }
+
+  const secondary = destination === 'support' || destination === 'request' || destination === 'contacts'
+  return <MobileAppShell destination={destination} onNavigate={navigate}
+    onBack={secondary ? () => navigate(destination === 'contacts' ? contactIntent.returnTo : 'home') : undefined}>
+    {content}
+  </MobileAppShell>
 }

@@ -1,8 +1,4 @@
-import { BottomNav } from '../components/BottomNav'
-import { ConnectionPill } from '../components/ConnectionStatus'
-import { EmptyState, Icon, TopBar } from '../components/Primitives'
-import type { AppDestination } from '../navigation'
-import type { NimiqConnectionState } from '../integration/nimiq'
+import { EmptyState, Icon } from '../components/Primitives'
 
 const pageCopy = {
   pockets: {
@@ -25,28 +21,18 @@ const pageCopy = {
 
 export function EmptyPage({
   destination,
-  connection,
-  onNavigate,
 }: {
   destination: 'pockets' | 'activity'
-  connection: NimiqConnectionState
-  onNavigate: (destination: AppDestination) => void
 }) {
   const copy = pageCopy[destination]
 
   return (
-    <div className="app-shell">
-      <div className="app-frame">
-        <TopBar connection={<ConnectionPill state={connection} />} />
-        <main className="screen-content empty-page" aria-labelledby="empty-page-title">
-          <p className="eyebrow">{copy.eyebrow}</p>
-          <h1 id="empty-page-title">{copy.title}</h1>
-          <p className="screen-lede">{copy.description}</p>
-          <EmptyState description={copy.emptyDescription} icon={copy.icon} title={copy.emptyTitle} />
-          <div className="truth-note"><Icon name="info" size={18} /><p>This surface is intentionally quiet until its underlying data exists.</p></div>
-        </main>
-        <BottomNav destination={destination} onNavigate={onNavigate} />
-      </div>
-    </div>
+    <section className="screen-content empty-page" aria-labelledby="empty-page-title">
+      <p className="eyebrow">{copy.eyebrow}</p>
+      <h1 id="empty-page-title">{copy.title}</h1>
+      <p className="screen-lede">{copy.description}</p>
+      <EmptyState description={copy.emptyDescription} icon={copy.icon} title={copy.emptyTitle} />
+      <div className="truth-note"><Icon name="info" size={18} /><p>This surface is intentionally quiet until its underlying data exists.</p></div>
+    </section>
   )
 }

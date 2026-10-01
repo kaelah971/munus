@@ -1,7 +1,5 @@
 import { useMemo, useState } from 'react'
-import { BottomNav } from '../components/BottomNav'
-import { ConnectionPill } from '../components/ConnectionStatus'
-import { EmptyState, Icon, SectionHeading, TopBar } from '../components/Primitives'
+import { EmptyState, Icon, SectionHeading } from '../components/Primitives'
 import type { AppDestination } from '../navigation'
 import type { NimiqConnectionState } from '../integration/nimiq'
 import {
@@ -23,14 +21,12 @@ import {
 } from '../domain/planning'
 
 export function PocketsPage({
-  connection,
   authenticated,
   pockets,
   reminders,
   spendRules,
   loading,
   error,
-  onNavigate,
   onCreatePocket,
   onUpdatePocket,
   onArchivePocket,
@@ -102,112 +98,106 @@ export function PocketsPage({
   }
 
   return (
-    <div className="app-shell">
-      <div className="app-frame">
-        <TopBar connection={<ConnectionPill state={connection} />} />
-        <main className="screen-content pockets-page" aria-labelledby="pockets-title">
-          <p className="eyebrow">Plan ahead</p>
-          <h1 id="pockets-title">Life Pockets</h1>
-          <p className="screen-lede">Give an upcoming need a place to grow, without moving or locking your NIM.</p>
+    <section className="screen-content pockets-page" aria-labelledby="pockets-title">
+      <p className="eyebrow">Plan ahead</p>
+      <h1 id="pockets-title">Life Pockets</h1>
+      <p className="screen-lede">Give an upcoming need a place to grow, without moving or locking your NIM.</p>
 
-          {error ? <p className="inline-error" role="alert">{error}</p> : null}
-          {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
+      {error ? <p className="inline-error" role="alert">{error}</p> : null}
+      {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
 
-          {screen === 'create' ? (
-            <PocketForm
-              onCancel={goList}
-              onSubmit={(draft) => runAction(() => onCreatePocket(draft), goList)}
-            />
-          ) : screen === 'edit' && selectedPocket ? (
-            <PocketForm
-              initial={pocketToDraft(selectedPocket)}
-              onCancel={() => setScreen('detail')}
-              onSubmit={(draft) => runAction(() => onUpdatePocket(selectedPocket.id, draft), () => setScreen('detail'))}
-              submitLabel="Save changes"
-            />
-          ) : screen === 'detail' && selectedPocket ? (
-            <PocketDetail
-              pocket={selectedPocket}
-              allocationAmount={allocationAmount}
-              allocationDirection={allocationDirection}
-              allocationNote={allocationNote}
-              onBack={goList}
-              onEdit={() => setScreen('edit')}
-              onArchive={() => runAction(() => onArchivePocket(selectedPocket.id), goList)}
-              onAllocationAmountChange={setAllocationAmount}
-              onAllocationDirectionChange={setAllocationDirection}
-              onAllocationNoteChange={setAllocationNote}
-              onAddAllocation={() => runAction(
-                () => onAddAllocation(selectedPocket.id, {
-                  amount: allocationAmount,
-                  direction: allocationDirection,
-                  note: allocationNote,
-                }),
-                () => {
-                  setAllocationAmount('')
-                  setAllocationNote('')
-                },
-              )}
-            />
-          ) : (
-            <>
-              <div className="pockets-toolbar">
-                <SectionHeading>{pockets.length ? 'Your pockets' : 'Start with one need'}</SectionHeading>
-                <button className="primary-button" type="button" disabled={!authenticated} onClick={() => setScreen('create')}>
-                  <Icon name="pocket" size={17} /> Create pocket
-                </button>
-              </div>
-
-              {loading ? <p className="loading-copy">Loading your planning context…</p> : null}
-              {!loading && pockets.length === 0 ? (
-                <EmptyState
-                  description={authenticated ? 'Plan Data, rent, school, or any recurring need. This pocket does not reserve or move NIM.' : 'Connect your Munus account to save pockets to your profile.'}
-                  icon="pocket"
-                  title="Give an upcoming need a place to grow."
-                />
-              ) : null}
-              {!loading && pockets.length > 0 ? (
-                <div className="pocket-list" aria-label="Life pockets">
-                  {pockets.map((pocket) => <PocketRow key={pocket.id} pocket={pocket} onClick={() => openPocket(pocket)} />)}
-                </div>
-              ) : null}
-
-              <section className="planning-section">
-                <div className="section-heading-row">
-                  <SectionHeading>Due soon</SectionHeading>
-                  {dueSoon.length ? <span className="section-meta">{dueSoon.length} open</span> : null}
-                </div>
-                {dueSoon.length ? (
-                  <div className="planning-list">
-                    {dueSoon.map((reminder) => <ReminderRow key={reminder.id} reminder={reminder} onDone={() => void runAction(() => onUpdateReminder(reminder.id, reminderToDraft(reminder), 'done'))} onDelete={() => void runAction(() => onDeleteReminder(reminder.id))} onDismiss={() => void runAction(() => onUpdateReminder(reminder.id, reminderToDraft(reminder), 'dismissed'))} onEdit={() => { setEditingReminder(reminder); setReminderFormOpen(true) }} />)}
-                  </div>
-                ) : <p className="section-copy">Nothing is scheduled in the next seven days.</p>}
-              </section>
-
-              <section className="planning-section">
-                <div className="section-heading-row">
-                  <SectionHeading>Reminders</SectionHeading>
-                  <button className="quiet-button" type="button" disabled={!authenticated} onClick={() => { setEditingReminder(null); setReminderFormOpen((open) => !open) }}>{reminderFormOpen ? 'Close' : 'Add reminder'}</button>
-                </div>
-                {reminderFormOpen ? <ReminderForm key={editingReminder?.id ?? 'new'} initial={editingReminder ? reminderToDraft(editingReminder) : undefined} pockets={pockets} onSubmit={(draft) => runAction(() => editingReminder ? onUpdateReminder(editingReminder.id, draft, editingReminder.status) : onCreateReminder(draft), () => { setReminderFormOpen(false); setEditingReminder(null) })} /> : null}
-                {reminders.length ? <div className="planning-list">{reminders.map((reminder) => <ReminderRow key={reminder.id} reminder={reminder} onDone={() => void runAction(() => onUpdateReminder(reminder.id, reminderToDraft(reminder), reminder.status === 'done' ? 'open' : 'done'))} onDelete={() => void runAction(() => onDeleteReminder(reminder.id))} onDismiss={() => void runAction(() => onUpdateReminder(reminder.id, reminderToDraft(reminder), reminder.status === 'dismissed' ? 'open' : 'dismissed'))} onEdit={() => { setEditingReminder(reminder); setReminderFormOpen(true) }} />)}</div> : <p className="section-copy">Create an in-app reminder for a pocket or a standalone need.</p>}
-              </section>
-
-              <section className="planning-section">
-                <div className="section-heading-row">
-                  <SectionHeading>Spend Guard</SectionHeading>
-                  <button className="quiet-button" type="button" disabled={!authenticated} onClick={() => { setEditingSpendRule(null); setSpendRuleFormOpen((open) => !open) }}>{spendRuleFormOpen ? 'Close' : 'Add guard'}</button>
-                </div>
-                <p className="section-copy">Soft planning limits only. Munus does not block wallet transactions or invent actual spend.</p>
-                {spendRuleFormOpen ? <SpendRuleForm key={editingSpendRule?.id ?? 'new'} initial={editingSpendRule ? ruleToDraft(editingSpendRule) : undefined} onSubmit={(draft) => runAction(() => editingSpendRule ? onUpdateSpendRule(editingSpendRule.id, draft) : onCreateSpendRule(draft), () => { setSpendRuleFormOpen(false); setEditingSpendRule(null) })} /> : null}
-                {spendRules.length ? <div className="planning-list">{spendRules.map((rule) => <SpendRuleRow key={rule.id} rule={rule} onEdit={() => { setEditingSpendRule(rule); setSpendRuleFormOpen(true) }} onDelete={() => void runAction(() => onDeleteSpendRule(rule.id))} onToggle={() => void runAction(() => onUpdateSpendRule(rule.id, { ...ruleToDraft(rule), enabled: !rule.enabled }))} />)}</div> : <p className="section-copy">No planning guards set yet.</p>}
-              </section>
-            </>
+      {screen === 'create' ? (
+        <PocketForm
+          onCancel={goList}
+          onSubmit={(draft) => runAction(() => onCreatePocket(draft), goList)}
+        />
+      ) : screen === 'edit' && selectedPocket ? (
+        <PocketForm
+          initial={pocketToDraft(selectedPocket)}
+          onCancel={() => setScreen('detail')}
+          onSubmit={(draft) => runAction(() => onUpdatePocket(selectedPocket.id, draft), () => setScreen('detail'))}
+          submitLabel="Save changes"
+        />
+      ) : screen === 'detail' && selectedPocket ? (
+        <PocketDetail
+          pocket={selectedPocket}
+          allocationAmount={allocationAmount}
+          allocationDirection={allocationDirection}
+          allocationNote={allocationNote}
+          onBack={goList}
+          onEdit={() => setScreen('edit')}
+          onArchive={() => runAction(() => onArchivePocket(selectedPocket.id), goList)}
+          onAllocationAmountChange={setAllocationAmount}
+          onAllocationDirectionChange={setAllocationDirection}
+          onAllocationNoteChange={setAllocationNote}
+          onAddAllocation={() => runAction(
+            () => onAddAllocation(selectedPocket.id, {
+              amount: allocationAmount,
+              direction: allocationDirection,
+              note: allocationNote,
+            }),
+            () => {
+              setAllocationAmount('')
+              setAllocationNote('')
+            },
           )}
-        </main>
-        <BottomNav destination="pockets" onNavigate={onNavigate} />
-      </div>
-    </div>
+        />
+      ) : (
+        <>
+          <div className="pockets-toolbar">
+            <SectionHeading>{pockets.length ? 'Your pockets' : 'Start with one need'}</SectionHeading>
+            <button className="primary-button" type="button" disabled={!authenticated} onClick={() => setScreen('create')}>
+              <Icon name="pocket" size={17} /> Create pocket
+            </button>
+          </div>
+
+          {loading ? <p className="loading-copy">Loading your planning context…</p> : null}
+          {!loading && pockets.length === 0 ? (
+            <EmptyState
+              description={authenticated ? 'Plan Data, rent, school, or any recurring need. This pocket does not reserve or move NIM.' : 'Connect your Munus account to save pockets to your profile.'}
+              icon="pocket"
+              title="Give an upcoming need a place to grow."
+            />
+          ) : null}
+          {!loading && pockets.length > 0 ? (
+            <div className="pocket-list" aria-label="Life pockets">
+              {pockets.map((pocket) => <PocketRow key={pocket.id} pocket={pocket} onClick={() => openPocket(pocket)} />)}
+            </div>
+          ) : null}
+
+          <section className="planning-section">
+            <div className="section-heading-row">
+              <SectionHeading>Due soon</SectionHeading>
+              {dueSoon.length ? <span className="section-meta">{dueSoon.length} open</span> : null}
+            </div>
+            {dueSoon.length ? (
+              <div className="planning-list">
+                {dueSoon.map((reminder) => <ReminderRow key={reminder.id} reminder={reminder} onDone={() => void runAction(() => onUpdateReminder(reminder.id, reminderToDraft(reminder), 'done'))} onDelete={() => void runAction(() => onDeleteReminder(reminder.id))} onDismiss={() => void runAction(() => onUpdateReminder(reminder.id, reminderToDraft(reminder), 'dismissed'))} onEdit={() => { setEditingReminder(reminder); setReminderFormOpen(true) }} />)}
+              </div>
+            ) : <p className="section-copy">Nothing is scheduled in the next seven days.</p>}
+          </section>
+
+          <section className="planning-section">
+            <div className="section-heading-row">
+              <SectionHeading>Reminders</SectionHeading>
+              <button className="quiet-button" type="button" disabled={!authenticated} onClick={() => { setEditingReminder(null); setReminderFormOpen((open) => !open) }}>{reminderFormOpen ? 'Close' : 'Add reminder'}</button>
+            </div>
+            {reminderFormOpen ? <ReminderForm key={editingReminder?.id ?? 'new'} initial={editingReminder ? reminderToDraft(editingReminder) : undefined} pockets={pockets} onSubmit={(draft) => runAction(() => editingReminder ? onUpdateReminder(editingReminder.id, draft, editingReminder.status) : onCreateReminder(draft), () => { setReminderFormOpen(false); setEditingReminder(null) })} /> : null}
+            {reminders.length ? <div className="planning-list">{reminders.map((reminder) => <ReminderRow key={reminder.id} reminder={reminder} onDone={() => void runAction(() => onUpdateReminder(reminder.id, reminderToDraft(reminder), reminder.status === 'done' ? 'open' : 'done'))} onDelete={() => void runAction(() => onDeleteReminder(reminder.id))} onDismiss={() => void runAction(() => onUpdateReminder(reminder.id, reminderToDraft(reminder), reminder.status === 'dismissed' ? 'open' : 'dismissed'))} onEdit={() => { setEditingReminder(reminder); setReminderFormOpen(true) }} />)}</div> : <p className="section-copy">Create an in-app reminder for a pocket or a standalone need.</p>}
+          </section>
+
+          <section className="planning-section">
+            <div className="section-heading-row">
+              <SectionHeading>Spend Guard</SectionHeading>
+              <button className="quiet-button" type="button" disabled={!authenticated} onClick={() => { setEditingSpendRule(null); setSpendRuleFormOpen((open) => !open) }}>{spendRuleFormOpen ? 'Close' : 'Add guard'}</button>
+            </div>
+            <p className="section-copy">Soft planning limits only. Munus does not block wallet transactions or invent actual spend.</p>
+            {spendRuleFormOpen ? <SpendRuleForm key={editingSpendRule?.id ?? 'new'} initial={editingSpendRule ? ruleToDraft(editingSpendRule) : undefined} onSubmit={(draft) => runAction(() => editingSpendRule ? onUpdateSpendRule(editingSpendRule.id, draft) : onCreateSpendRule(draft), () => { setSpendRuleFormOpen(false); setEditingSpendRule(null) })} /> : null}
+            {spendRules.length ? <div className="planning-list">{spendRules.map((rule) => <SpendRuleRow key={rule.id} rule={rule} onEdit={() => { setEditingSpendRule(rule); setSpendRuleFormOpen(true) }} onDelete={() => void runAction(() => onDeleteSpendRule(rule.id))} onToggle={() => void runAction(() => onUpdateSpendRule(rule.id, { ...ruleToDraft(rule), enabled: !rule.enabled }))} />)}</div> : <p className="section-copy">No planning guards set yet.</p>}
+          </section>
+        </>
+      )}
+    </section>
   )
 }
 
