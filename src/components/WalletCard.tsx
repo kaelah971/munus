@@ -21,7 +21,7 @@ export function WalletCard({
   const networkLabel = wallet.network === 'unknown' ? 'Network not reported' : wallet.network
 
   return (
-    <section className="wallet-card">
+    <section className="wallet-card munus-card-elevated">
       <div className="wallet-card-topline">
         <div>
           <p className="card-eyebrow">Wallet balance</p>

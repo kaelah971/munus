@@ -60,7 +60,7 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
         const estimate = estimateNgn(balance, quote, now)
         const selected = selectedAsset === asset
         return (
-          <article key={asset} className={`account-card account-card--${asset.toLowerCase()} ${selected ? 'account-card--front' : 'account-card--rear'}`}>
+          <article key={asset} className={`account-card munus-card ${asset === 'NIM' ? 'munus-card-elevated' : ''} account-card--${asset.toLowerCase()} ${selected ? 'account-card--front' : 'account-card--rear'}`}>
             <button className="account-card-select" type="button" aria-label={`View ${asset} account`} aria-pressed={selected} onClick={() => setSelectedAsset(asset)}>
               <span>{asset}</span><span aria-hidden="true">{selected ? '●' : '↑'}</span>
             </button>

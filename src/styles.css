@@ -2,19 +2,37 @@
   font-family: "Rajdhani", system-ui, sans-serif;
   font-weight: 400;
   color: #ffffff;
-  background: #141416;
+  background: var(--munus-bg);
   color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --base: #141416;
-  --surface: #1e1e20;
-  --surface-highlight: #222224;
-  --line: #2c2c2e;
-  --text: #ffffff;
-  --muted: #9a9a9e;
-  --button: #f2f2f0;
-  --button-text: #121214;
-  --warning: #f5a623;
+  --munus-bg: #101012;
+  --munus-bg-elevated: #171719;
+  --munus-surface: #1D1D20;
+  --munus-text: #F7F7F4;
+  --munus-text-muted: #AAA9A4;
+  --munus-text-quiet: #777773;
+  --munus-gold: #F4D35E;
+  --munus-gold-bright: #FFE37A;
+  --munus-gold-soft: #E6C65A;
+  --munus-gold-deep: #B79A2D;
+  --munus-border: rgba(255, 255, 255, .08);
+  --munus-border-strong: rgba(255, 255, 255, .13);
+  --munus-gold-border: rgba(244, 211, 94, .28);
+  --munus-atmosphere: radial-gradient(circle at 82% 2%, rgba(244, 211, 94, .20), transparent 32%), radial-gradient(circle at 15% 48%, rgba(183, 154, 45, .08), transparent 38%), linear-gradient(180deg, #15140f 0%, #111113 32%, #101012 100%);
+  --munus-glass: rgba(29, 29, 28, .68);
+  --munus-glass-border: rgba(255, 255, 255, .10);
+  --munus-shadow: 0 20px 45px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .06);
+  --base: var(--munus-bg);
+  --surface: var(--munus-surface);
+  --surface-highlight: var(--munus-bg-elevated);
+  --line: var(--munus-border-strong);
+  --text: var(--munus-text);
+  --muted: var(--munus-text-muted);
+  --button: var(--munus-gold);
+  --button-text: #11110E;
+  --warning: var(--munus-gold);
+  --gold: var(--munus-gold);
 }
 
 * {
@@ -1984,3 +2002,478 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus
 .contacts-page .back-link svg { transform: none; }
 
 .account-card--usdt .account-card-select:focus-visible { outline-color: var(--button-text); }
+
+/* Liquid Gold visual system. Keep the product surfaces dark, warm, and quiet. */
+html,
+body,
+#root {
+  background: var(--munus-atmosphere);
+}
+
+body {
+  background-attachment: fixed;
+}
+
+.app-shell,
+.mobile-app-shell {
+  background: var(--munus-atmosphere);
+}
+
+.munus-glass,
+.munus-card-elevated {
+  background: var(--munus-glass);
+  border: 1px solid var(--munus-glass-border);
+  backdrop-filter: blur(22px) saturate(135%);
+  -webkit-backdrop-filter: blur(22px) saturate(135%);
+  box-shadow: var(--munus-shadow);
+}
+
+.munus-surface,
+.munus-card {
+  background: var(--munus-surface);
+  border: 1px solid var(--munus-border);
+}
+
+.munus-card,
+.munus-card-elevated {
+  border-radius: 24px;
+}
+
+.munus-primary-action {
+  min-height: 56px;
+  border: 1px solid rgba(255, 235, 145, .45);
+  border-radius: 19px;
+  background: linear-gradient(135deg, var(--munus-gold-bright) 0%, var(--munus-gold) 55%, #DFBD4A 100%);
+  color: var(--button-text);
+  box-shadow: 0 10px 30px rgba(244, 211, 94, .18), inset 0 1px 0 rgba(255, 255, 255, .42);
+  transition: transform 160ms ease, filter 160ms ease, box-shadow 160ms ease;
+}
+
+.munus-primary-action:hover {
+  border-color: rgba(255, 235, 145, .62);
+  background: linear-gradient(135deg, #FFF0A0 0%, var(--munus-gold-bright) 55%, var(--munus-gold-soft) 100%);
+  filter: saturate(1.04);
+}
+
+.munus-primary-action:active {
+  transform: scale(.985);
+  box-shadow: 0 6px 18px rgba(244, 211, 94, .15), inset 0 1px 0 rgba(255, 255, 255, .30);
+}
+
+.munus-secondary-action {
+  min-height: 46px;
+  border-color: var(--munus-border-strong);
+  border-radius: 17px;
+  background: rgba(29, 29, 32, .62);
+  color: var(--munus-text);
+  transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.munus-secondary-action:hover {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .08);
+  color: var(--munus-gold-bright);
+}
+
+.munus-secondary-action:active {
+  transform: scale(.985);
+}
+
+.munus-icon-control {
+  border: 1px solid var(--munus-gold-border);
+  background: rgba(244, 211, 94, .10);
+  color: var(--munus-gold);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+.munus-chip {
+  border-color: var(--munus-border-strong);
+  background: rgba(29, 29, 32, .62);
+  color: var(--munus-text-muted);
+}
+
+.status-pill--ready {
+  border-color: var(--munus-gold-border);
+  color: var(--munus-gold);
+}
+
+.status-pill--attention {
+  border-color: rgba(244, 211, 94, .42);
+  color: var(--munus-gold-bright);
+}
+
+.brand-mark {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .10);
+  color: var(--munus-gold-bright);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+.mobile-wordmark {
+  color: var(--munus-text);
+  letter-spacing: -.02em;
+}
+
+.mobile-header-label {
+  color: var(--munus-text-quiet);
+}
+
+.page-state h1,
+.hero-block h1,
+.screen-intro h1,
+.dashboard-hero h1,
+.empty-page h1,
+.profile-page h1,
+.lock-content h1,
+.setup-intro h1,
+.public-request-card h1,
+.support-page > h1,
+.mobile-screen-content h1,
+.onboarding-screen h1 {
+  letter-spacing: -.025em;
+}
+
+.wallet-balance-line strong,
+.account-card-details .account-card-balance,
+.pocket-progress-value strong,
+.setup-body h1,
+.pocket-detail-heading h2,
+.contact-detail h2 {
+  letter-spacing: -.02em;
+}
+
+.finance-home {
+  gap: 32px;
+}
+
+.finance-greeting {
+  padding: 4px 0;
+}
+
+.profile-avatar {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .10);
+  color: var(--munus-gold-bright);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+.finance-greeting .profile-avatar {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .10);
+  color: var(--munus-gold-bright);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+.account-deck {
+  padding-top: 64px;
+}
+
+.account-card {
+  border-color: var(--munus-glass-border);
+  border-radius: 24px;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, .22), inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+.account-card--nim {
+  background: radial-gradient(circle at 82% 12%, rgba(255, 227, 122, .10), transparent 35%), linear-gradient(145deg, rgba(36, 36, 34, .94), rgba(20, 20, 21, .96));
+}
+
+.account-card--usdt {
+  border-color: rgba(255, 235, 145, .44);
+  background: linear-gradient(135deg, #FBE278 0%, #E1C046 58%, #B89A29 100%);
+  box-shadow: 0 18px 38px rgba(183, 154, 45, .14), inset 0 1px 0 rgba(255, 255, 255, .35);
+}
+
+.account-card--front {
+  box-shadow: 0 20px 45px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+.account-card-select {
+  letter-spacing: -.01em;
+}
+
+.account-card-details .account-card-estimate,
+.account-card-meta,
+.account-card-details .account-card-reference {
+  color: var(--munus-text-muted);
+}
+
+.account-card--usdt .account-card-estimate,
+.account-card--usdt .account-card-meta,
+.account-card--usdt .account-card-reference {
+  color: #4B4020;
+}
+
+.finance-actions {
+  gap: 12px;
+}
+
+.finance-actions button {
+  gap: 10px;
+  color: var(--munus-text-muted);
+  font-weight: 500;
+}
+
+.finance-actions button > span {
+  width: 50px;
+  height: 50px;
+  border-color: var(--munus-border-strong);
+  border-radius: 18px;
+  background: rgba(29, 29, 32, .72);
+  color: var(--munus-gold);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 8px 18px rgba(0, 0, 0, .14);
+}
+
+.finance-actions button:hover {
+  color: var(--munus-text);
+}
+
+.finance-actions button:hover > span {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .11);
+}
+
+.finance-context-row {
+  border-color: var(--munus-border-strong);
+  background: rgba(29, 29, 32, .66);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+
+.wallet-card {
+  border-color: var(--munus-glass-border);
+  border-radius: 24px;
+  background: radial-gradient(circle at 82% 12%, rgba(255, 227, 122, .10), transparent 35%), linear-gradient(145deg, rgba(36, 36, 34, .94), rgba(20, 20, 21, .96));
+  box-shadow: 0 20px 45px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .06);
+  backdrop-filter: blur(22px) saturate(135%);
+  -webkit-backdrop-filter: blur(22px) saturate(135%);
+}
+
+.wallet-balance-line strong {
+  color: var(--munus-text);
+}
+
+.wallet-card .quiet-button {
+  border-color: var(--munus-gold-border);
+  color: var(--munus-gold-bright);
+}
+
+.empty-page .empty-state {
+  min-height: 152px;
+  margin-top: 32px;
+  padding: 24px;
+  align-items: center;
+  border-color: var(--munus-glass-border);
+  background: var(--munus-glass);
+  box-shadow: var(--munus-shadow);
+  backdrop-filter: blur(22px) saturate(135%);
+  -webkit-backdrop-filter: blur(22px) saturate(135%);
+}
+
+.list-row {
+  border-color: var(--munus-border);
+  background: rgba(29, 29, 32, .72);
+}
+
+.list-row--disabled {
+  background: rgba(23, 23, 25, .76);
+}
+
+.list-row--action:hover,
+.list-row:hover {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .06);
+}
+
+.pocket-row,
+.home-pocket-row,
+.home-planning-row {
+  border-color: var(--munus-border);
+  border-radius: 20px;
+  background: rgba(29, 29, 32, .72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+
+.pocket-list,
+.planning-list,
+.home-pocket-list {
+  gap: 12px;
+}
+
+.pocket-row-icon {
+  border: 1px solid var(--munus-gold-border);
+  border-radius: 14px;
+  background: rgba(244, 211, 94, .10);
+  color: var(--munus-gold);
+}
+
+.pocket-row:hover,
+.home-pocket-row:hover,
+.home-planning-row:hover {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .06);
+}
+
+.progress-track {
+  background: rgba(255, 255, 255, .10);
+}
+
+.progress-track > span {
+  background: linear-gradient(90deg, var(--munus-gold-deep), var(--munus-gold-bright));
+}
+
+.pocket-progress-card,
+.planning-form,
+.profile-settings-group .settings-list,
+.profile-connect-card,
+.profile-summary-card,
+.security-section {
+  border-color: var(--munus-glass-border);
+  background: var(--munus-glass);
+  box-shadow: var(--munus-shadow);
+  backdrop-filter: blur(18px) saturate(125%);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
+}
+
+.pocket-progress-card,
+.planning-form {
+  border-radius: 20px;
+}
+
+.planning-section {
+  margin-top: 36px;
+}
+
+.planning-row {
+  padding: 16px 0;
+  border-color: var(--munus-border);
+}
+
+.support-tabs {
+  gap: 8px;
+}
+
+.support-tab {
+  border-radius: 14px;
+}
+
+.support-tab--active {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .10);
+  color: var(--munus-gold-bright);
+}
+
+.support-contact-choice {
+  border-color: var(--munus-border);
+  border-radius: 18px;
+  background: rgba(29, 29, 32, .72);
+}
+
+.support-contact-choice:hover {
+  border-color: var(--munus-gold-border);
+  background: rgba(244, 211, 94, .06);
+}
+
+.profile-settings-group {
+  margin-top: 32px;
+}
+
+.profile-settings-group .settings-list {
+  border-radius: 20px;
+}
+
+.settings-switch--on {
+  border-color: var(--munus-gold-border);
+  background: var(--munus-gold);
+}
+
+.settings-switch--on > span {
+  background: var(--button-text);
+}
+
+.onboarding-hero::before {
+  background: radial-gradient(ellipse at 100% 58%, rgba(244, 211, 94, .18) 0%, rgba(244, 211, 94, .06) 34%, transparent 68%), radial-gradient(ellipse at 0% 90%, rgba(183, 154, 45, .08), transparent 55%);
+}
+
+.onboarding-artwork::after {
+  background: linear-gradient(to bottom, rgba(16, 16, 18, .08) 0%, rgba(16, 16, 18, .08) 45%, rgba(16, 16, 18, .24) 65%, rgba(16, 16, 18, .72) 82%, var(--munus-bg) 100%);
+}
+
+.onboarding-eyebrow {
+  color: var(--munus-gold-soft);
+}
+
+.onboarding-screen .primary-button {
+  border-color: rgba(255, 235, 145, .45);
+  background: linear-gradient(135deg, var(--munus-gold-bright) 0%, var(--munus-gold) 55%, #DFBD4A 100%);
+  color: var(--button-text);
+  box-shadow: 0 10px 30px rgba(244, 211, 94, .18), inset 0 1px 0 rgba(255, 255, 255, .42);
+}
+
+.setup-symbol {
+  border: 1px solid var(--munus-gold-border);
+  background: rgba(244, 211, 94, .10);
+  color: var(--munus-gold);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+.mobile-app-shell .bottom-nav,
+.munus-bottom-nav {
+  align-self: stretch;
+  min-height: 76px;
+  margin: 0 12px max(10px, env(safe-area-inset-bottom));
+  padding: 8px 10px;
+  gap: 6px;
+  border: 1px solid var(--munus-glass-border);
+  border-radius: 28px;
+  background: rgba(23, 23, 25, .78);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .06);
+  backdrop-filter: blur(22px) saturate(135%);
+  -webkit-backdrop-filter: blur(22px) saturate(135%);
+}
+
+.mobile-app-shell .bottom-nav-item,
+.munus-nav-item {
+  min-height: 58px;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  color: var(--munus-text-quiet);
+  font-size: .6875rem;
+  font-weight: 500;
+  transition: color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+.mobile-app-shell .bottom-nav-item:hover,
+.mobile-app-shell .bottom-nav-item--active,
+.munus-nav-item:hover,
+.munus-nav-item-active {
+  border-color: transparent;
+  background: transparent;
+  color: var(--munus-gold);
+}
+
+.munus-nav-item svg {
+  width: 31px;
+  height: 31px;
+  padding: 6px;
+  border-radius: 12px;
+}
+
+.munus-nav-item-active svg {
+  border: 1px solid var(--munus-gold-border);
+  background: rgba(244, 211, 94, .13);
+  color: var(--munus-gold-bright);
+  box-shadow: 0 4px 14px rgba(244, 211, 94, .10), inset 0 1px 0 rgba(255, 255, 255, .10);
+}
+
+.munus-nav-item:active {
+  transform: scale(.985);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .munus-primary-action,
+  .munus-secondary-action,
+  .munus-nav-item {
+    transition: none;
+  }
+}

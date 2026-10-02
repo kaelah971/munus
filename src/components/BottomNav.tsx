@@ -17,14 +17,14 @@ export function BottomNav({
   onNavigate: (destination: AppDestination) => void
 }) {
   return (
-    <nav aria-label="Primary navigation" className="bottom-nav">
+    <nav aria-label="Primary navigation" className="bottom-nav munus-bottom-nav">
       {items.map((item) => (
         <button
           aria-current={destination === item.destination ? 'page' : undefined}
           className={
             destination === item.destination
-              ? 'bottom-nav-item bottom-nav-item--active'
-              : 'bottom-nav-item'
+              ? 'bottom-nav-item munus-nav-item munus-nav-item-active bottom-nav-item--active'
+              : 'bottom-nav-item munus-nav-item'
           }
           key={item.destination}
           onClick={() => onNavigate(item.destination)}
