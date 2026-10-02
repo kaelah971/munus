@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createMunusServer } from './app'
 import { MunusAuthService } from './authService'
 import { InMemoryMunusRepository } from './repository'
+import { createNimiqSignedMessageDigest } from './nimiqSignature'
 import { InMemoryPlanningRepository } from './planningRepository'
 import { InMemorySupportRepository } from './supportRepository'
 
@@ -59,7 +60,7 @@ async function authenticate(baseUrl: string, pair: KeyPair): Promise<string> {
     body: JSON.stringify({ walletAddress, network: 'mainnet' }),
   })
   const challenge = (await challengeResponse.json()) as { id: string; message: string }
-  const signature = pair.sign(new TextEncoder().encode(challenge.message))
+  const signature = pair.sign(createNimiqSignedMessageDigest(challenge.message))
   const verifyResponse = await fetch(`${baseUrl}/auth/verify`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -144,7 +145,7 @@ describe('Munus production API', () => {
       body: JSON.stringify({ walletAddress, network: 'mainnet' }),
     })
     const challenge = await challengeResponse.json() as { id: string; message: string }
-    const invalidSignature = pair.sign(new TextEncoder().encode('not the challenge'))
+    const invalidSignature = pair.sign(createNimiqSignedMessageDigest('not the challenge'))
     const verifyResponse = await fetch(`${baseUrl}/auth/verify`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

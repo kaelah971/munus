@@ -2,6 +2,7 @@
 import { KeyPair } from '@nimiq/core'
 import { describe, expect, it } from 'vitest'
 import { MunusAuthService } from './authService'
+import { createNimiqSignedMessageDigest } from './nimiqSignature'
 import { InMemoryMunusRepository } from './repository'
 
 const challengeTtlMs = 5 * 60 * 1000
@@ -28,7 +29,7 @@ function createFixture() {
       now += ms
     },
     sign(message: string, pair = keyPair) {
-      const signature = pair.sign(new TextEncoder().encode(message))
+      const signature = pair.sign(createNimiqSignedMessageDigest(message))
       return {
         publicKey: pair.publicKey.toHex(),
         signature: signature.toHex(),
