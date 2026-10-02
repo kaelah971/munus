@@ -126,9 +126,10 @@ export async function requestNimiqSignature(
 
 export async function loadNimiqWallet(
   connection: NimiqConnectionState,
+  walletAddress = connection.accounts[0],
 ): Promise<NimiqWalletState> {
   const network = readHostNetwork()
-  const address = connection.accounts[0]
+  const address = walletAddress
 
   if (connection.status === 'initializing') {
     return { status: 'loading', network }

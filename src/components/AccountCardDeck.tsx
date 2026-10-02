@@ -20,7 +20,7 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
   const [quotes, setQuotes] = useState<{ key: string; NIM: NgnQuoteResult; USDT: NgnQuoteResult } | null>(null)
   const [usdtResult, setUsdtResult] = useState<{ key: string; balance: AssetBalanceResult } | null>(null)
   const [now, setNow] = useState(() => Date.now())
-  const accountKey = JSON.stringify([connection.status, connection.accounts[0], wallet.network, usdtAccount])
+  const accountKey = JSON.stringify([connection.status, wallet.address, wallet.network, usdtAccount])
   const nim = currentNimBalance(wallet, connection)
   const usdt = usdtResult?.key === accountKey ? usdtResult.balance : unavailableUsdt
   const nimQuote = quotes?.key === accountKey ? quotes.NIM : unavailableQuote
@@ -82,8 +82,10 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
 
 function currentNimBalance(wallet: NimiqWalletState, connection: NimiqConnectionState): AssetBalanceResult {
   if (connection.status === 'initializing') return { status: 'loading', asset: 'NIM' }
-  if (connection.status !== 'ready' || !connection.accounts[0]) return { status: 'unavailable', asset: 'NIM' }
-  if (wallet.address && wallet.address !== connection.accounts[0]) return { status: 'loading', asset: 'NIM' }
+  if (connection.status !== 'ready') return { status: 'unavailable', asset: 'NIM' }
+  if (!wallet.address) return wallet.status === 'loading'
+    ? { status: 'loading', asset: 'NIM' }
+    : { status: 'unavailable', asset: 'NIM' }
   return mapNimBalance(wallet)
 }
 

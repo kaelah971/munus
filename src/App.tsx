@@ -144,7 +144,7 @@ export function App() {
   const authGeneration = useRef(0)
 
   const { state: connection, retry: retryConnection } = useNimiq()
-  const wallet = useNimiqWallet(connection)
+  const wallet = useNimiqWallet(connection, session?.walletAddress)
   const sessionUserId = session?.userId
 
   useEffect(() => {

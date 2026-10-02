@@ -9,7 +9,7 @@ import type {
 import { normalizeNimiqAddress, verifyNimiqSignature } from './nimiqSignature'
 
 export type AuthErrorCode =
-  | 'AUTH_SIGNER_ADDRESS_MISMATCH'
+  | 'AUTH_CHALLENGE_ADDRESS_MISMATCH'
   | 'AUTH_INVALID_SIGNATURE'
 
 export interface AuthServiceOptions {
@@ -111,9 +111,9 @@ export class MunusAuthService {
     const suppliedAddress = normalizeAddressOrThrow(input.walletAddress)
     if (suppliedAddress !== challenge.walletAddress) {
       throw new AuthServiceError(
-        'The Nimiq account that signed does not match the challenged account.',
+        'Authentication request does not match its challenge.',
         401,
-        'AUTH_SIGNER_ADDRESS_MISMATCH',
+        'AUTH_CHALLENGE_ADDRESS_MISMATCH',
       )
     }
 

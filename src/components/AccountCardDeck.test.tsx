@@ -39,10 +39,10 @@ describe('account card deck', () => {
     expect(screen.getByText('•••• USDT')).toBeInTheDocument()
   })
 
-  it('does not display a balance from a previously connected account', () => {
-    render(<AccountCardDeck connection={{ ...connection, accounts: ['NQ99 other account'] }} wallet={{ ...wallet, status: 'available', nimBalance: '999' }} hideBalances={false} />)
-    expect(screen.queryByText('999 NIM')).not.toBeInTheDocument()
-    expect(screen.getByText('Loading balance')).toBeInTheDocument()
+  it('keeps the verified wallet identity when the connection hint differs', () => {
+    render(<AccountCardDeck connection={{ ...connection, accounts: ['NQ99 wallet A'] }} wallet={{ ...wallet, address, status: 'available', nimBalance: '999' }} hideBalances={false} />)
+    expect(screen.getByText('999 NIM')).toBeInTheDocument()
+    expect(screen.queryByText('Loading balance')).not.toBeInTheDocument()
   })
 
   it('keeps a valid NIM quote when a separate USDT adapter fails', async () => {

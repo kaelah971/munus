@@ -61,6 +61,23 @@ describe('Nimiq Pay integration boundary', () => {
     })
   })
 
+  it('loads the verified wallet address instead of the first connected account', async () => {
+    const walletA = 'NQ01 wallet A'
+    const walletB = 'NQ02 wallet B'
+    const provider = {
+      getBalance: vi.fn().mockResolvedValue(123456),
+    } as unknown as NimiqProvider
+
+    const state = await loadNimiqWallet({
+      accounts: [walletA],
+      provider,
+      status: 'ready',
+    }, walletB)
+
+    expect(provider.getBalance).toHaveBeenCalledWith(walletB)
+    expect(state).toMatchObject({ status: 'available', address: walletB, nimBalance: '1.23456' })
+  })
+
   it('returns an error state when balance retrieval fails', async () => {
     const provider = {
       getBalance: vi.fn().mockRejectedValue(new Error('consensus unavailable')),
@@ -73,6 +90,16 @@ describe('Nimiq Pay integration boundary', () => {
     })
 
     expect(state).toMatchObject({ status: 'error', error: 'consensus unavailable' })
+  })
+
+  it('rejects a malformed provider signature response', async () => {
+    const provider = {
+      sign: vi.fn().mockResolvedValue({ publicKey: 'public-key' }),
+    } as unknown as NimiqProvider
+
+    await expect(
+      requestNimiqSignature({ accounts: ['NQ01'], provider, status: 'ready' }, 'Munus login'),
+    ).rejects.toThrow('Nimiq Pay did not return a usable challenge signature.')
   })
 
   it('does not sign without a ready account', async () => {

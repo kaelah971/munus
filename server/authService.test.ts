@@ -69,24 +69,31 @@ describe('Munus production wallet authentication', () => {
     ).rejects.toMatchObject({ statusCode: 410 })
   })
 
-  it('derives the authenticated address from the signer, not the challenged account hint', async () => {
+  it('authenticates signer B when connection.accounts[0] is wallet A', async () => {
     const fixture = createFixture()
+    const connectionAccounts = [fixture.walletAddress]
     const signer = KeyPair.generate()
     const signerAddress = signer.toAddress().toUserFriendlyAddress()
     const challenge = await fixture.auth.createChallenge({
-      walletAddress: fixture.walletAddress,
+      walletAddress: connectionAccounts[0],
       network: 'mainnet',
     })
 
     const verified = await fixture.auth.verifyChallenge({
       challengeId: challenge.id,
-      walletAddress: fixture.walletAddress,
+      walletAddress: connectionAccounts[0],
       ...fixture.sign(challenge.message, signer),
     })
     expect(verified.session).toMatchObject({
       walletAddress: signerAddress,
       trust: 'server-verified',
     })
+    expect([...fixture.repository.users.values()]).toEqual([
+      expect.objectContaining({ walletAddress: signerAddress }),
+    ])
+    expect([...fixture.repository.sessions.values()]).toEqual([
+      expect.objectContaining({ walletAddress: signerAddress }),
+    ])
     expect(verified.token).toBe('opaque-session-token')
 
     await expect(
@@ -114,8 +121,8 @@ describe('Munus production wallet authentication', () => {
       }),
     ).rejects.toMatchObject({
       statusCode: 401,
-      code: 'AUTH_SIGNER_ADDRESS_MISMATCH',
-      message: 'The Nimiq account that signed does not match the challenged account.',
+      code: 'AUTH_CHALLENGE_ADDRESS_MISMATCH',
+      message: 'Authentication request does not match its challenge.'
     })
   })
 

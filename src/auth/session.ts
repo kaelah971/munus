@@ -200,10 +200,10 @@ function parseServerSession(value: unknown): MunusSession {
   }
 }
 
-type SafeAuthErrorCode = 'AUTH_SIGNER_ADDRESS_MISMATCH' | 'AUTH_INVALID_SIGNATURE'
+type SafeAuthErrorCode = 'AUTH_CHALLENGE_ADDRESS_MISMATCH' | 'AUTH_INVALID_SIGNATURE'
 
 const safeAuthErrorMessages: Record<SafeAuthErrorCode, string> = {
-  AUTH_SIGNER_ADDRESS_MISMATCH: 'The Nimiq account that signed does not match the challenged account.',
+  AUTH_CHALLENGE_ADDRESS_MISMATCH: 'Authentication request does not match its challenge.',
   AUTH_INVALID_SIGNATURE: 'Munus could not verify the Nimiq Pay signature.',
 }
 

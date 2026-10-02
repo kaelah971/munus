@@ -84,6 +84,38 @@ describe('Munus wallet authentication boundary', () => {
     }
   })
 
+  it('surfaces the challenge-address mismatch without mislabeling it as a signer mismatch', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'challenge-1',
+          walletAddress: 'NQ01',
+          network: 'mainnet',
+          message: 'Sign this exact challenge',
+          expiresAt: Date.now() + 60_000,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: async () => ({
+          code: 'AUTH_CHALLENGE_ADDRESS_MISMATCH',
+          error: 'Authentication request does not match its challenge.',
+        }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      createRemoteAuthGateway('https://api.example.test').signIn(
+        'NQ01',
+        vi.fn().mockResolvedValue({ publicKey: 'public-key', signature: 'signature' }),
+      ),
+    ).rejects.toThrow('Authentication request does not match its challenge.')
+  })
+
   it('sends challenge signatures to the remote session boundary', async () => {
     const fetchMock = vi
       .fn()
