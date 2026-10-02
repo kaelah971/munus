@@ -73,18 +73,10 @@ export async function initializeNimiqPay(options: {
     const provider = await initialize({
       timeout: options.timeout ?? NIMIQ_INIT_TIMEOUT_MS,
     })
-    const accounts = await provider.listAccounts()
-
-    if (!Array.isArray(accounts)) {
-      throw new Error('Nimiq Pay returned an invalid account list.')
-    }
 
     return {
       status: 'ready',
-      accounts: accounts.filter(
-        (account): account is string =>
-          typeof account === 'string' && account.length > 0,
-      ),
+      accounts: [],
       provider,
     }
   } catch (error) {
@@ -103,11 +95,39 @@ export async function initializeNimiqPay(options: {
   }
 }
 
+export async function requestNimiqAccounts(
+  connection: NimiqConnectionState,
+): Promise<readonly string[]> {
+  if (connection.status !== 'ready' || !connection.provider) {
+    throw new Error('Connect a Nimiq Pay provider before sharing an account with Munus.')
+  }
+
+  try {
+    const result = await connection.provider.listAccounts() as unknown
+    if (isNimiqErrorResponse(result)) throw new Error(result.error.message)
+    if (!Array.isArray(result)) {
+      throw new Error('Nimiq Pay returned an invalid account list.')
+    }
+
+    const accounts = result.filter(
+      (account): account is string =>
+        typeof account === 'string' && account.length > 0,
+    )
+    if (accounts.length === 0) {
+      throw new Error('Nimiq Pay did not share an account with Munus.')
+    }
+    return accounts
+  } catch (error) {
+    if (isNimiqErrorResponse(error)) throw new Error(error.error.message, { cause: error })
+    throw error
+  }
+}
+
 export async function requestNimiqSignature(
   connection: NimiqConnectionState,
   message: string,
 ): Promise<SignatureResult> {
-  if (connection.status !== 'ready' || !connection.provider || connection.accounts.length === 0) {
+  if (connection.status !== 'ready' || !connection.provider) {
     throw new Error('Connect a Nimiq Pay account before signing in to Munus.')
   }
 

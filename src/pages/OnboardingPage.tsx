@@ -40,11 +40,13 @@ export function OnboardingPage({ onComplete }: { onComplete: () => void }) {
             <PrimaryButton onClick={onComplete}>
               Open Munus <Icon name="arrow" size={18} />
             </PrimaryButton>
-            <p className="onboarding-reassurance">
-              Your wallet stays in Nimiq Pay.<br />
-              You approve everything there.
-            </p>
-            <p className="onboarding-preview">Open inside Nimiq Pay to connect your wallet.</p>
+            <div className="onboarding-trust">
+              <p className="onboarding-reassurance">
+                Your wallet stays in Nimiq Pay.<br />
+                You approve everything there.
+              </p>
+              <p className="onboarding-preview">Open inside Nimiq Pay to connect your wallet.</p>
+            </div>
           </div>
         </section>
 

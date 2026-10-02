@@ -143,7 +143,7 @@ export function App() {
   const [supportContactId, setSupportContactId] = useState<string | undefined>()
   const authGeneration = useRef(0)
 
-  const { state: connection, retry: retryConnection } = useNimiq()
+  const { state: connection, retry: retryConnection, requestAccounts } = useNimiq()
   const wallet = useNimiqWallet(connection, session?.walletAddress)
   const sessionUserId = session?.userId
 
@@ -238,22 +238,22 @@ export function App() {
       await finishNameSetup(session, profile)
       return
     }
-    const walletAddress = connection.accounts[0]
-    if (!walletAddress) {
-      setAuthError('Open Munus inside Nimiq Pay and share an account before connecting.')
-      return
-    }
-
     setAuthBusy(true)
     setAuthError(null)
     setProfileLoadError(null)
     const generation = authGeneration.current
     try {
+      const accounts = await requestAccounts()
+      const walletAddress = accounts[0]
+      if (!walletAddress) {
+        throw new Error('Nimiq Pay did not share an account with Munus.')
+      }
+      const signingConnection = { ...connection, accounts }
       const gateway = createAuthGateway()
       const network = getNimiqNetwork() === 'testnet' ? 'testnet' : 'mainnet'
       const nextSession = await gateway.signIn(
         walletAddress,
-        (message) => requestNimiqSignature(connection, message),
+        (message) => requestNimiqSignature(signingConnection, message),
         network,
       )
       if (generation !== authGeneration.current) return

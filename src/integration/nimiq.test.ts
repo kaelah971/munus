@@ -4,12 +4,13 @@ import {
   formatNimFromLuna,
   initializeNimiqPay,
   loadNimiqWallet,
+  requestNimiqAccounts,
   requestNimiqSignature,
   shortenNimiqAccount,
 } from './nimiq'
 
 describe('Nimiq Pay integration boundary', () => {
-  it('lists the account only after a provider is initialized', async () => {
+  it('initializes a provider without requesting account permission', async () => {
     const listAccounts = vi.fn().mockResolvedValue([
       'NQ12 3456 7890 1234 5678 9012 3456 7890 1234',
     ])
@@ -20,9 +21,27 @@ describe('Nimiq Pay integration boundary', () => {
     })
 
     expect(state.status).toBe('ready')
-    expect(state.accounts).toEqual([
-      'NQ12 3456 7890 1234 5678 9012 3456 7890 1234',
-    ])
+    expect(state.accounts).toEqual([])
+    expect(listAccounts).not.toHaveBeenCalled()
+  })
+
+  it('requests accounts only through the explicit account operation', async () => {
+    const account = 'NQ12 3456 7890 1234 5678 9012 3456 7890 1234'
+    const listAccounts = vi.fn().mockResolvedValue([account])
+    const provider = { listAccounts } as unknown as NimiqProvider
+    const connection = { accounts: [], provider, status: 'ready' as const }
+
+    await expect(requestNimiqAccounts(connection)).resolves.toEqual([account])
+    expect(listAccounts).toHaveBeenCalledOnce()
+  })
+
+  it('surfaces account permission rejection without retrying', async () => {
+    const listAccounts = vi.fn().mockRejectedValue(new Error('User cancelled the Nimiq Pay connection.'))
+    const provider = { listAccounts } as unknown as NimiqProvider
+
+    await expect(
+      requestNimiqAccounts({ accounts: [], provider, status: 'ready' }),
+    ).rejects.toThrow('User cancelled the Nimiq Pay connection.')
     expect(listAccounts).toHaveBeenCalledOnce()
   })
 
@@ -102,7 +121,16 @@ describe('Nimiq Pay integration boundary', () => {
     ).rejects.toThrow('Nimiq Pay did not return a usable challenge signature.')
   })
 
-  it('does not sign without a ready account', async () => {
+  it('can sign with a ready provider before account state is stored', async () => {
+    const result = { publicKey: 'public-key', signature: 'signature' }
+    const provider = { sign: vi.fn().mockResolvedValue(result) } as unknown as NimiqProvider
+
+    await expect(
+      requestNimiqSignature({ accounts: [], provider, status: 'ready' }, 'Munus login'),
+    ).resolves.toEqual(result)
+  })
+
+  it('does not sign without a ready provider', async () => {
     await expect(
       requestNimiqSignature({ accounts: [], status: 'unavailable' }, 'Munus login'),
     ).rejects.toThrow(/connect a nimiq pay account/i)

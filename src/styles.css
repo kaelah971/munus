@@ -1853,7 +1853,8 @@ button:focus-visible {
 .onboarding-screen h1 { margin: 0; font-size: clamp(2.5rem, 11vw, 3.25rem); font-weight: 700; line-height: 1.02; letter-spacing: -.045em; overflow-wrap: anywhere; }
 .onboarding-lede { max-width: 350px; margin: 16px 0 24px; color: var(--muted); font-size: 1rem; line-height: 1.5; }
 .onboarding-screen .primary-button { width: 100%; min-height: 56px; height: auto; padding: 16px; border: 1px solid #e6c65a; border-radius: 18px; gap: 12px; font-size: 1rem; font-weight: 600; color: #121214; background: linear-gradient(115deg, #f1d87a, #e6c65a); }
-.onboarding-reassurance, .onboarding-preview { margin: 12px auto 0; color: var(--muted); font-size: .75rem; line-height: 1.5; text-align: center; }
+.onboarding-trust { margin-top: clamp(28px, 8vh, 64px); text-align: center; }
+.onboarding-reassurance, .onboarding-preview { margin: 0 auto; color: var(--muted); font-size: .75rem; line-height: 1.5; text-align: center; }
 .onboarding-preview { max-width: 350px; margin-top: 8px; }
 
 /* Name and explicit wallet authentication are separate, keyboard-friendly screens. */

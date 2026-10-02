@@ -4,7 +4,7 @@ import { App } from './App'
 import { DEFAULT_PROFILE_DRAFT, createProfile } from './domain/profile'
 
 const mocks = vi.hoisted(() => ({
-  signIn: vi.fn(), restoreSession: vi.fn(), signOut: vi.fn(), getProfile: vi.fn(), saveProfile: vi.fn(),
+  signIn: vi.fn(), requestAccounts: vi.fn(), restoreSession: vi.fn(), signOut: vi.fn(), getProfile: vi.fn(), saveProfile: vi.fn(),
   connection: { status: 'ready', accounts: ['NQ-test-account'] },
 }))
 vi.mock('./config', () => ({ munusConfig: { productionAuth: true, apiBaseUrl: '', localDevelopmentAuth: false } }))
@@ -13,7 +13,7 @@ vi.mock('./persistence/profileApi', () => ({ RemoteProfileApi: class {
   getProfile = mocks.getProfile
   saveProfile = mocks.saveProfile
 } }))
-vi.mock('./hooks/useNimiq', () => ({ useNimiq: () => ({ state: mocks.connection, retry: vi.fn() }) }))
+vi.mock('./hooks/useNimiq', () => ({ useNimiq: () => ({ state: mocks.connection, retry: vi.fn(), requestAccounts: mocks.requestAccounts }) }))
 vi.mock('./hooks/useNimiqWallet', () => ({ useNimiqWallet: () => ({ status: 'zero', nimBalance: '0', network: 'mainnet' }) }))
 vi.mock('./persistence/planningApi', () => ({ RemotePlanningApi: class { async load() { return { pockets: [], reminders: [], spendRules: [] } } } }))
 vi.mock('./persistence/supportApi', () => ({ RemoteSupportApi: class { async load() { return { contacts: [], supportRules: [], supportRequests: [], supportDrafts: [] } } } }))
@@ -35,6 +35,7 @@ describe('authenticated name-first entry', () => {
     window.sessionStorage.clear()
     window.history.replaceState({}, '', '/')
     mocks.restoreSession.mockResolvedValue(null)
+    mocks.requestAccounts.mockResolvedValue(['NQ-test-account'])
     mocks.signIn.mockResolvedValue(session)
     mocks.signOut.mockResolvedValue(undefined)
     mocks.getProfile.mockResolvedValue(null)
@@ -47,9 +48,11 @@ describe('authenticated name-first entry', () => {
     render(<App />)
     await enterName()
     expect(screen.getByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
+    expect(mocks.requestAccounts).not.toHaveBeenCalled()
     expect(mocks.signIn).not.toHaveBeenCalled()
     expect(window.localStorage.getItem('munus:onboarding-complete')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    expect(mocks.requestAccounts).toHaveBeenCalledOnce()
     expect(await screen.findByRole('heading', { name: /Good (morning|afternoon|evening), Ada/ })).toBeInTheDocument()
     expect(mocks.saveProfile).toHaveBeenCalledWith({ ...DEFAULT_PROFILE_DRAFT, displayName: 'Ada' })
     expect(window.sessionStorage.getItem('munus:pending-name')).toBeNull()
@@ -80,6 +83,21 @@ describe('authenticated name-first entry', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
     await screen.findByRole('heading', { name: /Good .*Ada/ })
     expect(mocks.signIn).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the connect screen after permission rejection and retries only on another explicit action', async () => {
+    mocks.requestAccounts.mockRejectedValueOnce(new Error('Nimiq Pay permission was cancelled.'))
+    render(<App />)
+    await enterName()
+    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Nimiq Pay permission was cancelled.')
+    expect(screen.getByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
+    expect(mocks.requestAccounts).toHaveBeenCalledOnce()
+    expect(mocks.signIn).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await screen.findByRole('heading', { name: /Good .*Ada/ })
+    expect(mocks.requestAccounts).toHaveBeenCalledTimes(2)
+    expect(mocks.signIn).toHaveBeenCalledOnce()
   })
 
   it('preserves an existing authenticated name and optional fields over a pending name', async () => {
@@ -124,6 +142,7 @@ describe('authenticated name-first entry', () => {
     render(<App />)
     await screen.findByRole('heading', { name: /Good .*Ada/ })
     expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
+    expect(mocks.requestAccounts).not.toHaveBeenCalled()
     expect(mocks.signIn).not.toHaveBeenCalled()
   })
 

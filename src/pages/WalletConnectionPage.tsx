@@ -11,7 +11,7 @@ export function WalletConnectionPage({ connection, authenticated, busy, saving, 
   onRetryConnection: () => void
   onBack: () => void
 }) {
-  const available = connection.status === 'ready' && connection.accounts.length > 0
+  const available = connection.status === 'ready'
   return <main className="setup-screen" aria-labelledby="connect-title">
     <button className="icon-button setup-back" aria-label="Back to name" type="button" disabled={busy} onClick={onBack}><Icon name="back" /></button>
     <div className="setup-body">
@@ -22,7 +22,7 @@ export function WalletConnectionPage({ connection, authenticated, busy, saving, 
         {!authenticated && connection.status === 'initializing' && <p>Initializing Nimiq Pay…</p>}
         {!authenticated && connection.status === 'unavailable' && <p>Open inside Nimiq Pay to connect your wallet</p>}
         {!authenticated && connection.status === 'error' && <p>{connection.error ?? 'Nimiq Pay could not connect.'}</p>}
-        {!authenticated && connection.status === 'ready' && !available && <p>Share an account in Nimiq Pay to continue.</p>}
+        {!authenticated && connection.status === 'ready' && <p>{connection.accounts.length > 0 ? 'An account is available to Munus.' : 'Tap connect to share an account from Nimiq Pay.'}</p>}
         {busy && <p>{saving ? 'Saving your profile…' : 'Waiting for Nimiq Pay…'}</p>}
       </div>
       {error && <p className="inline-error" role="alert">{error}</p>}

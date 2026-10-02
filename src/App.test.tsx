@@ -4,7 +4,7 @@ import { App } from './App'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { DEFAULT_PROFILE_DRAFT, createProfile } from './domain/profile'
 
-vi.mock('./hooks/useNimiq', () => ({ useNimiq: () => ({ retry: vi.fn(), state: { accounts: [], status: 'unavailable' } }) }))
+vi.mock('./hooks/useNimiq', () => ({ useNimiq: () => ({ retry: vi.fn(), requestAccounts: vi.fn(), state: { accounts: [], status: 'unavailable' } }) }))
 vi.mock('./hooks/useNimiqWallet', () => ({ useNimiqWallet: () => ({ network: 'unknown', status: 'unavailable' }) }))
 
 beforeEach(() => { window.localStorage.clear(); window.sessionStorage.clear(); window.history.replaceState({}, '', '/') })
@@ -27,6 +27,7 @@ describe('compact Munus entry', () => {
     expect(container.querySelector('.onboarding-topbar')).toBeNull()
     expect(screen.queryByText('NIM first')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Plan it.' })).not.toBeInTheDocument()
+    expect(container.querySelector('.onboarding-trust')).toBeInTheDocument()
     expect(container.querySelector('main')?.textContent?.trim().endsWith('Open inside Nimiq Pay to connect your wallet.')).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'Open Munus' }))
     expect(onComplete).toHaveBeenCalledTimes(1)
