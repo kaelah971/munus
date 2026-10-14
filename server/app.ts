@@ -18,10 +18,20 @@ import {
   type PaymentRepository,
 } from './paymentRepository'
 import {
+  CashoutError,
+  type CashoutService,
+} from './cashout'
+import {
   PaymentValidationError,
+  parseCashoutOrderDraft,
   parseDataOrderDraft,
   parsePaymentOrderDraft,
 } from './paymentValidation'
+import {
+  PAYCREST_WEBHOOK_SIGNATURE_HEADER,
+  PaycrestError,
+  verifyPaycrestWebhookSignature,
+} from './paycrest'
 import type { DataBundleCatalogProvider } from './dataCatalog'
 import { createDataOrder } from './dataOrders'
 import { assertSupportedNetwork } from './dataCatalog'
@@ -79,6 +89,8 @@ export interface MunusServerDependencies {
   fulfilment: AirtimeFulfilmentService | null
   nimPayments: NimPaymentService | null
   dataCatalog: DataBundleCatalogProvider | null
+  cashout: CashoutService | null
+  paycrestApiSecret?: string
   auth: MunusAuthService
   staticDir?: string
   config: Pick<
@@ -107,7 +119,7 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, support, payment, fulfilment, nimPayments, dataCatalog, staticDir, config } = dependencies
+  const { auth, repository, planning, support, payment, fulfilment, nimPayments, dataCatalog, cashout, paycrestApiSecret, staticDir, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
@@ -398,7 +410,122 @@ export async function handleRequest(
         ))
         return
       }
+      if (isCashoutOrderBody(body)) {
+        sendError(response, 400, 'Use the cash-out flow for USDT bank payouts.')
+        return
+      }
       sendJson(response, 201, await payment.createOrder(session.userId, parsePaymentOrderDraft(body)))
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === '/cashout/banks') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!cashout) {
+        sendError(response, 503, 'Cash out is not configured yet.')
+        return
+      }
+      sendJson(response, 200, { banks: await cashout.listBanks() })
+      return
+    }
+
+    if (request.method === 'POST' && url.pathname === '/cashout/verify-account') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!cashout) {
+        sendError(response, 503, 'Cash out is not configured yet.')
+        return
+      }
+      const body = asRecord(await readJson(request))
+      sendJson(response, 200, await cashout.verifyAccount({
+        institution: requiredString(body.institution, 'institution'),
+        accountNumber: requiredString(body.accountNumber, 'accountNumber'),
+      }))
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === '/cashout/rate') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!cashout) {
+        sendError(response, 503, 'Cash out is not configured yet.')
+        return
+      }
+      const amount = url.searchParams.get('amount')
+      if (typeof amount !== 'string' || amount.trim() === '') {
+        sendError(response, 400, 'A USDT amount query parameter is required.')
+        return
+      }
+      sendJson(response, 200, await cashout.previewRate(amount))
+      return
+    }
+
+    if (request.method === 'POST' && url.pathname === '/cashout/orders') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!cashout) {
+        sendError(response, 503, 'Cash out is not configured yet.')
+        return
+      }
+      sendJson(response, 201, await cashout.createCashoutOrder(session.userId, parseCashoutOrderDraft(await readJson(request))))
+      return
+    }
+
+    const cashoutOrderPath = matchPath(url.pathname, /^\/cashout\/([^/]+)\/(quote|intent|submit|reconcile|refresh)$/)
+    if (cashoutOrderPath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!cashout) {
+        sendError(response, 503, 'Cash out is not configured yet.')
+        return
+      }
+      const orderId = decodeURIComponent(cashoutOrderPath[1])
+      const action = cashoutOrderPath[2]
+      if (action === 'quote') {
+        sendJson(response, 200, await cashout.createCashoutQuote(session.userId, orderId))
+        return
+      }
+      if (action === 'intent') {
+        const { order, intent } = await cashout.createCashoutIntent(session.userId, orderId)
+        sendJson(response, 200, { order, intent })
+        return
+      }
+      if (action === 'submit') {
+        const body = asRecord(await readJson(request))
+        sendJson(response, 200, await cashout.submitCashoutPayment(session.userId, orderId, body.transactionHash))
+        return
+      }
+      sendJson(response, 200, action === 'refresh'
+        ? await cashout.refreshCashoutQuote(session.userId, orderId)
+        : await cashout.reconcileCashoutOrder(session.userId, orderId))
+      return
+    }
+
+    if (request.method === 'POST' && url.pathname === '/paycrest/webhook') {
+      const rawBody = await readRawBody(request)
+      const header = request.headers[PAYCREST_WEBHOOK_SIGNATURE_HEADER]
+      const signature = Array.isArray(header) ? header[0] : header
+      if (!paycrestApiSecret || !verifyPaycrestWebhookSignature({ rawBody, signatureHeader: signature, apiSecret: paycrestApiSecret })) {
+        sendError(response, 401, 'Paycrest webhook signature is invalid.')
+        return
+      }
+      let body: unknown
+      try {
+        body = JSON.parse(rawBody.toString('utf8')) as unknown
+      } catch {
+        sendError(response, 400, 'Paycrest webhook body must be valid JSON.')
+        return
+      }
+      if (!cashout) {
+        sendError(response, 503, 'Cash out is not configured yet.')
+        return
+      }
+      const settled = await cashout.handlePaycrestWebhook(body)
+      if (!settled) {
+        sendError(response, 404, 'Paycrest order reference was not recognized.')
+        return
+      }
+      sendJson(response, 200, { received: true, fulfilmentStatus: settled.fulfilmentStatus })
       return
     }
 
@@ -735,9 +862,11 @@ export async function handleRequest(
       error instanceof ClubKonnectError ||
       error instanceof NimPaymentError ||
       error instanceof NimRateError ||
-      error instanceof NimiqChainError
+      error instanceof NimiqChainError ||
+      error instanceof CashoutError ||
+      error instanceof PaycrestError
     ) {
-      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError || error instanceof FulfilmentError || error instanceof ClubKonnectError || error instanceof NimPaymentError || error instanceof NimRateError || error instanceof NimiqChainError
+      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError || error instanceof FulfilmentError || error instanceof ClubKonnectError || error instanceof NimPaymentError || error instanceof NimRateError || error instanceof NimiqChainError || error instanceof CashoutError || error instanceof PaycrestError
         ? error.statusCode
         : 400
       sendError(response, statusCode, error.message, error instanceof AuthServiceError ? error.code : undefined)
@@ -794,6 +923,27 @@ function isDataOrderBody(value: unknown): boolean {
     value && typeof value === 'object' && !Array.isArray(value) &&
     (value as Record<string, unknown>).serviceType === 'DATA',
   )
+}
+
+function isCashoutOrderBody(value: unknown): boolean {
+  return Boolean(
+    value && typeof value === 'object' && !Array.isArray(value) &&
+    (value as Record<string, unknown>).serviceType === 'CASH_OUT',
+  )
+}
+
+async function readRawBody(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.length
+    if (size > MAX_BODY_BYTES) {
+      throw new RequestValidationError('Request body is too large.')
+    }
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks)
 }
 
 function requiredString(value: unknown, name: string): string {

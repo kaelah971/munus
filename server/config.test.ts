@@ -57,4 +57,44 @@ describe('Munus server configuration', () => {
       CLUBKONNECT_CALLBACK_BASE_URL: 'https://munus.example/',
     }).clubKonnect).toEqual({ userId: 'user', apiKey: 'key', callbackBaseUrl: 'https://munus.example/' })
   })
+
+  it('leaves cash out unconfigured without Paycrest credentials', () => {
+    expect(loadServerConfig({ ...validEnv }).paycrest).toBeUndefined()
+  })
+
+  it('requires complete Paycrest configuration together', () => {
+    expect(() => loadServerConfig({ ...validEnv, PAYCREST_API_KEY: 'key' })).toThrow(/PAYCREST_API_KEY and PAYCREST_API_SECRET/)
+    expect(() => loadServerConfig({
+      ...validEnv,
+      PAYCREST_API_KEY: 'key',
+      PAYCREST_API_SECRET: 'secret',
+    })).toThrow(/PAYCREST_REFUND_ADDRESS/)
+    expect(() => loadServerConfig({
+      ...validEnv,
+      PAYCREST_API_KEY: 'key',
+      PAYCREST_API_SECRET: 'secret',
+      PAYCREST_REFUND_ADDRESS: 'not-an-address',
+      POLYGON_USDT_CONTRACT: '0xabc',
+    })).toThrow(/PAYCREST_REFUND_ADDRESS/)
+    expect(() => loadServerConfig({
+      ...validEnv,
+      PAYCREST_API_KEY: 'key',
+      PAYCREST_API_SECRET: 'secret',
+      PAYCREST_REFUND_ADDRESS: '0x1234567890123456789012345678901234567890',
+      POLYGON_USDT_CONTRACT: 'not-an-address',
+    })).toThrow(/POLYGON_USDT_CONTRACT/)
+    expect(loadServerConfig({
+      ...validEnv,
+      PAYCREST_API_KEY: 'key',
+      PAYCREST_API_SECRET: 'secret',
+      PAYCREST_REFUND_ADDRESS: '0x1234567890123456789012345678901234567890',
+      POLYGON_USDT_CONTRACT: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+    }).paycrest).toEqual({
+      apiKey: 'key',
+      apiSecret: 'secret',
+      refundAddress: '0x1234567890123456789012345678901234567890',
+      usdtContractAddress: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      baseUrl: undefined,
+    })
+  })
 })

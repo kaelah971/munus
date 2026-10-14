@@ -187,7 +187,7 @@ export class AirtimeFulfilmentService {
       })
       if (!reserved) return this.requireOwnedOrder(userId, orderId)
     }
-    console.info(`Munus ${kind} purchase sent`, { orderId, recipient: maskPhone(order.recipientPhone) })
+    console.info(`Munus ${kind} purchase sent`, { orderId, recipient: maskPhone(order.recipientPhone ?? '') })
     const receipt = await provider.purchase(purchaseInput)
     const updated = await this.payment.recordProviderUpdate(userId, orderId, {
       providerOrderId: receipt.providerOrderId,
@@ -231,7 +231,7 @@ export class AirtimeFulfilmentService {
       return this.applyQueryRecord(userId, current, existing)
     }
 
-    console.info(`Munus ${kind} purchase sent`, { orderId: current.id, recipient: maskPhone(current.recipientPhone) })
+    console.info(`Munus ${kind} purchase sent`, { orderId: current.id, recipient: maskPhone(current.recipientPhone ?? '') })
     const receipt = await provider.purchase(purchaseInput)
     const updated = await this.payment.recordProviderUpdate(userId, orderId, {
       providerOrderId: receipt.providerOrderId,

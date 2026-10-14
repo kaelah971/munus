@@ -17,6 +17,8 @@ import type { DataBundleCatalogProvider } from './dataCatalog'
 import { NimPaymentService } from './nimPayments'
 import { CoinGeckoNimRateProvider } from './nimRates'
 import type { NimiqChainReader } from './nimiqChain'
+import { CashoutService } from './cashout'
+import { PaycrestClient } from './paycrest'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -64,6 +66,10 @@ async function createTestServer(options: {
   nimReceiver?: string
   nimNetwork?: 'mainnet' | 'testnet'
   disableNimPayments?: boolean
+  paycrestFetch?: (url: string, init: { method: string; body?: string }) => Promise<unknown>
+  paycrestRequests?: Array<{ url: string; init: { method: string; body?: string } }>
+  paycrestSecret?: string | null
+  disableCashout?: boolean
 } = {}) {
   const repository = new InMemoryMunusRepository()
   const planning = new InMemoryPlanningRepository()
@@ -110,6 +116,25 @@ async function createTestServer(options: {
       network: options.nimNetwork ?? 'mainnet',
       quoteTtlMs: 120_000,
     })
+  const cashout = options.disableCashout
+    ? null
+    : new CashoutService(
+      payment,
+      new PaycrestClient({
+        credentials: { apiKey: 'fixture-key', apiSecret: 'fixture-secret' },
+        fetchJson: async (url, init) => {
+          options.paycrestRequests?.push({ url, init })
+          if (!options.paycrestFetch) throw new Error('No Paycrest fixture configured.')
+          return options.paycrestFetch(url, init)
+        },
+      }),
+      {
+        network: 'mainnet',
+        quoteTtlMs: 120_000,
+        usdtContractAddress: `0x${'ab'.repeat(20)}`,
+        refundAddress: `0x${'cd'.repeat(20)}`,
+      },
+    )
   const server = createMunusServer({
     repository,
     planning,
@@ -118,6 +143,10 @@ async function createTestServer(options: {
     fulfilment,
     nimPayments,
     dataCatalog: options.dataCatalog ?? null,
+    cashout,
+    paycrestApiSecret: options.paycrestSecret === undefined
+      ? 'fixture-secret'
+      : options.paycrestSecret ?? undefined,
     auth,
     staticDir: options.staticDir,
     config: {
@@ -1278,5 +1307,232 @@ describe('Munus production API', () => {
     await fetch(`${baseUrl}/payment-orders/${orderId}/fulfil`, { method: 'POST', headers: { cookie } })
     const retry = await fetch(`${baseUrl}/payment-orders/${orderId}/recovery/retry`, { method: 'POST', headers: { cookie } })
     expect(retry.status).toBe(409)
+  })
+})
+
+describe('USDT cash out', () => {
+  const RECEIVER = `0x${'dd'.repeat(20)}`
+
+  function cashoutFetch(state: { status: string; validUntil?: string }) {
+    return async (url: string) => {
+      if (url.includes('/institutions/NGN')) return [{ code: 'GTB', name: 'GTBank' }]
+      if (url.includes('/verify-account')) return { data: 'ADA OKAFOR' }
+      if (url.includes('/v2/rates/')) return { rate: 1500 }
+      if (url.includes('/sender/orders/')) return { id: 'pc-1', status: state.status }
+      return {
+        id: 'pc-1',
+        receiveAddress: RECEIVER,
+        validUntil: state.validUntil ?? new Date(Date.now() + 600_000).toISOString(),
+        amount: '100',
+        senderFee: '1',
+        transactionFee: '0.5',
+        totalAmount: '101.5',
+        destination: { amount: '152250' },
+        status: 'initiated',
+      }
+    }
+  }
+
+  async function createReadyOrder(baseUrl: string, cookie: string) {
+    const created = await fetch(`${baseUrl}/cashout/orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ usdtAmount: '100.00', bankCode: 'GTB', accountNumber: '0123 456 789' }),
+    })
+    expect(created.status).toBe(201)
+    const order = (await created.json()) as { id: string }
+    const quoted = await fetch(`${baseUrl}/cashout/${order.id}/quote`, { method: 'POST', headers: { cookie } })
+    expect(quoted.status).toBe(200)
+    return (await quoted.json()) as { id: string; quotedCryptoAmount: string; payoutNgnAmount: string; providerRef: string }
+  }
+
+  it('is disabled truthfully without configuration', async () => {
+    const { baseUrl } = await createTestServer({ disableCashout: true })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    expect((await fetch(`${baseUrl}/cashout/banks`, { headers: { cookie } })).status).toBe(503)
+    expect((await fetch(`${baseUrl}/cashout/rate?amount=100`, { headers: { cookie } })).status).toBe(503)
+    expect((await fetch(`${baseUrl}/cashout/verify-account`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}' })).status).toBe(503)
+    expect((await fetch(`${baseUrl}/cashout/orders`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}' })).status).toBe(503)
+  })
+
+  it('requires a session and routes generic creation to the cash-out flow', async () => {
+    const { baseUrl } = await createTestServer({ paycrestFetch: cashoutFetch({ status: 'initiated' }) })
+    expect((await fetch(`${baseUrl}/cashout/banks`)).status).toBe(401)
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const generic = await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'CASH_OUT', paymentAsset: 'USDT' }),
+    })
+    expect(generic.status).toBe(400)
+    await expect(generic.json()).resolves.toMatchObject({ error: expect.stringContaining('cash-out flow') })
+  })
+
+  it('walks the full cash-out loop with server-signed payout details', async () => {
+    const state = { status: 'initiated' }
+    const { baseUrl } = await createTestServer({ paycrestFetch: cashoutFetch(state) })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+
+    const banks = await fetch(`${baseUrl}/cashout/banks`, { headers: { cookie } })
+    await expect(banks.json()).resolves.toEqual({ banks: [{ code: 'GTB', name: 'GTBank' }] })
+
+    const rate = await fetch(`${baseUrl}/cashout/rate?amount=100`, { headers: { cookie } })
+    await expect(rate.json()).resolves.toMatchObject({ usdtAmount: '100', rateNgnPerUsdt: '1500', source: 'paycrest' })
+
+    const verified = await fetch(`${baseUrl}/cashout/verify-account`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ institution: 'GTB', accountNumber: '0123 456 789' }),
+    })
+    await expect(verified.json()).resolves.toEqual({
+      bankCode: 'GTB', bankName: 'GTBank', accountNumber: '0123456789', accountName: 'ADA OKAFOR',
+    })
+
+    const order = await createReadyOrder(baseUrl, cookie)
+    expect(order).toMatchObject({
+      quotedCryptoAmount: '101.5',
+      payoutNgnAmount: '152250',
+      providerRef: 'pc-1',
+    })
+
+    const intentResponse = await fetch(`${baseUrl}/cashout/${order.id}/intent`, { method: 'POST', headers: { cookie } })
+    const { order: fresh, intent } = (await intentResponse.json()) as {
+      order: { id: string }
+      intent: { receiveAddress: string; totalBaseUnits: string; chainIdHex: string; contractAddress: string; quoteExpiresAt: string }
+    }
+    expect(fresh.id).toBe(order.id)
+    expect(intent).toMatchObject({
+      receiveAddress: RECEIVER,
+      totalBaseUnits: '101500000',
+      chainIdHex: '0x89',
+      contractAddress: `0x${'ab'.repeat(20)}`,
+    })
+    expect(typeof intent.quoteExpiresAt).toBe('string')
+
+    // The wallet owns the transfer: no intent exists until the client asks,
+    // and only an explicit submission binds a hash.
+    const before = (await (await fetch(`${baseUrl}/payment-orders/${order.id}`, { headers: { cookie } })).json()) as { walletTxRef?: string | null }
+    expect(before.walletTxRef ?? null).toBeNull()
+
+    const hash = `0x${'ab'.repeat(32)}`
+    const submitted = await fetch(`${baseUrl}/cashout/${order.id}/submit`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: hash }),
+    })
+    expect(submitted.status).toBe(200)
+    await expect(submitted.json()).resolves.toMatchObject({ paymentStatus: 'ONCHAIN_PENDING' })
+
+    state.status = 'settled'
+    const reconciled = await fetch(`${baseUrl}/cashout/${order.id}/reconcile`, { method: 'POST', headers: { cookie } })
+    await expect(reconciled.json()).resolves.toMatchObject({
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'DELIVERED',
+      usdtTotalAmount: '101.5',
+    })
+  })
+
+  it('rejects invalid, conflicting, and expired submissions', async () => {
+    const state = { status: 'initiated' }
+    const { baseUrl } = await createTestServer({ paycrestFetch: cashoutFetch(state) })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const order = await createReadyOrder(baseUrl, cookie)
+
+    const invalid = await fetch(`${baseUrl}/cashout/${order.id}/submit`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: 'not-a-hash' }),
+    })
+    expect(invalid.status).toBe(400)
+
+    const hash = `0x${'ab'.repeat(32)}`
+    expect((await fetch(`${baseUrl}/cashout/${order.id}/submit`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: hash }),
+    })).status).toBe(200)
+    const conflict = await fetch(`${baseUrl}/cashout/${order.id}/submit`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: `0x${'cd'.repeat(32)}` }),
+    })
+    expect(conflict.status).toBe(409)
+    // Idempotent retry of the same hash stays retryable.
+    expect((await fetch(`${baseUrl}/cashout/${order.id}/submit`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: hash }),
+    })).status).toBe(200)
+  })
+
+  it('refuses to pay expired payout details', async () => {
+    const { baseUrl } = await createTestServer({
+      paycrestFetch: cashoutFetch({ status: 'expired', validUntil: new Date(Date.now() - 60_000).toISOString() }),
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const created = await fetch(`${baseUrl}/cashout/orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ usdtAmount: '100', bankCode: 'GTB', accountNumber: '0123456789' }),
+    })
+    expect(created.status).toBe(201)
+    const order = (await created.json()) as { id: string }
+    expect((await fetch(`${baseUrl}/cashout/${order.id}/quote`, { method: 'POST', headers: { cookie } })).status).toBe(200)
+    const expired = await fetch(`${baseUrl}/cashout/${order.id}/submit`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: `0x${'ab'.repeat(32)}` }),
+    })
+    expect(expired.status).toBe(410)
+  })
+
+  it('verifies Paycrest webhooks before trusting them', async () => {
+    const crypto = await import('node:crypto')
+    const state = { status: 'initiated' }
+    const { baseUrl } = await createTestServer({ paycrestFetch: cashoutFetch(state) })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const order = await createReadyOrder(baseUrl, cookie)
+    const hash = `0x${'ab'.repeat(32)}`
+    await fetch(`${baseUrl}/cashout/${order.id}/submit`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: hash }),
+    })
+
+    const payload = JSON.stringify({ id: 'pc-1', status: 'settled' })
+    const sign = (body: string, secret: string) => crypto.createHmac('sha256', secret).update(body, 'utf8').digest('hex')
+    const unsigned = await fetch(`${baseUrl}/paycrest/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: payload,
+    })
+    expect(unsigned.status).toBe(401)
+    const forged = await fetch(`${baseUrl}/paycrest/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-paycrest-signature': sign(payload, 'wrong-secret') },
+      body: payload,
+    })
+    expect(forged.status).toBe(401)
+    const accepted = await fetch(`${baseUrl}/paycrest/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-paycrest-signature': sign(payload, 'fixture-secret') },
+      body: payload,
+    })
+    await expect(accepted.json()).resolves.toEqual({ received: true, fulfilmentStatus: 'DELIVERED' })
+    // Duplicate deliveries are idempotent.
+    const duplicate = await fetch(`${baseUrl}/paycrest/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-paycrest-signature': sign(payload, 'fixture-secret') },
+      body: payload,
+    })
+    await expect(duplicate.json()).resolves.toEqual({ received: true, fulfilmentStatus: 'DELIVERED' })
+
+    const unknownPayload = JSON.stringify({ id: 'pc-nope', status: 'settled' })
+    const unknown = await fetch(`${baseUrl}/paycrest/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-paycrest-signature': sign(unknownPayload, 'fixture-secret') },
+      body: unknownPayload,
+    })
+    expect(unknown.status).toBe(404)
   })
 })

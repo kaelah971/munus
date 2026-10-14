@@ -58,6 +58,55 @@ export function parseDataOrderDraft(value: unknown): DataOrderDraft {
   }
 }
 
+import type { CashoutOrderInput } from '../src/domain/cashout'
+
+export type { CashoutOrderInput }
+
+/**
+ * CASH_OUT carries no user-supplied NGN price and no recipient phone: the
+ * payout comes from the Paycrest order response, and the bank snapshot is
+ * pinned server-side after account verification.
+ */
+export function parseCashoutOrderDraft(value: unknown): CashoutOrderInput {
+  const input = asRecord(value, 'Cash-out order body')
+  const serviceType = input.serviceType ?? 'CASH_OUT'
+  if (serviceType !== 'CASH_OUT') {
+    throw new PaymentValidationError('Use the cash-out flow for USDT bank payouts.')
+  }
+  const paymentAsset = input.paymentAsset ?? 'USDT'
+  if (paymentAsset !== 'USDT') {
+    throw new PaymentValidationError('Cash out can only be paid with USDT.')
+  }
+  if (typeof input.usdtAmount !== 'string') {
+    throw new PaymentValidationError('usdtAmount must be a decimal string.')
+  }
+  const bankCode = requiredString(input.bankCode, 'bankCode')
+  if (bankCode.length > 64) {
+    throw new PaymentValidationError('bankCode is too long.')
+  }
+  return {
+    usdtAmount: input.usdtAmount,
+    bankCode,
+    accountNumber: normalizeBankAccount(input.accountNumber),
+  }
+}
+
+function normalizeBankAccount(value: unknown): string {
+  if (typeof value !== 'string') throw new PaymentValidationError('accountNumber is required.')
+  const digits = value.replace(/[\s-]/g, '')
+  if (!/^\d{10}$/.test(digits)) {
+    throw new PaymentValidationError('accountNumber must be exactly 10 digits.')
+  }
+  return digits
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new PaymentValidationError(`${field} is required.`)
+  }
+  return value.trim()
+}
+
 function requiredPlanId(value: unknown): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new PaymentValidationError('providerPlanId is required.')

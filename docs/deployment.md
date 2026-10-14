@@ -40,6 +40,10 @@ These values are embedded in the browser bundle. They must not contain secrets.
 - `PORT` — supplied by the host; do not commit a value.
 - `MUNUS_SERVER_PORT` — optional local override; it takes precedence over `PORT`.
 - `MUNUS_CORS_ORIGIN` — unset for same-origin hosting. If origins are split later, set one exact frontend origin; never use `*` with credentials.
+- `PAYCREST_API_KEY` / `PAYCREST_API_SECRET` — Paycrest Sender API v2 credentials for USDT → NGN cash out. Leave unset until KYB is approved; cash out stays disabled (503) until set.
+- `PAYCREST_REFUND_ADDRESS` — operator-owned Polygon address receiving refunds for failed offramp orders.
+- `POLYGON_USDT_CONTRACT` — verified Polygon USDT contract address served to wallets inside server-signed intents. Never guess it; confirm against current token documentation before setting.
+- `PAYCREST_BASE_URL` — optional override, defaults to `https://api.paycrest.io`.
 
 Never use a `VITE_` prefix for `DATABASE_URL`.
 
@@ -52,6 +56,12 @@ The canonical migration order is:
 3. `migrations/0003_planning_layer.sql`
 4. `migrations/0004_support_layer.sql`
 5. `migrations/0005_payment_orders.sql`
+6. `migrations/0006_airtime_fulfilment.sql`
+7. `migrations/0007_nim_payment.sql`
+8. `migrations/0008_data_orders.sql`
+9. `migrations/0009_essential_requests.sql`
+10. `migrations/0010_recovery.sql`
+11. `migrations/0011_cashout.sql`
 
 The repository includes a deterministic migration runner. Against the intended Neon project, set `DATABASE_URL` in the server environment and run:
 

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Icon, PrimaryButton, QuietButton, SectionHeading, StatusPill } from './Primitives'
 import { buildRecoveryState } from '../domain/recovery'
 import { buildProofTimeline, formatActivityDate } from '../domain/receipts'
+import { maskBankAccountNumber } from '../domain/cashout'
 import { maskPhone } from '../domain/support'
 import { shortenNimiqAccount } from '../integration/nimiq'
 import type { PaymentOrder } from '../domain/orders'
@@ -41,7 +42,8 @@ export function RecoveryCenter({ order, onRefresh, onRetry, onBack, onResolved }
   }
 
   const timeline = buildProofTimeline(order)
-  const noun = order.serviceType === 'DATA' ? 'data' : 'airtime'
+  const isCashout = order.serviceType === 'CASH_OUT'
+  const noun = order.serviceType === 'DATA' ? 'data' : isCashout ? 'payout' : 'airtime'
 
   return (
     <section aria-labelledby="recovery-title">
@@ -54,9 +56,11 @@ export function RecoveryCenter({ order, onRefresh, onRetry, onBack, onResolved }
         <StatusPill label={recovery.headline} tone="attention" />
       </p>
       <dl className="contact-details">
-        {order.quotedCryptoAmount ? <div><dt>You paid</dt><dd>{order.quotedCryptoAmount} NIM</dd></div> : null}
-        <div><dt>For</dt><dd>₦{order.requestedAmount} {order.serviceType === 'DATA' ? 'data' : 'airtime'}</dd></div>
-        <div><dt>Recipient</dt><dd>{maskPhone(order.recipientPhone)}</dd></div>
+        {isCashout && order.usdtTotalAmount ? <div><dt>You paid</dt><dd>{order.usdtTotalAmount} USDT</dd></div> : null}
+        {!isCashout && order.quotedCryptoAmount ? <div><dt>You paid</dt><dd>{order.quotedCryptoAmount} NIM</dd></div> : null}
+        <div><dt>For</dt><dd>{isCashout ? `₦${order.payoutNgnAmount ?? order.requestedAmount} cash out` : `₦${order.requestedAmount} ${order.serviceType === 'DATA' ? 'data' : 'airtime'}`}</dd></div>
+        <div><dt>{isCashout ? 'Bank account' : 'Recipient'}</dt><dd>{isCashout ? maskBankAccountNumber(order.bankAccountNumber ?? '') : maskPhone(order.recipientPhone ?? '')}</dd></div>
+        {isCashout && order.bankName ? <div><dt>Bank</dt><dd>{order.bankName}</dd></div> : null}
         <div><dt>Payment</dt><dd>Confirmed ✓</dd></div>
         <div><dt>Delivery</dt><dd>Needs attention !</dd></div>
         {order.walletTxRef ? <div><dt>Transaction</dt><dd>{shortenNimiqAccount(order.walletTxRef)}</dd></div> : null}

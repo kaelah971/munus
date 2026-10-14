@@ -18,8 +18,10 @@ import {
 } from '../domain/receipts'
 import type { DataPlan } from '../domain/orders'
 import { maskPhone, SUPPORT_NETWORKS } from '../domain/support'
+import { maskBankAccountNumber, type CashoutBank, type CashoutRatePreview } from '../domain/cashout'
 import { buildRecoveryState } from '../domain/recovery'
 import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState } from '../integration/nimiq'
+import { requestUsdtTransfer } from '../integration/ethereum'
 import type { PaymentApi } from '../persistence/paymentApi'
 import { RecoveryCenter } from '../components/RecoveryCenter'
 
@@ -34,10 +36,13 @@ type PayView =
   | { name: 'categories' }
   | { name: 'airtime-form' }
   | { name: 'data-form' }
+  | { name: 'cashout-form' }
   | { name: 'review'; orderId: string }
 
-function serviceNoun(order: Pick<PaymentOrder, 'serviceType'>): 'Airtime' | 'Data' {
-  return order.serviceType === 'DATA' ? 'Data' : 'Airtime'
+function serviceNoun(order: Pick<PaymentOrder, 'serviceType'>): 'Airtime' | 'Data' | 'Cash out' {
+  if (order.serviceType === 'DATA') return 'Data'
+  if (order.serviceType === 'CASH_OUT') return 'Cash out'
+  return 'Airtime'
 }
 
 function emptyAirtimeDraft(defaultPhone: string): PaymentOrderDraft {
@@ -72,6 +77,21 @@ export function PayPage({ api, defaultPhone = '', connection }: {
   const [plansError, setPlansError] = useState<string | null>(null)
   const [selectedPlanId, setSelectedPlanId] = useState('')
   const [dataPhone, setDataPhone] = useState('')
+  const [cashoutBanks, setCashoutBanks] = useState<CashoutBank[]>([])
+  const [banksLoading, setBanksLoading] = useState(false)
+  const [banksError, setBanksError] = useState<string | null>(null)
+  const [cashoutAmount, setCashoutAmount] = useState('')
+  const [cashoutBank, setCashoutBank] = useState('')
+  const [cashoutAccount, setCashoutAccount] = useState('')
+  const [verifiedAccount, setVerifiedAccount] = useState<{
+    bankCode: string
+    bankName: string
+    accountNumber: string
+    accountName: string
+  } | null>(null)
+  const [verifying, setVerifying] = useState(false)
+  const [ratePreview, setRatePreview] = useState<CashoutRatePreview | null>(null)
+  const [rateLoading, setRateLoading] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const autoReconciled = useRef<Set<string>>(new Set())
 
@@ -106,10 +126,15 @@ export function PayPage({ api, defaultPhone = '', connection }: {
 
   useEffect(() => {
     // One safe server poll when opening a confirming order. This never opens
-    // the wallet: it only re-checks chain evidence already on file.
+    // the wallet: it only re-checks evidence already on file, on the
+    // matching rail — Paycrest for cash out, the NIM rail otherwise.
     if (view.name === 'review' && reviewed?.paymentStatus === 'ONCHAIN_PENDING' && !autoReconciled.current.has(reviewed.id)) {
       autoReconciled.current.add(reviewed.id)
-      void refreshOrder(reviewed.id, 'reconcile')
+      if (reviewed.serviceType === 'CASH_OUT') {
+        void refreshCashoutPayment(reviewed.id)
+      } else {
+        void refreshOrder(reviewed.id, 'reconcile')
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, reviewed?.id, reviewed?.paymentStatus])
@@ -130,13 +155,22 @@ export function PayPage({ api, defaultPhone = '', connection }: {
     }
   }
 
+  function findOrder(orderId: string): PaymentOrder | undefined {
+    return orders.find((entry) => entry.id === orderId)
+  }
+
   async function refreshRecoveryOrder(orderId: string): Promise<PaymentOrder> {
-    const updated = await api.reconcileOrder(orderId)
+    const updated = findOrder(orderId)?.serviceType === 'CASH_OUT'
+      ? await api.reconcileCashoutOrder(orderId)
+      : await api.reconcileOrder(orderId)
     updateOrder(updated)
     return updated
   }
 
   async function retryRecoveryOrder(orderId: string): Promise<PaymentOrder> {
+    if (findOrder(orderId)?.serviceType === 'CASH_OUT') {
+      throw new Error('Cash out never retries a purchase. Refresh status instead.')
+    }
     const updated = await api.retryDelivery(orderId)
     updateOrder(updated)
     return updated
@@ -285,6 +319,176 @@ export function PayPage({ api, defaultPhone = '', connection }: {
     }
   }
 
+  function openCashoutForm() {
+    setCashoutAmount('')
+    setCashoutBank('')
+    setCashoutAccount('')
+    setVerifiedAccount(null)
+    setRatePreview(null)
+    setBanksError(null)
+    setActionError(null)
+    setPendingTxHash(null)
+    setView({ name: 'cashout-form' })
+    void loadCashoutBanks()
+  }
+
+  async function loadCashoutBanks() {
+    setBanksLoading(true)
+    setBanksError(null)
+    try {
+      setCashoutBanks(await api.listCashoutBanks())
+    } catch (error) {
+      setCashoutBanks([])
+      setBanksError(error instanceof Error ? error.message : 'Munus could not load the bank list.')
+    } finally {
+      setBanksLoading(false)
+    }
+  }
+
+  async function previewCashoutRate() {
+    if (!cashoutAmount.trim()) return
+    setRateLoading(true)
+    setActionError(null)
+    try {
+      setRatePreview(await api.previewCashoutRate(cashoutAmount))
+    } catch (error) {
+      setRatePreview(null)
+      setActionError(error instanceof Error ? error.message : 'Munus could not preview the payout rate.')
+    } finally {
+      setRateLoading(false)
+    }
+  }
+
+  async function verifyCashoutAccount() {
+    if (!cashoutBank || !cashoutAccount.trim()) return
+    setVerifying(true)
+    setActionError(null)
+    try {
+      // The server pins the canonical account name: the client can never
+      // override it, and an unverifiable account stops the flow here.
+      setVerifiedAccount(await api.verifyCashoutAccount({ institution: cashoutBank, accountNumber: cashoutAccount }))
+    } catch (error) {
+      setVerifiedAccount(null)
+      setActionError(error instanceof Error ? error.message : 'Munus could not verify this account.')
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  async function saveCashoutOrder() {
+    if (!verifiedAccount || !cashoutAmount.trim()) return
+    setSaving(true)
+    setActionError(null)
+    try {
+      const order = await api.createCashoutOrder({
+        usdtAmount: cashoutAmount,
+        bankCode: verifiedAccount.bankCode,
+        accountNumber: verifiedAccount.accountNumber,
+      })
+      setOrders((current) => [order, ...current.filter((entry) => entry.id !== order.id)])
+      try {
+        updateOrder(await api.createCashoutQuote(order.id))
+      } catch {
+        // A quote failure leaves the saved draft in review, where the user
+        // can request payout details explicitly.
+      }
+      setView({ name: 'review', orderId: order.id })
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Munus could not save this cash-out order.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function createCashoutQuote(orderId: string) {
+    setQuoting(true)
+    setActionError(null)
+    try {
+      updateOrder(await api.createCashoutQuote(orderId))
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Munus could not create payout details.')
+    } finally {
+      setQuoting(false)
+    }
+  }
+
+  async function refreshCashoutQuote(orderId: string) {
+    setQuoting(true)
+    setActionError(null)
+    try {
+      updateOrder(await api.refreshCashoutQuote(orderId))
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Munus could not refresh the payout details.')
+    } finally {
+      setQuoting(false)
+    }
+  }
+
+  async function refreshCashoutPayment(orderId: string) {
+    setRefreshing(true)
+    setActionError(null)
+    try {
+      updateOrder(await api.reconcileCashoutOrder(orderId))
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Munus could not refresh this payout.')
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  async function submitCashoutWithRetry(orderId: string, txHash: string): Promise<PaymentOrder> {
+    try {
+      return await api.submitCashoutPayment(orderId, txHash)
+    } catch (error) {
+      // Same-hash submission is idempotent: one automatic retry covers a
+      // dropped response without ever risking a second transfer.
+      return await api.submitCashoutPayment(orderId, txHash).catch(() => {
+        throw error
+      })
+    }
+  }
+
+  async function payWithUsdt() {
+    if (!reviewed || payBusy) return
+    setPayBusy(true)
+    setActionError(null)
+    try {
+      // Explicit user intent only: the wallet is contacted solely from this
+      // tap, with the exact server-signed total on Polygon.
+      const { order: intentOrder, intent } = await api.createCashoutIntent(reviewed.id)
+      updateOrder(intentOrder)
+      const txHash = await requestUsdtTransfer(intent)
+      setPendingTxHash(txHash)
+      const submitted = await submitCashoutWithRetry(reviewed.id, txHash)
+      setPendingTxHash(null)
+      updateOrder(submitted)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'USDT transfer did not complete. No payment was confirmed.')
+      try {
+        updateOrder(await api.get(reviewed.id))
+      } catch {
+        // Keep the current view when even a refresh is unavailable.
+      }
+    } finally {
+      setPayBusy(false)
+    }
+  }
+
+  async function retryPendingCashoutSubmission() {
+    if (!reviewed || !pendingTxHash || payBusy) return
+    setPayBusy(true)
+    setActionError(null)
+    try {
+      const submitted = await submitCashoutWithRetry(reviewed.id, pendingTxHash)
+      setPendingTxHash(null)
+      updateOrder(submitted)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Submission did not complete. Your transaction reference is kept above.')
+    } finally {
+      setPayBusy(false)
+    }
+  }
+
   return (
     <section className="screen-content" aria-labelledby="pay-title">
       {view.name === 'airtime-form' ? (
@@ -404,30 +608,119 @@ export function PayPage({ api, defaultPhone = '', connection }: {
             {saving ? 'Saving order…' : 'Review data order'}
           </PrimaryButton>
         </section>
+      ) : view.name === 'cashout-form' ? (
+        <section className="support-section planning-form" aria-labelledby="pay-title">
+          <button className="back-link" type="button" onClick={() => setView({ name: 'categories' })}>
+            <Icon name="back" size={18} /> Pay Essentials
+          </button>
+          <p className="eyebrow">Cash out</p>
+          <h1 id="pay-title">Cash out USDT</h1>
+          <p className="screen-lede">Send USDT on Polygon and receive naira in a verified Nigerian bank account. Nothing moves until you approve the exact total in your wallet.</p>
+          <div className="form-grid">
+            <label>
+              <span>Amount (USDT)</span>
+              <input
+                inputMode="decimal"
+                value={cashoutAmount}
+                onChange={(event) => { setCashoutAmount(event.target.value); setRatePreview(null); setVerifiedAccount(null) }}
+                placeholder="100"
+              />
+            </label>
+            <label>
+              <span>Bank</span>
+              <select
+                value={cashoutBank}
+                onChange={(event) => { setCashoutBank(event.target.value); setVerifiedAccount(null) }}
+                disabled={banksLoading || cashoutBanks.length === 0}
+              >
+                <option value="">{banksLoading ? 'Loading banks…' : 'Choose bank'}</option>
+                {cashoutBanks.map((bank) => <option key={bank.code} value={bank.code}>{bank.name}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Account number</span>
+              <input
+                autoComplete="off"
+                inputMode="numeric"
+                value={cashoutAccount}
+                onChange={(event) => { setCashoutAccount(event.target.value); setVerifiedAccount(null) }}
+                placeholder="0123456789"
+              />
+            </label>
+          </div>
+          {banksError ? <p className="inline-error" role="alert">{banksError}</p> : null}
+          {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
+          <div className="form-actions">
+            <QuietButton disabled={rateLoading || !cashoutAmount.trim()} onClick={() => void previewCashoutRate()}>
+              {rateLoading ? 'Checking rate…' : 'Check rate'}
+            </QuietButton>
+            <QuietButton disabled={verifying || !cashoutBank || !cashoutAccount.trim()} onClick={() => void verifyCashoutAccount()}>
+              {verifying ? 'Verifying…' : 'Verify account'}
+            </QuietButton>
+          </div>
+          {ratePreview ? (
+            <dl className="contact-details">
+              <div><dt>Rate</dt><dd>1 USDT ≈ ₦{ratePreview.rateNgnPerUsdt}</dd></div>
+              <div><dt>Indicative payout</dt><dd>₦{ratePreview.ngnAmount}</dd></div>
+            </dl>
+          ) : null}
+          {verifiedAccount ? (
+            <div className="truth-note"><Icon name="info" size={18} /><p>Verified account: {verifiedAccount.accountName} · {verifiedAccount.bankName} {maskBankAccountNumber(verifiedAccount.accountNumber)}. The exact USDT total and payout are set by live payout details on the next step.</p></div>
+          ) : null}
+          <div className="truth-note"><Icon name="info" size={18} /><p>This saves the order only — no money moves until you review live payout details and approve the exact USDT total in your wallet.</p></div>
+          <PrimaryButton disabled={saving || !verifiedAccount || !cashoutAmount.trim()} onClick={() => void saveCashoutOrder()}>
+            {saving ? 'Saving order…' : 'Review payout'}
+          </PrimaryButton>
+        </section>
       ) : view.name === 'review' && reviewed ? (
         <section aria-labelledby="pay-title">
           <button className="back-link" type="button" onClick={() => setView({ name: 'categories' })}>
             <Icon name="back" size={18} /> Pay Essentials
           </button>
           <p className="eyebrow">Order review</p>
-          <h1 id="pay-title">₦{reviewed.requestedAmount} {describeServiceLabel(reviewed.serviceType).toLowerCase()}</h1>
+          <h1 id="pay-title">{reviewed.serviceType === 'CASH_OUT'
+            ? `${reviewed.usdtTotalAmount ?? reviewed.requestedAmount} USDT cash out`
+            : `₦${reviewed.requestedAmount} ${describeServiceLabel(reviewed.serviceType).toLowerCase()}`}</h1>
           <p className="screen-lede">{describeOrderStage(reviewed)}</p>
           <dl className="contact-details">
-            <div><dt>Recipient</dt><dd>{maskPhone(reviewed.recipientPhone)}</dd></div>
-            <div><dt>Network</dt><dd>{reviewed.recipientNetwork ?? 'Not known'}</dd></div>
-            <div><dt>Amount</dt><dd>₦{reviewed.requestedAmount}</dd></div>
+            {reviewed.serviceType === 'CASH_OUT' ? (
+              <>
+                <div><dt>Bank</dt><dd>{reviewed.bankName ?? reviewed.bankCode ?? '—'}</dd></div>
+                <div><dt>Account</dt><dd>{maskBankAccountNumber(reviewed.bankAccountNumber ?? '')}</dd></div>
+                {reviewed.bankAccountName ? <div><dt>Account name</dt><dd>{reviewed.bankAccountName}</dd></div> : null}
+                <div><dt>Amount</dt><dd>{reviewed.requestedAmount} USDT</dd></div>
+              </>
+            ) : (
+              <>
+                <div><dt>Recipient</dt><dd>{maskPhone(reviewed.recipientPhone ?? '')}</dd></div>
+                <div><dt>Network</dt><dd>{reviewed.recipientNetwork ?? 'Not known'}</dd></div>
+                <div><dt>Amount</dt><dd>₦{reviewed.requestedAmount}</dd></div>
+              </>
+            )}
             {reviewed.planDisplayLabel ? <div><dt>Bundle</dt><dd>{reviewed.planDisplayLabel}</dd></div> : null}
             {reviewed.planDataAllowance ? <div><dt>Data allowance</dt><dd>{reviewed.planDataAllowance}</dd></div> : null}
             {reviewed.planValidity ? <div><dt>Validity</dt><dd>{reviewed.planValidity}</dd></div> : null}
             <div><dt>Pay with</dt><dd>{reviewed.paymentAsset}</dd></div>
             <div><dt>Payment</dt><dd><PaymentStageLabel order={reviewed} /></dd></div>
             <div><dt>Fulfilment</dt><dd>{describeFulfilmentStage(reviewed.fulfilmentStatus)}</dd></div>
-            {reviewed.quotedCryptoAmount ? <div><dt>You pay</dt><dd>{reviewed.quotedCryptoAmount} NIM</dd></div> : null}
-            {reviewed.quoteRateNgnPerNim ? <div><dt>Rate</dt><dd>1 NIM ≈ ₦{reviewed.quoteRateNgnPerNim}</dd></div> : null}
+            {reviewed.serviceType === 'CASH_OUT' ? (
+              <>
+                {reviewed.usdtTotalAmount ? <div><dt>You pay</dt><dd>{reviewed.usdtTotalAmount} USDT</dd></div> : null}
+                {reviewed.cashoutFeeUsdt ? <div><dt>Provider fees</dt><dd>{reviewed.cashoutFeeUsdt} USDT</dd></div> : null}
+                {reviewed.payoutNgnAmount ? <div><dt>You receive</dt><dd>₦{reviewed.payoutNgnAmount}</dd></div> : null}
+                {reviewed.cashoutRate ? <div><dt>Rate</dt><dd>1 USDT ≈ ₦{reviewed.cashoutRate}</dd></div> : null}
+              </>
+            ) : (
+              <>
+                {reviewed.quotedCryptoAmount ? <div><dt>You pay</dt><dd>{reviewed.quotedCryptoAmount} NIM</dd></div> : null}
+                {reviewed.quoteRateNgnPerNim ? <div><dt>Rate</dt><dd>1 NIM ≈ ₦{reviewed.quoteRateNgnPerNim}</dd></div> : null}
+              </>
+            )}
             {reviewed.paymentReceiver ? <div><dt>Paid to</dt><dd>{shortenNimiqAccount(reviewed.paymentReceiver)}</dd></div> : null}
             {reviewed.paymentSender ? <div><dt>Paid by</dt><dd>{shortenNimiqAccount(reviewed.paymentSender)}</dd></div> : null}
             {reviewed.paymentBlockNumber ? <div><dt>Confirmed in block</dt><dd>{reviewed.paymentBlockNumber}</dd></div> : null}
             {reviewed.provider ? <div><dt>Provider</dt><dd>{describeProviderName(reviewed.provider)}</dd></div> : null}
+            {reviewed.providerRef ? <div><dt>Provider reference</dt><dd>{reviewed.providerRef}</dd></div> : null}
             {reviewed.providerStatus ? <div><dt>Provider status</dt><dd>{reviewed.providerStatus} ({reviewed.providerStatusCode ?? 'no code'})</dd></div> : null}
             {reviewed.providerAmountCharged ? <div><dt>Amount charged</dt><dd>₦{reviewed.providerAmountCharged}</dd></div> : null}
             <div><dt>Saved</dt><dd>{new Date(reviewed.createdAt).toLocaleString()}</dd></div>
@@ -443,6 +736,25 @@ export function PayPage({ api, defaultPhone = '', connection }: {
                   onRetry={retryRecoveryOrder}
                   onBack={() => setView({ name: 'categories' })}
                   onResolved={updateOrder}
+                />
+              )
+            }
+            if (reviewed.serviceType === 'CASH_OUT') {
+              return (
+                <CashoutReviewActions
+                  order={reviewed}
+                  quoteLive={quoteLive}
+                  nowMs={nowMs}
+                  quoting={quoting}
+                  payBusy={payBusy}
+                  refreshing={refreshing}
+                  pendingTxHash={pendingTxHash}
+                  onCreateQuote={() => void createCashoutQuote(reviewed.id)}
+                  onRefreshQuote={() => void refreshCashoutQuote(reviewed.id)}
+                  onPay={() => void payWithUsdt()}
+                  onRetrySubmission={() => void retryPendingCashoutSubmission()}
+                  onRefresh={() => void refreshOrder(reviewed.id, 'get')}
+                  onRefreshPayment={() => void refreshCashoutPayment(reviewed.id)}
                 />
               )
             }
@@ -513,6 +825,14 @@ export function PayPage({ api, defaultPhone = '', connection }: {
                 />
               )
             })}
+            <ListRow
+              description="Send USDT on Polygon and receive naira in a verified Nigerian bank account."
+              icon="wallet"
+              key="cashout"
+              meta={<StatusPill label="Start cash out" tone="ready" />}
+              onClick={openCashoutForm}
+              title="Cash out"
+            />
           </section>
           <section aria-label="Your recent orders" className="support-section">
             <SectionHeading>Your recent orders</SectionHeading>
@@ -521,16 +841,23 @@ export function PayPage({ api, defaultPhone = '', connection }: {
               <p className="section-copy">No orders yet. Start one above — it saves as a draft with no payment attached.</p>
             ) : null}
             <div className="category-list">
-              {orders.slice(0, 5).map((order) => (
-                <ListRow
-                  description={`${maskPhone(order.recipientPhone)} · ${new Date(order.createdAt).toLocaleDateString()}`}
-                  icon="phone"
-                  key={order.id}
-                  meta={<OrderStatusPill order={order} />}
-                  onClick={() => setView({ name: 'review', orderId: order.id })}
-                  title={`₦${order.requestedAmount} ${describeServiceLabel(order.serviceType).toLowerCase()}`}
-                />
-              ))}
+              {orders.slice(0, 5).map((order) => {
+                const isCashout = order.serviceType === 'CASH_OUT'
+                return (
+                  <ListRow
+                    description={isCashout
+                      ? [order.bankName, maskBankAccountNumber(order.bankAccountNumber ?? ''), new Date(order.createdAt).toLocaleDateString()].filter(Boolean).join(' · ')
+                      : `${maskPhone(order.recipientPhone ?? '')} · ${new Date(order.createdAt).toLocaleDateString()}`}
+                    icon={order.serviceType === 'DATA' ? 'data' : isCashout ? 'wallet' : 'phone'}
+                    key={order.id}
+                    meta={<OrderStatusPill order={order} />}
+                    onClick={() => setView({ name: 'review', orderId: order.id })}
+                    title={isCashout
+                      ? `${order.usdtTotalAmount ?? order.requestedAmount} USDT cash out`
+                      : `₦${order.requestedAmount} ${describeServiceLabel(order.serviceType).toLowerCase()}`}
+                  />
+                )
+              })}
             </div>
           </section>
           <div className="truth-note"><p>Airtime and data are bought from Munus with NIM and delivered through the provider rail. NIM never goes to the provider.</p></div>
@@ -541,20 +868,128 @@ export function PayPage({ api, defaultPhone = '', connection }: {
 }
 
 function OrderStatusPill({ order }: { order: PaymentOrder }) {
-  const copy = describeActivityStatusCopy(describeActivityStatus(order))
+  const copy = describeActivityStatusCopy(describeActivityStatus(order), order.serviceType)
   return <StatusPill label={copy.label} tone={copy.tone} />
 }
 
 function PaymentStageLabel({ order }: { order: PaymentOrder }) {
+  const isCashout = order.serviceType === 'CASH_OUT'
   switch (order.paymentStatus) {
-    case 'DRAFT': return <>Draft · quote not created</>
+    case 'DRAFT': return isCashout ? <>Draft · payout details not created</> : <>Draft · quote not created</>
     case 'READY_FOR_PAYMENT': return <>Quoted · waiting for your approval</>
-    case 'AWAITING_WALLET_APPROVAL': return <>Waiting for Nimiq Pay approval</>
+    case 'AWAITING_WALLET_APPROVAL': return isCashout ? <>Waiting for wallet approval</> : <>Waiting for Nimiq Pay approval</>
     case 'ONCHAIN_PENDING': return <>Submitted · confirming on-chain</>
     case 'PAID': return <>Confirmed on-chain</>
-    case 'PAYMENT_FAILED': return <>Failed · no {serviceNoun(order).toLowerCase()} sent</>
+    case 'PAYMENT_FAILED': return isCashout ? <>Failed · payout not started</> : <>Failed · no {serviceNoun(order).toLowerCase()} sent</>
     default: return <>{order.paymentStatus}</>
   }
+}
+
+function CashoutReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, pendingTxHash, onCreateQuote, onRefreshQuote, onPay, onRetrySubmission, onRefresh, onRefreshPayment }: {
+  order: PaymentOrder
+  quoteLive: boolean
+  nowMs: number
+  quoting: boolean
+  payBusy: boolean
+  refreshing: boolean
+  pendingTxHash: string | null
+  onCreateQuote: () => void
+  onRefreshQuote: () => void
+  onPay: () => void
+  onRetrySubmission: () => void
+  onRefresh: () => void
+  onRefreshPayment: () => void
+}) {
+  if (order.paymentStatus === 'DRAFT') {
+    return (
+      <>
+        <div className="truth-note"><Icon name="info" size={18} /><p>Get live payout details to see the exact USDT total and the naira you will receive.</p></div>
+        <PrimaryButton disabled={quoting} onClick={onCreateQuote}>
+          {quoting ? 'Getting payout details…' : 'Get payout details'}
+        </PrimaryButton>
+      </>
+    )
+  }
+
+  if (order.paymentStatus === 'READY_FOR_PAYMENT' || order.paymentStatus === 'AWAITING_WALLET_APPROVAL') {
+    if (!quoteLive) {
+      // Expired payout details are never payable: a refresh abandons the
+      // old Paycrest order and issues new ones.
+      return (
+        <>
+          <div className="truth-note"><Icon name="info" size={18} /><p>These payout details have expired. The amounts you saw are no longer valid — refresh them before sending anything.</p></div>
+          <PrimaryButton disabled={quoting} onClick={onRefreshQuote}>
+            {quoting ? 'Refreshing…' : 'Refresh payout details'}
+          </PrimaryButton>
+        </>
+      )
+    }
+    return (
+      <>
+        <div className="truth-note"><Icon name="info" size={18} /><p>Payout details expire in {order.quoteExpiresAt ? quoteCountdown(order.quoteExpiresAt, nowMs) : '—'}. Only this tap opens your wallet — nothing happens automatically, and only the exact total below is ever sent.</p></div>
+        {order.paymentStatus === 'AWAITING_WALLET_APPROVAL' ? (
+          <div className="truth-note"><Icon name="info" size={18} /><p>Waiting for wallet approval. If you dismissed it, tap again to continue.</p></div>
+        ) : null}
+        <PrimaryButton disabled={payBusy} onClick={onPay}>
+          {payBusy ? 'Opening wallet…' : `Approve ${order.usdtTotalAmount ?? order.quotedCryptoAmount} USDT`}
+        </PrimaryButton>
+      </>
+    )
+  }
+
+  if (order.paymentStatus === 'ONCHAIN_PENDING') {
+    return (
+      <>
+        <div className="truth-note"><Icon name="info" size={18} /><p>
+          {pendingTxHash ? 'Your transfer was sent. Recording it with Munus was interrupted — retry below.' : 'Your USDT transfer was submitted. Munus tracks the Paycrest payout from here.'}
+        </p></div>
+        {pendingTxHash ? (
+          <>
+            <p className="section-copy">Reference: {shortenNimiqAccount(pendingTxHash)}</p>
+            <PrimaryButton disabled={payBusy} onClick={onRetrySubmission}>
+              {payBusy ? 'Recording…' : 'Retry recording transfer'}
+            </PrimaryButton>
+          </>
+        ) : null}
+        <QuietButton disabled={refreshing} onClick={onRefreshPayment}>
+          {refreshing ? 'Checking…' : 'Refresh payout status'}
+        </QuietButton>
+      </>
+    )
+  }
+
+  if (order.paymentStatus === 'PAID') {
+    const needsAttention = order.fulfilmentStatus === 'FULFILLMENT_FAILED' || order.fulfilmentStatus === 'RECOVERY_REQUIRED'
+    return (
+      <>
+        <ol className="payment-progress">
+          <li data-done="true">Payout details ready</li>
+          <li data-done="true">Wallet approval</li>
+          <li data-done="true">USDT transfer confirmed</li>
+          <li data-done={order.fulfilmentStatus === 'DELIVERED' ? 'true' : 'false'}>
+            {order.fulfilmentStatus === 'DELIVERED' ? 'Payout settled' : 'Settling payout'}
+          </li>
+        </ol>
+        {needsAttention ? (
+          <div className="truth-note"><Icon name="info" size={18} /><p>Transfer confirmed · payout needs attention. Your USDT transfer is safe and recorded.</p></div>
+        ) : null}
+        {order.fulfilmentStatus === 'FULFILLING' || order.fulfilmentStatus === 'NOT_STARTED' ? (
+          <QuietButton disabled={refreshing} onClick={onRefresh}>
+            {refreshing ? 'Checking…' : 'Refresh payout status'}
+          </QuietButton>
+        ) : null}
+      </>
+    )
+  }
+
+  return (
+    <>
+      <div className="truth-note"><Icon name="info" size={18} /><p>{describePaymentFailureReason(order.paymentFailureReason)}</p></div>
+      <QuietButton disabled={refreshing} onClick={onRefresh}>
+        {refreshing ? 'Checking…' : 'Refresh payout status'}
+      </QuietButton>
+    </>
+  )
 }
 
 function quoteCountdown(expiresAt: string, nowMs: number): string {

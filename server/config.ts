@@ -19,6 +19,14 @@ export interface NimPaymentServerConfig {
   quoteTtlMs: number
 }
 
+export interface PaycrestServerConfig {
+  apiKey: string
+  apiSecret: string
+  refundAddress: string
+  usdtContractAddress: string
+  baseUrl?: string
+}
+
 export interface MunusServerConfig {
   port: number
   databaseUrl: string
@@ -30,6 +38,7 @@ export interface MunusServerConfig {
   corsOrigin?: string
   clubKonnect?: ClubKonnectServerConfig
   nimPayments: NimPaymentServerConfig
+  paycrest?: PaycrestServerConfig
 }
 
 export interface ServerEnv {
@@ -49,6 +58,11 @@ export interface ServerEnv {
   CLUBKONNECT_USER_ID?: string
   CLUBKONNECT_API_KEY?: string
   CLUBKONNECT_CALLBACK_BASE_URL?: string
+  PAYCREST_API_KEY?: string
+  PAYCREST_API_SECRET?: string
+  PAYCREST_REFUND_ADDRESS?: string
+  PAYCREST_BASE_URL?: string
+  POLYGON_USDT_CONTRACT?: string
 }
 
 export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfig {
@@ -82,6 +96,7 @@ export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfi
     defaultNetwork,
     corsOrigin: env.MUNUS_CORS_ORIGIN?.trim() || undefined,
     clubKonnect: loadClubKonnectConfig(env),
+    paycrest: loadPaycrestConfig(env),
     nimPayments: {
       receiverAddress: loadReceiverAddress(env),
       rpcUrl: env.NIMIQ_RPC_URL?.trim() || undefined,
@@ -111,6 +126,30 @@ function loadClubKonnectConfig(env: ServerEnv): ClubKonnectServerConfig | undefi
     userId,
     apiKey,
     callbackBaseUrl: env.CLUBKONNECT_CALLBACK_BASE_URL?.trim() || undefined,
+  }
+}
+
+function loadPaycrestConfig(env: ServerEnv): PaycrestServerConfig | undefined {
+  const apiKey = env.PAYCREST_API_KEY?.trim() || ''
+  const apiSecret = env.PAYCREST_API_SECRET?.trim() || ''
+  const refundAddress = env.PAYCREST_REFUND_ADDRESS?.trim() || ''
+  const usdtContractAddress = env.POLYGON_USDT_CONTRACT?.trim() || ''
+  if (!apiKey && !apiSecret && !refundAddress && !usdtContractAddress) return undefined
+  if (!apiKey || !apiSecret) {
+    throw new ServerConfigurationError('PAYCREST_API_KEY and PAYCREST_API_SECRET must both be set.')
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(refundAddress)) {
+    throw new ServerConfigurationError('PAYCREST_REFUND_ADDRESS must be a valid Ethereum address.')
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(usdtContractAddress)) {
+    throw new ServerConfigurationError('POLYGON_USDT_CONTRACT must be a valid Ethereum address.')
+  }
+  return {
+    apiKey,
+    apiSecret,
+    refundAddress,
+    usdtContractAddress,
+    baseUrl: env.PAYCREST_BASE_URL?.trim() || undefined,
   }
 }
 

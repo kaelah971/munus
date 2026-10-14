@@ -4,6 +4,7 @@ import type { DataPlan, PaymentOrder } from '../domain/orders'
 import type { PaymentApi } from '../persistence/paymentApi'
 import type { NimiqConnectionState } from '../integration/nimiq'
 import { requestNimPayment } from '../integration/nimiq'
+import { requestUsdtTransfer } from '../integration/ethereum'
 import { PayPage } from './PayPage'
 
 vi.mock('../integration/nimiq', async (importOriginal) => {
@@ -11,7 +12,13 @@ vi.mock('../integration/nimiq', async (importOriginal) => {
   return { ...actual, requestNimPayment: vi.fn() }
 })
 
+vi.mock('../integration/ethereum', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../integration/ethereum')>()
+  return { ...actual, requestUsdtTransfer: vi.fn() }
+})
+
 const mockedRequestNimPayment = requestNimPayment as Mock
+const mockedRequestUsdtTransfer = requestUsdtTransfer as Mock
 
 function order(overrides: Partial<PaymentOrder> = {}): PaymentOrder {
   return {
@@ -67,6 +74,15 @@ function apiStub(initial: PaymentOrder[] = []) {
     listDataNetworks: Mock
     listDataPlans: Mock
     createDataOrder: Mock
+    listCashoutBanks: Mock
+    verifyCashoutAccount: Mock
+    previewCashoutRate: Mock
+    createCashoutOrder: Mock
+    createCashoutQuote: Mock
+    createCashoutIntent: Mock
+    submitCashoutPayment: Mock
+    reconcileCashoutOrder: Mock
+    refreshCashoutQuote: Mock
   } = {
     list: vi.fn().mockImplementation(async () => orders),
     get: vi.fn().mockImplementation(async (id: string) => find(id)),
@@ -113,6 +129,67 @@ function apiStub(initial: PaymentOrder[] = []) {
       orders.unshift(created)
       return created
     }),
+    listCashoutBanks: vi.fn().mockResolvedValue([{ code: 'GTB', name: 'GTBank' }]),
+    verifyCashoutAccount: vi.fn().mockResolvedValue({
+      bankCode: 'GTB', bankName: 'GTBank', accountNumber: '0123456789', accountName: 'ADA OKAFOR',
+    }),
+    previewCashoutRate: vi.fn().mockResolvedValue({
+      usdtAmount: '100', ngnAmount: '150000', rateNgnPerUsdt: '1500', source: 'paycrest', observedAt: '2026-10-14T00:00:00.000Z',
+    }),
+    createCashoutOrder: vi.fn().mockImplementation(async (input: unknown) => {
+      const draft = input as { usdtAmount: string; bankCode: string; accountNumber: string }
+      const created = order({
+        id: 'order-cashout-new',
+        serviceType: 'CASH_OUT',
+        paymentAsset: 'USDT',
+        requestedAmount: draft.usdtAmount,
+        requestedCurrency: 'USDT',
+        bankCode: draft.bankCode,
+        bankName: 'GTBank',
+        bankAccountNumber: draft.accountNumber,
+        bankAccountName: 'ADA OKAFOR',
+      })
+      orders.unshift(created)
+      return created
+    }),
+    createCashoutQuote: vi.fn().mockImplementation(async (id: string) => {
+      const found = find(id)
+      const index = orders.findIndex((entry) => entry.id === id)
+      const quoted = {
+        ...found,
+        paymentStatus: 'READY_FOR_PAYMENT' as const,
+        provider: 'paycrest',
+        providerRef: 'pc-1',
+        paycrestReceiveAddress: `0x${'dd'.repeat(20)}`,
+        quoteExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+        quotedCryptoAmount: '101.5',
+        usdtTotalAmount: '101.5',
+        payoutNgnAmount: '152250',
+        cashoutFeeUsdt: '1.5',
+        cashoutRate: '1500',
+      }
+      orders[index] = quoted
+      return quoted
+    }),
+    createCashoutIntent: vi.fn().mockImplementation(async (id: string) => ({
+      order: find(id),
+      intent: {
+        receiveAddress: `0x${'dd'.repeat(20)}`,
+        contractAddress: `0x${'ab'.repeat(20)}`,
+        chainIdHex: '0x89',
+        totalBaseUnits: '101500000',
+        quoteExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+      },
+    })),
+    submitCashoutPayment: vi.fn().mockImplementation(async (id: string, transactionHash: string) => {
+      const found = find(id)
+      const index = orders.findIndex((entry) => entry.id === id)
+      const submitted = { ...found, paymentStatus: 'ONCHAIN_PENDING' as const, walletTxRef: transactionHash.replace(/^0x/, '') }
+      orders[index] = submitted
+      return submitted
+    }),
+    reconcileCashoutOrder: vi.fn().mockImplementation(async (id: string) => find(id)),
+    refreshCashoutQuote: vi.fn().mockImplementation(async (id: string) => find(id)),
   }
   return api
 }
@@ -361,6 +438,80 @@ describe('Pay essentials order flow', () => {
     expect(screen.getByText('Data allowance')).toBeInTheDocument()
     expect(screen.getByText('Validity')).toBeInTheDocument()
     expect(screen.queryByText('08012345678')).not.toBeInTheDocument()
+  })
+
+  it('walks the cash-out form with verified account details', async () => {
+    const api = apiStub()
+    render(<PayPage api={api} connection={offlineConnection} />)
+    await waitFor(() => expect(api.list).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: /Cash out/ }))
+    expect(await screen.findByRole('option', { name: 'GTBank' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Amount (USDT)'), { target: { value: '100' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check rate' }))
+    expect(await screen.findByText('1 USDT ≈ ₦1500')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Bank'), { target: { value: 'GTB' } })
+    fireEvent.change(screen.getByLabelText('Account number'), { target: { value: '0123 456 789' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Verify account' }))
+    expect(await screen.findByText(/Verified account: ADA OKAFOR/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review payout' }))
+    expect(await screen.findByText('101.5 USDT cash out')).toBeInTheDocument()
+    expect(screen.getByText('GTBank')).toBeInTheDocument()
+    expect(screen.getByText('ADA OKAFOR')).toBeInTheDocument()
+    expect(screen.getByText('₦152250')).toBeInTheDocument()
+    expect(screen.queryByText('0123456789')).not.toBeInTheDocument()
+    expect(api.createCashoutOrder).toHaveBeenCalledWith({
+      usdtAmount: '100',
+      bankCode: 'GTB',
+      accountNumber: '0123456789',
+    })
+  })
+
+  it('approves the exact quoted USDT total only from an explicit tap', async () => {
+    const api = apiStub([
+      order({
+        id: 'order-cashout-ready',
+        serviceType: 'CASH_OUT',
+        paymentAsset: 'USDT',
+        requestedAmount: '100',
+        requestedCurrency: 'USDT',
+        paymentStatus: 'READY_FOR_PAYMENT',
+        bankCode: 'GTB',
+        bankName: 'GTBank',
+        bankAccountNumber: '0123456789',
+        bankAccountName: 'ADA OKAFOR',
+        provider: 'paycrest',
+        providerRef: 'pc-1',
+        paycrestReceiveAddress: `0x${'dd'.repeat(20)}`,
+        quoteExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+        quotedCryptoAmount: '101.5',
+        usdtTotalAmount: '101.5',
+        payoutNgnAmount: '152250',
+        cashoutFeeUsdt: '1.5',
+        cashoutRate: '1500',
+      }),
+    ])
+    mockedRequestUsdtTransfer.mockResolvedValue(`0x${'ef'.repeat(32)}`)
+    render(<PayPage api={api} connection={offlineConnection} />)
+    await waitFor(() => expect(api.list).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: /101\.5 USDT cash out/ }))
+    expect(await screen.findByRole('button', { name: 'Approve 101.5 USDT' })).toBeInTheDocument()
+    // No wallet contact before the explicit tap.
+    expect(mockedRequestUsdtTransfer).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve 101.5 USDT' }))
+    await waitFor(() => expect(mockedRequestUsdtTransfer).toHaveBeenCalledTimes(1))
+    expect(mockedRequestUsdtTransfer.mock.calls[0]?.[0]).toMatchObject({
+      receiveAddress: `0x${'dd'.repeat(20)}`,
+      totalBaseUnits: '101500000',
+      chainIdHex: '0x89',
+    })
+    expect(api.submitCashoutPayment).toHaveBeenCalledWith('order-cashout-ready', `0x${'ef'.repeat(32)}`)
+    expect(await screen.findByText('Refresh payout status')).toBeInTheDocument()
   })
 
   it('shows bundle unavailability truthfully without inventing plans', async () => {

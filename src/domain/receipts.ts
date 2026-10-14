@@ -1,3 +1,4 @@
+import { maskBankAccountNumber } from './cashout'
 import { maskPhone } from './support'
 import type { FulfilmentStatus, PaymentAsset, PaymentOrder, PaymentServiceType } from './orders'
 
@@ -43,7 +44,13 @@ const ACTIVITY_STATUS_COPY: Record<ActivityStatus, { label: string; tone: Activi
   'payment-failed': { label: 'Payment failed', tone: 'attention' },
 }
 
-export function describeActivityStatusCopy(status: ActivityStatus): { label: string; tone: ActivityTone } {
+export function describeActivityStatusCopy(
+  status: ActivityStatus,
+  serviceType?: PaymentServiceType,
+): { label: string; tone: ActivityTone } {
+  if (status === 'delivering' && serviceType === 'CASH_OUT') {
+    return { label: 'Settling payout', tone: 'attention' }
+  }
   return ACTIVITY_STATUS_COPY[status]
 }
 
@@ -61,6 +68,7 @@ export function describeActivityStatus(
   if (order.paymentStatus === 'AWAITING_WALLET_APPROVAL') return 'awaiting-approval'
   if (order.paymentStatus === 'ONCHAIN_PENDING') return 'confirming'
   const fulfilment = order.fulfilmentStatus satisfies FulfilmentStatus
+  if (fulfilment === 'REFUNDED') return 'needs-attention'
   if (fulfilment === 'DELIVERED') return 'delivered'
   if (fulfilment === 'FULFILLING') return 'delivering'
   if (fulfilment === 'FULFILLMENT_FAILED') return 'delivery-failed'
@@ -91,6 +99,7 @@ export function describeServiceLabel(serviceType: PaymentServiceType): string {
 
 export function describeProviderName(provider: string): string {
   if (provider === 'clubkonnect') return 'ClubKonnect'
+  if (provider === 'paycrest') return 'Paycrest'
   return provider
 }
 
@@ -162,40 +171,44 @@ export function buildProofTimeline(order: Pick<PaymentOrder,
   | 'fulfilmentStartedAt'
   | 'fulfilledAt'
 >): ReceiptTimelineStage[] {
-  const noun = order.serviceType === 'DATA' ? 'Data' : 'Airtime'
+  const isCashout = order.serviceType === 'CASH_OUT'
+  const noun = order.serviceType === 'DATA' ? 'Data' : isCashout ? 'Payout' : 'Airtime'
+  const paymentNoun = isCashout ? 'USDT transfer' : 'NIM payment'
+  const sentLabel = isCashout ? 'Payout sent to provider' : `${noun} sent to provider`
+  const deliveredLabel = isCashout ? 'Payout settled' : `${noun} delivered`
   const stages: ReceiptTimelineStage[] = [
     { id: 'created', label: 'Order created', state: 'done', at: order.createdAt },
   ]
   const paymentFailed = order.paymentStatus === 'PAYMENT_FAILED'
   if (order.walletTxRef) {
-    stages.push({ id: 'submitted', label: 'NIM payment submitted', state: 'done' })
+    stages.push({ id: 'submitted', label: `${paymentNoun} submitted`, state: 'done' })
   } else if (!paymentFailed && order.paymentStatus !== 'DRAFT') {
-    stages.push({ id: 'submitted', label: 'NIM payment submitted', state: 'idle' })
+    stages.push({ id: 'submitted', label: `${paymentNoun} submitted`, state: 'idle' })
   }
   if (order.paymentVerifiedAt) {
-    stages.push({ id: 'confirmed', label: 'NIM payment confirmed', state: 'done', at: order.paymentVerifiedAt })
+    stages.push({ id: 'confirmed', label: `${paymentNoun} confirmed`, state: 'done', at: order.paymentVerifiedAt })
   } else if (!paymentFailed && (order.paymentStatus === 'ONCHAIN_PENDING' || order.paymentStatus === 'PAID')) {
-    stages.push({ id: 'confirmed', label: 'NIM payment confirmed', state: 'idle' })
+    stages.push({ id: 'confirmed', label: `${paymentNoun} confirmed`, state: 'idle' })
   }
   if (order.providerRequestId || order.fulfilmentStartedAt) {
     stages.push({
       id: 'sent',
-      label: `${noun} sent to provider`,
+      label: sentLabel,
       state: 'done',
       ...(order.fulfilmentStartedAt ? { at: order.fulfilmentStartedAt } : {}),
     })
   } else if (order.paymentStatus === 'PAID' && (order.fulfilmentStatus === 'NOT_STARTED' || order.fulfilmentStatus === 'FULFILLING')) {
-    stages.push({ id: 'sent', label: `${noun} sent to provider`, state: 'idle' })
+    stages.push({ id: 'sent', label: sentLabel, state: 'idle' })
   }
   if (order.fulfilmentStatus === 'DELIVERED') {
     stages.push({
       id: 'delivered',
-      label: `${noun} delivered`,
+      label: deliveredLabel,
       state: 'done',
       ...(order.fulfilledAt ? { at: order.fulfilledAt } : {}),
     })
   } else if (order.fulfilmentStatus === 'FULFILLING') {
-    stages.push({ id: 'delivered', label: `${noun} delivered`, state: 'idle' })
+    stages.push({ id: 'delivered', label: deliveredLabel, state: 'idle' })
   } else if (order.fulfilmentStatus === 'FULFILLMENT_FAILED' || order.fulfilmentStatus === 'RECOVERY_REQUIRED') {
     stages.push({ id: 'delivered', label: 'Provider delivery', state: 'attention' })
   }
@@ -217,6 +230,14 @@ export interface MunusReceipt {
   nimAmount?: string
   lunaAmount?: string
   rate?: string
+  rateAsset?: 'NIM' | 'USDT'
+  usdtTotalAmount?: string
+  payoutNgnAmount?: string
+  cashoutFeeUsdt?: string
+  cashoutRateNgnPerUsdt?: string
+  bankName?: string
+  bankAccountMasked?: string
+  bankAccountName?: string
   paymentNetworkLabel?: string
   isTestnet: boolean
   walletTxShort?: string
@@ -240,22 +261,33 @@ export interface MunusReceipt {
 
 export function buildReceipt(order: PaymentOrder): MunusReceipt {
   const activityStatus = describeActivityStatus(order)
-  const copy = describeActivityStatusCopy(activityStatus)
+  const copy = describeActivityStatusCopy(activityStatus, order.serviceType)
+  const isCashout = order.serviceType === 'CASH_OUT'
   return {
     orderId: order.id,
     receiptReference: buildReceiptReference(order.id),
     serviceLabel: describeServiceLabel(order.serviceType),
     network: order.recipientNetwork,
-    recipientMasked: maskPhone(order.recipientPhone),
+    recipientMasked: isCashout
+      ? maskBankAccountNumber(order.bankAccountNumber ?? '')
+      : maskPhone(order.recipientPhone ?? ''),
     localAmount: order.requestedAmount,
     localCurrency: 'NGN',
     bundleLabel: order.planDisplayLabel,
     dataAllowance: order.planDataAllowance,
     validity: order.planValidity,
     asset: order.paymentAsset,
-    nimAmount: order.quotedCryptoAmount,
+    nimAmount: isCashout ? undefined : order.quotedCryptoAmount,
     lunaAmount: order.quoteLunaAmount,
-    rate: order.quoteRateNgnPerNim,
+    rate: isCashout ? order.cashoutRate : order.quoteRateNgnPerNim,
+    rateAsset: isCashout ? 'USDT' : 'NIM',
+    usdtTotalAmount: order.usdtTotalAmount,
+    payoutNgnAmount: order.payoutNgnAmount,
+    cashoutFeeUsdt: order.cashoutFeeUsdt,
+    cashoutRateNgnPerUsdt: order.cashoutRate,
+    bankName: order.bankName,
+    bankAccountMasked: order.bankAccountNumber ? maskBankAccountNumber(order.bankAccountNumber) : undefined,
+    bankAccountName: order.bankAccountName,
     paymentNetworkLabel: describePaymentNetwork(order.paymentNetwork),
     isTestnet: order.paymentNetwork === 'testnet',
     walletTxShort: order.walletTxRef ? shortenReference(order.walletTxRef) : undefined,
@@ -299,8 +331,7 @@ export function isCompletedReceipt(order: Pick<PaymentOrder,
     order.fulfilmentStatus === 'DELIVERED' &&
     Boolean(order.walletTxRef) &&
     Boolean(order.paymentVerifiedAt) &&
-    Boolean(order.quotedCryptoAmount) &&
-    Boolean(order.quoteLunaAmount) &&
+    Boolean(order.quotedCryptoAmount ?? order.quoteLunaAmount) &&
     Boolean(order.provider) &&
     Boolean(order.fulfilledAt)
   )

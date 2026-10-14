@@ -41,6 +41,18 @@ export interface NimQuoteRecord {
   memo: string
 }
 
+export interface CashoutQuoteRecord {
+  paycrestOrderId: string
+  receiveAddress: string
+  validUntil: string
+  payoutNgnAmount: string
+  feeUsdtAmount?: string
+  rateNgnPerUsdt: string
+  usdtTotalAmount: string
+  source: string
+  observedAt: string
+}
+
 export interface VerifiedNimPayment {
   transactionHash: string
   sender: string
@@ -64,6 +76,10 @@ export interface PaymentRepository {
   recordPaymentSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null>
   recordVerifiedPayment(userId: string, orderId: string, payment: VerifiedNimPayment): Promise<PaymentOrder | null>
   recordPaymentFailure(userId: string, orderId: string, reason: string): Promise<PaymentOrder | null>
+  recordCashoutQuote(userId: string, orderId: string, quote: CashoutQuoteRecord): Promise<PaymentOrder | null>
+  recordCashoutIntent(userId: string, orderId: string, nowIso: string): Promise<PaymentOrder | null>
+  recordCashoutSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null>
+  recordCashoutPaid(userId: string, orderId: string, verifiedAt: string): Promise<PaymentOrder | null>
 }
 
 export class InMemoryPaymentRepository implements PaymentRepository {
@@ -91,12 +107,23 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       recipientNetwork: draft.recipientNetwork,
       recipientCountry: 'NG',
       requestedAmount: draft.requestedAmount,
-      requestedCurrency: 'NGN',
+      requestedCurrency: draft.requestedCurrency ?? 'NGN',
       providerPlanId: draft.providerPlanId,
       planDisplayLabel: draft.planDisplayLabel,
       planDataAllowance: draft.planDataAllowance,
       planValidity: draft.planValidity,
       essentialRequestId: draft.essentialRequestId,
+      bankCode: draft.bankCode,
+      bankName: draft.bankName,
+      bankAccountNumber: draft.bankAccountNumber,
+      bankAccountName: draft.bankAccountName,
+      paycrestReceiveAddress: draft.paycrestReceiveAddress,
+      paycrestStatus: draft.paycrestStatus,
+      paycrestValidUntil: draft.paycrestValidUntil,
+      payoutNgnAmount: draft.payoutNgnAmount,
+      cashoutFeeUsdt: draft.cashoutFeeUsdt,
+      usdtTotalAmount: draft.usdtTotalAmount,
+      cashoutRate: draft.cashoutRate,
       paymentStatus: 'DRAFT',
       fulfilmentStatus: 'NOT_STARTED',
       createdAt: now,
@@ -241,10 +268,85 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     this.orders.set(orderId, updated)
     return updated
   }
+
+  async recordCashoutQuote(userId: string, orderId: string, quote: CashoutQuoteRecord): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.serviceType !== 'CASH_OUT' || order.paymentAsset !== 'USDT') return null
+    if (order.paymentStatus !== 'DRAFT' && order.paymentStatus !== 'READY_FOR_PAYMENT') return null
+    const updated: PaymentOrder = {
+      ...order,
+      provider: 'paycrest',
+      providerRef: quote.paycrestOrderId,
+      paycrestReceiveAddress: quote.receiveAddress,
+      paycrestStatus: 'initiated',
+      paycrestValidUntil: quote.validUntil,
+      payoutNgnAmount: quote.payoutNgnAmount,
+      cashoutFeeUsdt: quote.feeUsdtAmount,
+      usdtTotalAmount: quote.usdtTotalAmount,
+      cashoutRate: quote.rateNgnPerUsdt,
+      quotedCryptoAmount: quote.usdtTotalAmount,
+      quoteSource: quote.source,
+      quoteObservedAt: quote.observedAt,
+      quoteExpiresAt: quote.validUntil,
+      paymentStatus: 'READY_FOR_PAYMENT',
+      updatedAt: new Date().toISOString(),
+    }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+
+  async recordCashoutIntent(userId: string, orderId: string, nowIso: string): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.serviceType !== 'CASH_OUT') return null
+    if (order.paymentStatus !== 'READY_FOR_PAYMENT' && order.paymentStatus !== 'AWAITING_WALLET_APPROVAL') return null
+    if (!isFreshCashoutQuote(order, nowIso)) return null
+    const updated: PaymentOrder = { ...order, paymentStatus: 'AWAITING_WALLET_APPROVAL', updatedAt: new Date().toISOString() }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+
+  async recordCashoutSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.serviceType !== 'CASH_OUT') return null
+    if (order.paymentStatus !== 'READY_FOR_PAYMENT' && order.paymentStatus !== 'AWAITING_WALLET_APPROVAL') return null
+    if (!isFreshCashoutQuote(order, nowIso)) return null
+    if (order.walletTxRef && order.walletTxRef.toLowerCase() !== transactionHash.toLowerCase()) return null
+    const updated: PaymentOrder = {
+      ...order,
+      walletTxRef: transactionHash,
+      paymentStatus: 'ONCHAIN_PENDING',
+      updatedAt: new Date().toISOString(),
+    }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+
+  async recordCashoutPaid(userId: string, orderId: string, verifiedAt: string): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.serviceType !== 'CASH_OUT' || order.paymentStatus !== 'ONCHAIN_PENDING') return null
+    const updated: PaymentOrder = {
+      ...order,
+      paymentVerifiedAt: verifiedAt,
+      paymentFailureReason: undefined,
+      paymentStatus: 'PAID',
+      updatedAt: new Date().toISOString(),
+    }
+    this.orders.set(orderId, updated)
+    return updated
+  }
 }
 
 function isFreshQuote(order: PaymentOrder, nowIso: string): boolean {
   if (!order.quotedCryptoAmount || !order.quoteLunaAmount || !order.quoteExpiresAt) return false
+  return Date.parse(order.quoteExpiresAt) > Date.parse(nowIso)
+}
+
+function isFreshCashoutQuote(order: PaymentOrder, nowIso: string): boolean {
+  if (!order.providerRef || !order.quoteExpiresAt) return false
   return Date.parse(order.quoteExpiresAt) > Date.parse(nowIso)
 }
 
@@ -277,10 +379,13 @@ export class PostgresPaymentRepository implements PaymentRepository {
          recipient_country, requested_amount, requested_currency,
          provider_plan_id, plan_display_label, plan_data_allowance, plan_validity,
          essential_request_id,
+         bank_code, bank_name, bank_account_number, bank_account_name,
+         paycrest_receive_address, paycrest_status, paycrest_valid_until,
+         payout_ngn_amount, cashout_fee_usdt, usdt_total_amount,
          payment_status, fulfilment_status)
-       VALUES ($1, $2, $3, $4, $5, 'NG', $6, 'NGN', $7, $8, $9, $10, $11, 'DRAFT', 'NOT_STARTED')
+       VALUES ($1, $2, $3, $4, $5, 'NG', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'DRAFT', 'NOT_STARTED')
        RETURNING *`,
-      [userId, draft.serviceType, draft.paymentAsset, draft.recipientPhone, draft.recipientNetwork ?? null, draft.requestedAmount, draft.providerPlanId ?? null, draft.planDisplayLabel ?? null, draft.planDataAllowance ?? null, draft.planValidity ?? null, draft.essentialRequestId ?? null],
+      [userId, draft.serviceType, draft.paymentAsset, draft.recipientPhone ?? null, draft.recipientNetwork ?? null, draft.requestedAmount, draft.requestedCurrency ?? 'NGN', draft.providerPlanId ?? null, draft.planDisplayLabel ?? null, draft.planDataAllowance ?? null, draft.planValidity ?? null, draft.essentialRequestId ?? null, draft.bankCode ?? null, draft.bankName ?? null, draft.bankAccountNumber ?? null, draft.bankAccountName ?? null, draft.paycrestReceiveAddress ?? null, draft.paycrestStatus ?? null, draft.paycrestValidUntil ?? null, draft.payoutNgnAmount ?? null, draft.cashoutFeeUsdt ?? null, draft.usdtTotalAmount ?? null],
     ))
     return mapPaymentOrder(requireRow(result.rows[0], 'Payment order'))
   }
@@ -453,6 +558,88 @@ export class PostgresPaymentRepository implements PaymentRepository {
     return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
   }
 
+  async recordCashoutQuote(userId: string, orderId: string, quote: CashoutQuoteRecord): Promise<PaymentOrder | null> {
+    const result = await this.run('record cash-out quote', () => this.database.query(
+      `UPDATE payment_orders
+       SET provider = 'paycrest',
+           provider_ref = $3,
+           paycrest_receive_address = $4,
+           paycrest_status = 'initiated',
+           paycrest_valid_until = $5,
+           payout_ngn_amount = $6,
+           cashout_fee_usdt = $7,
+           usdt_total_amount = $8,
+           cashout_rate_ngn_per_usdt = $9,
+           quoted_crypto_amount = $8,
+           quote_source = $10,
+           quote_observed_at = $11,
+           quote_expires_at = $5,
+           payment_status = 'READY_FOR_PAYMENT',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND service_type = 'CASH_OUT'
+         AND payment_asset = 'USDT'
+         AND payment_status IN ('DRAFT', 'READY_FOR_PAYMENT')
+       RETURNING *`,
+      [orderId, userId, quote.paycrestOrderId, quote.receiveAddress, quote.validUntil, quote.payoutNgnAmount, quote.feeUsdtAmount ?? null, quote.usdtTotalAmount, quote.rateNgnPerUsdt, quote.source, quote.observedAt],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async recordCashoutIntent(userId: string, orderId: string, nowIso: string): Promise<PaymentOrder | null> {
+    const result = await this.run('record cash-out intent', () => this.database.query(
+      `UPDATE payment_orders
+       SET payment_status = 'AWAITING_WALLET_APPROVAL',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND service_type = 'CASH_OUT'
+         AND payment_status IN ('READY_FOR_PAYMENT', 'AWAITING_WALLET_APPROVAL')
+         AND provider_ref IS NOT NULL
+         AND quote_expires_at > $3
+       RETURNING *`,
+      [orderId, userId, nowIso],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async recordCashoutSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null> {
+    const result = await this.run('record cash-out submission', () => this.database.query(
+      `UPDATE payment_orders
+       SET wallet_tx_ref = $3,
+           payment_status = 'ONCHAIN_PENDING',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND service_type = 'CASH_OUT'
+         AND payment_status IN ('READY_FOR_PAYMENT', 'AWAITING_WALLET_APPROVAL')
+         AND provider_ref IS NOT NULL
+         AND quote_expires_at > $4
+         AND (wallet_tx_ref IS NULL OR LOWER(wallet_tx_ref) = LOWER($3))
+       RETURNING *`,
+      [orderId, userId, transactionHash, nowIso],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async recordCashoutPaid(userId: string, orderId: string, verifiedAt: string): Promise<PaymentOrder | null> {
+    const result = await this.run('record cash-out payment', () => this.database.query(
+      `UPDATE payment_orders
+       SET payment_verified_at = $3,
+           payment_failure_reason = NULL,
+           payment_status = 'PAID',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND service_type = 'CASH_OUT'
+         AND payment_status = 'ONCHAIN_PENDING'
+       RETURNING *`,
+      [orderId, userId, verifiedAt],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
   private async run<T>(label: string, operation: () => Promise<T>): Promise<T> {
     try {
       return await operation()
@@ -469,12 +656,11 @@ function mapPaymentOrder(row: Record<string, unknown>): PaymentOrder {
     userId: String(row.user_id),
     serviceType: row.service_type as PaymentOrder['serviceType'],
     paymentAsset: row.payment_asset as PaymentOrder['paymentAsset'],
-    recipientPhone: String(row.recipient_phone),
+    recipientPhone: row.recipient_phone ? String(row.recipient_phone) : undefined,
     recipientNetwork: (row.recipient_network ?? undefined) as PaymentOrder['recipientNetwork'],
     recipientCountry: 'NG',
     requestedAmount: String(row.requested_amount),
-    requestedCurrency: 'NGN',
-    providerPlanId: row.provider_plan_id ? String(row.provider_plan_id) : undefined,
+    requestedCurrency: (row.requested_currency ?? 'NGN') as PaymentOrder['requestedCurrency'],
     essentialRequestId: row.essential_request_id ? String(row.essential_request_id) : undefined,
     planDisplayLabel: row.plan_display_label ? String(row.plan_display_label) : undefined,
     planDataAllowance: row.plan_data_allowance ? String(row.plan_data_allowance) : undefined,
@@ -492,6 +678,17 @@ function mapPaymentOrder(row: Record<string, unknown>): PaymentOrder {
     fulfilmentStartedAt: row.fulfilment_started_at ? timestampString(row.fulfilment_started_at) : undefined,
     fulfilledAt: row.fulfilled_at ? timestampString(row.fulfilled_at) : undefined,
     lastReconciledAt: row.last_reconciled_at ? timestampString(row.last_reconciled_at) : undefined,
+    bankCode: row.bank_code ? String(row.bank_code) : undefined,
+    bankName: row.bank_name ? String(row.bank_name) : undefined,
+    bankAccountNumber: row.bank_account_number ? String(row.bank_account_number) : undefined,
+    bankAccountName: row.bank_account_name ? String(row.bank_account_name) : undefined,
+    paycrestReceiveAddress: row.paycrest_receive_address ? String(row.paycrest_receive_address) : undefined,
+    paycrestStatus: row.paycrest_status ? String(row.paycrest_status) : undefined,
+    paycrestValidUntil: row.paycrest_valid_until ? timestampString(row.paycrest_valid_until) : undefined,
+    payoutNgnAmount: row.payout_ngn_amount ? String(row.payout_ngn_amount) : undefined,
+    cashoutFeeUsdt: row.cashout_fee_usdt ? String(row.cashout_fee_usdt) : undefined,
+    usdtTotalAmount: row.usdt_total_amount ? String(row.usdt_total_amount) : undefined,
+    cashoutRate: row.cashout_rate_ngn_per_usdt ? String(row.cashout_rate_ngn_per_usdt) : undefined,
     paymentNetwork: (row.payment_network ?? undefined) as PaymentOrder['paymentNetwork'],
     quoteRateNgnPerNim: row.quote_rate_ngn_per_nim ? String(row.quote_rate_ngn_per_nim) : undefined,
     quoteLunaAmount: row.quote_luna_amount ? String(row.quote_luna_amount) : undefined,

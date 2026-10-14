@@ -120,14 +120,17 @@ describe('receipt projection', () => {
     const cases: (keyof PaymentOrder)[] = [
       'walletTxRef',
       'paymentVerifiedAt',
-      'quotedCryptoAmount',
-      'quoteLunaAmount',
       'provider',
       'fulfilledAt',
     ]
     for (const key of cases) {
       expect(isCompletedReceipt({ ...base, [key]: undefined })).toBe(false)
     }
+    // The crypto-amount link is rail-aware: NIM quotes carry luna, USDT
+    // cash-out quotes carry the USDT total. One of them must be present.
+    expect(isCompletedReceipt({ ...base, quotedCryptoAmount: undefined })).toBe(true)
+    expect(isCompletedReceipt({ ...base, quoteLunaAmount: undefined })).toBe(true)
+    expect(isCompletedReceipt({ ...base, quotedCryptoAmount: undefined, quoteLunaAmount: undefined })).toBe(false)
   })
 
   it('maps every payment/fulfilment combination to one human status', () => {
@@ -254,5 +257,73 @@ describe('receipt projection', () => {
       'Data delivered',
     ])
     expect(JSON.stringify(receipt)).not.toContain('08012345678')
+  })
+
+  it('renders cash-out evidence with masked bank details', () => {
+    const receipt = buildReceipt(order({
+      serviceType: 'CASH_OUT',
+      paymentAsset: 'USDT',
+      recipientPhone: undefined,
+      recipientNetwork: undefined,
+      requestedAmount: '100',
+      requestedCurrency: 'USDT',
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'DELIVERED',
+      bankCode: 'GTB',
+      bankName: 'GTBank',
+      bankAccountNumber: '0123456789',
+      bankAccountName: 'ADA OKAFOR',
+      provider: 'paycrest',
+      providerRef: 'pc-1',
+      providerStatus: 'settled',
+      providerStatusCode: 'settled',
+      quotedCryptoAmount: '101.5',
+      usdtTotalAmount: '101.5',
+      payoutNgnAmount: '152250',
+      cashoutFeeUsdt: '1.5',
+      cashoutRate: '1500',
+      paycrestReceiveAddress: `0x${'dd'.repeat(20)}`,
+      walletTxRef: TX_HASH,
+      paymentVerifiedAt: '2026-10-14T12:05:00.000Z',
+      fulfilmentStartedAt: '2026-10-14T12:05:30.000Z',
+      fulfilledAt: '2026-10-14T12:06:00.000Z',
+    }))
+
+    expect(receipt.completed).toBe(true)
+    expect(receipt.serviceLabel).toBe('Cash out')
+    expect(receipt.providerName).toBe('Paycrest')
+    expect(receipt.providerRef).toBe('pc-1')
+    expect(receipt.recipientMasked).toBe('•••• 6789')
+    expect(receipt.bankName).toBe('GTBank')
+    expect(receipt.bankAccountMasked).toBe('•••• 6789')
+    expect(receipt.bankAccountName).toBe('ADA OKAFOR')
+    expect(receipt.usdtTotalAmount).toBe('101.5')
+    expect(receipt.payoutNgnAmount).toBe('152250')
+    expect(receipt.cashoutFeeUsdt).toBe('1.5')
+    expect(receipt.rate).toBe('1500')
+    expect(receipt.rateAsset).toBe('USDT')
+    expect(receipt.walletTxShort).toBe('abababab…ababab')
+    expect(receipt.walletTxFull).toBe(TX_HASH)
+    expect(receipt.timeline.map((stage) => stage.label)).toEqual([
+      'Order created',
+      'USDT transfer submitted',
+      'USDT transfer confirmed',
+      'Payout sent to provider',
+      'Payout settled',
+    ])
+    expect(receipt.statusLabel).toBe('Delivered')
+    expect(JSON.stringify(receipt)).not.toContain('0123456789')
+  })
+
+  it('maps refunded cash-out fulfilment to needs-attention', () => {
+    const cashout = order({
+      serviceType: 'CASH_OUT',
+      paymentAsset: 'USDT',
+      requestedCurrency: 'USDT',
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'REFUNDED',
+    })
+    expect(describeActivityStatus(cashout)).toBe('needs-attention')
+    expect(buildReceipt(cashout).statusLabel).toBe('Needs attention')
   })
 })

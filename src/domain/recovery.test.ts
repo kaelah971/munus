@@ -75,4 +75,33 @@ describe('recovery cases', () => {
     expect(data?.headline).toBe('Data delivery failed')
     expect(JSON.stringify(data)).not.toMatch(/provider_ref|walletTxRef|RequestID/)
   })
+
+  it('keeps cash-out recovery refresh-only with payout wording', () => {
+    const base = {
+      serviceType: 'CASH_OUT' as const,
+      paymentAsset: 'USDT' as const,
+      requestedCurrency: 'USDT' as const,
+    }
+    const attention = buildRecoveryState(order({ ...base, fulfilmentStatus: 'RECOVERY_REQUIRED' }), NOW)
+    expect(attention?.kind).toBe('attention')
+    expect(attention?.headline).toBe('Payout delivery needs attention')
+    expect(attention?.canRefresh).toBe(true)
+    expect(attention?.canRetry).toBe(false)
+    expect(attention?.retryBlockedReason).toMatch(/Refresh status/)
+    expect(JSON.stringify(attention)).toMatch(/USDT/)
+    expect(JSON.stringify(attention)).not.toMatch(/NIM/)
+
+    const failed = buildRecoveryState(order({ ...base, fulfilmentStatus: 'FULFILLMENT_FAILED' }), NOW)
+    expect(failed?.kind).toBe('failed')
+    expect(failed?.headline).toBe('Payout delivery failed')
+    expect(failed?.canRetry).toBe(false)
+
+    const watching = buildRecoveryState(order({
+      ...base,
+      fulfilmentStatus: 'FULFILLING',
+      fulfilmentStartedAt: new Date(NOW - 60_000).toISOString(),
+    }), NOW)
+    expect(watching?.kind).toBe('watch')
+    expect(watching?.headline).toBe('Delivering your payout')
+  })
 })

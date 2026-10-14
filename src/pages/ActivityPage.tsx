@@ -85,13 +85,25 @@ export function ActivityPage({ api, onNavigate }: {
     setOrders((current) => current.map((entry) => entry.id === next.id ? next : entry))
   }
 
+  function findOrder(orderId: string): PaymentOrder | undefined {
+    return orders.find((entry) => entry.id === orderId)
+  }
+
   async function refreshRecoveryOrder(orderId: string): Promise<PaymentOrder> {
-    const updated = await api.reconcileOrder(orderId)
+    // Cash-out recovery re-checks Paycrest, never the airtime provider.
+    const updated = findOrder(orderId)?.serviceType === 'CASH_OUT'
+      ? await api.reconcileCashoutOrder(orderId)
+      : await api.reconcileOrder(orderId)
     updateOrder(updated)
     return updated
   }
 
   async function retryRecoveryOrder(orderId: string): Promise<PaymentOrder> {
+    // Unreachable via UI: cash-out cases never offer retry. Fail closed
+    // rather than routing a payout into the airtime retry rail.
+    if (findOrder(orderId)?.serviceType === 'CASH_OUT') {
+      throw new Error('Cash out never retries a purchase. Refresh status instead.')
+    }
     const updated = await api.retryDelivery(orderId)
     updateOrder(updated)
     return updated
@@ -155,18 +167,25 @@ export function ActivityPage({ api, onNavigate }: {
           <div className="category-list">
             {visible.map((order) => {
               const receipt = buildReceipt(order)
-              const copy = describeActivityStatusCopy(describeActivityStatus(order))
+              const copy = describeActivityStatusCopy(describeActivityStatus(order), order.serviceType)
+              const isCashout = order.serviceType === 'CASH_OUT'
               const context = receipt.dataAllowance ? `${receipt.dataAllowance} · ` : ''
+              const description = isCashout
+                ? [order.bankName, receipt.recipientMasked, formatActivityDate(order.createdAt)].filter(Boolean).join(' · ')
+                : `${context}${order.recipientNetwork ? `${order.recipientNetwork} · ` : ''}${receipt.recipientMasked} · ${formatActivityDate(order.createdAt)}`
+              const title = isCashout
+                ? `${receipt.usdtTotalAmount ?? order.requestedAmount} USDT cash out`
+                : `₦${order.requestedAmount} ${receipt.serviceLabel.toLowerCase()}`
               const recovery = buildRecoveryState(order)
               const needsRecovery = recovery !== null && (recovery.kind === 'attention' || recovery.kind === 'failed')
               return (
                 <ListRow
-                  description={`${context}${order.recipientNetwork ? `${order.recipientNetwork} · ` : ''}${receipt.recipientMasked} · ${formatActivityDate(order.createdAt)}`}
+                  description={description}
                   icon={serviceIcon(order)}
                   key={order.id}
                   meta={<StatusPill label={needsRecovery ? 'Needs attention' : copy.label} tone={needsRecovery ? 'attention' : copy.tone} />}
                   onClick={() => setView(needsRecovery ? { name: 'recovery', orderId: order.id } : { name: 'receipt', orderId: order.id })}
-                  title={`₦${order.requestedAmount} ${receipt.serviceLabel.toLowerCase()}`}
+                  title={title}
                 />
               )
             })}
@@ -186,6 +205,7 @@ export function ActivityPage({ api, onNavigate }: {
 
 function ReceiptDetail({ receipt, onBack }: { receipt: MunusReceipt; onBack: () => void }) {
   const [copied, setCopied] = useState(false)
+  const isCashout = receipt.asset === 'USDT'
 
   function copyReference() {
     void copyText(receipt.walletTxFull ?? receipt.receiptReference).then((ok) => {
@@ -199,7 +219,7 @@ function ReceiptDetail({ receipt, onBack }: { receipt: MunusReceipt; onBack: () 
         <Icon name="back" size={18} /> Activity
       </button>
       <p className="eyebrow">{receipt.completed ? 'Receipt' : 'Order detail'}</p>
-      <h1 id="activity-title">₦{receipt.localAmount} {receipt.serviceLabel.toLowerCase()}</h1>
+      <h1 id="activity-title">{isCashout ? `${receipt.usdtTotalAmount ?? receipt.localAmount} USDT ${receipt.serviceLabel.toLowerCase()}` : `₦${receipt.localAmount} ${receipt.serviceLabel.toLowerCase()}`}</h1>
       <p className="screen-lede">
         <StatusPill label={receipt.completed ? `Receipt · ${receipt.statusLabel}` : receipt.statusLabel} tone={receipt.statusTone} />
       </p>
@@ -212,11 +232,13 @@ function ReceiptDetail({ receipt, onBack }: { receipt: MunusReceipt; onBack: () 
         <dl className="contact-details">
           <div><dt>Service</dt><dd>{receipt.serviceLabel}</dd></div>
           {receipt.network ? <div><dt>Network</dt><dd>{receipt.network}</dd></div> : null}
-          <div><dt>Recipient</dt><dd>{receipt.recipientMasked}</dd></div>
+          <div><dt>{isCashout ? 'Bank account' : 'Recipient'}</dt><dd>{receipt.recipientMasked}</dd></div>
+          {receipt.bankName ? <div><dt>Bank</dt><dd>{receipt.bankName}</dd></div> : null}
+          {receipt.bankAccountName ? <div><dt>Account name</dt><dd>{receipt.bankAccountName}</dd></div> : null}
           {receipt.bundleLabel ? <div><dt>Bundle</dt><dd>{receipt.bundleLabel}</dd></div> : null}
           {receipt.dataAllowance ? <div><dt>Data allowance</dt><dd>{receipt.dataAllowance}</dd></div> : null}
           {receipt.validity ? <div><dt>Validity</dt><dd>{receipt.validity}</dd></div> : null}
-          <div><dt>Local value</dt><dd>₦{receipt.localAmount}</dd></div>
+          <div><dt>{isCashout ? 'Payout' : 'Local value'}</dt><dd>₦{isCashout ? (receipt.payoutNgnAmount ?? receipt.localAmount) : receipt.localAmount}</dd></div>
           <div><dt>Receipt reference</dt><dd>{receipt.receiptReference}</dd></div>
         </dl>
       </section>
@@ -226,7 +248,10 @@ function ReceiptDetail({ receipt, onBack }: { receipt: MunusReceipt; onBack: () 
         <dl className="contact-details">
           <div><dt>Payment asset</dt><dd>{receipt.asset}</dd></div>
           {receipt.nimAmount ? <div><dt>You paid</dt><dd>{receipt.nimAmount} NIM</dd></div> : null}
-          {receipt.rate ? <div><dt>Rate</dt><dd>1 NIM ≈ ₦{receipt.rate}</dd></div> : null}
+          {receipt.usdtTotalAmount ? <div><dt>You paid</dt><dd>{receipt.usdtTotalAmount} USDT</dd></div> : null}
+          {receipt.cashoutFeeUsdt ? <div><dt>Provider fees</dt><dd>{receipt.cashoutFeeUsdt} USDT</dd></div> : null}
+          {receipt.rate && receipt.rateAsset === 'USDT' ? <div><dt>Rate</dt><dd>1 USDT ≈ ₦{receipt.rate}</dd></div> : null}
+          {receipt.rate && receipt.rateAsset !== 'USDT' ? <div><dt>Rate</dt><dd>1 NIM ≈ ₦{receipt.rate}</dd></div> : null}
           {receipt.paymentNetworkLabel ? <div><dt>Payment network</dt><dd>{receipt.paymentNetworkLabel}</dd></div> : null}
           <div><dt>Payment status</dt><dd>{receipt.activityStatus === 'payment-failed' ? 'Failed' : receipt.paymentTime ? 'Confirmed' : receipt.walletTxShort ? 'Submitted' : 'Not started'}</dd></div>
           {receipt.senderShort ? <div><dt>Payment sender</dt><dd>{receipt.senderShort}</dd></div> : null}
@@ -252,7 +277,7 @@ function ReceiptDetail({ receipt, onBack }: { receipt: MunusReceipt; onBack: () 
           <div className="truth-note"><Icon name="info" size={18} /><p>{receipt.failureDetail}</p></div>
         ) : null}
         {receipt.activityStatus === 'needs-attention' || receipt.activityStatus === 'delivery-failed' ? (
-          <div className="truth-note"><Icon name="info" size={18} /><p>Payment confirmed · airtime delivery needs attention. Your NIM payment is safe and recorded.</p></div>
+          <div className="truth-note"><Icon name="info" size={18} /><p>{isCashout ? 'Transfer recorded · the NGN payout needs attention. Your USDT transfer is safe and recorded.' : 'Payment confirmed · airtime delivery needs attention. Your NIM payment is safe and recorded.'}</p></div>
         ) : null}
       </section>
 

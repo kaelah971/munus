@@ -265,6 +265,55 @@ describe('Activity and Receipt Vault', () => {
     expect(screen.getByText(/Data delivered/)).toBeInTheDocument()
   })
 
+  it('lists cash-out orders with masked bank details and full receipt evidence', async () => {
+    const cashout = order({
+      id: 'aaaaaaaa-0000-0000-0000-000000000009',
+      serviceType: 'CASH_OUT',
+      paymentAsset: 'USDT',
+      recipientPhone: undefined,
+      recipientNetwork: undefined,
+      requestedAmount: '100',
+      requestedCurrency: 'USDT',
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'DELIVERED',
+      bankCode: 'GTB',
+      bankName: 'GTBank',
+      bankAccountNumber: '0123456789',
+      bankAccountName: 'ADA OKAFOR',
+      provider: 'paycrest',
+      providerRef: 'pc-1',
+      providerStatus: 'settled',
+      providerStatusCode: 'settled',
+      quotedCryptoAmount: '101.5',
+      usdtTotalAmount: '101.5',
+      payoutNgnAmount: '152250',
+      cashoutFeeUsdt: '1.5',
+      cashoutRate: '1500',
+      walletTxRef: TX_HASH,
+      paymentVerifiedAt: '2026-10-14T12:05:00.000Z',
+      fulfilmentStartedAt: '2026-10-14T12:05:30.000Z',
+      fulfilledAt: '2026-10-14T12:06:00.000Z',
+      createdAt: '2026-10-14T11:00:00.000Z',
+    })
+    renderPage(apiStub([cashout]))
+
+    const row = await screen.findByRole('button', { name: /101\.5 USDT cash out/ })
+    expect(row).toHaveTextContent('GTBank · •••• 6789')
+    expect(screen.queryByText('0123456789')).not.toBeInTheDocument()
+
+    fireEvent.click(row)
+    expect(await screen.findByText('Receipt · Delivered')).toBeInTheDocument()
+    expect(screen.getByText('GTBank')).toBeInTheDocument()
+    expect(screen.getByText('ADA OKAFOR')).toBeInTheDocument()
+    expect(screen.getByText('101.5 USDT')).toBeInTheDocument()
+    expect(screen.getByText('1.5 USDT')).toBeInTheDocument()
+    expect(screen.getByText('1 USDT ≈ ₦1500')).toBeInTheDocument()
+    expect(screen.getByText('Paycrest')).toBeInTheDocument()
+    expect(screen.getByText('pc-1')).toBeInTheDocument()
+    expect(screen.getByText(/Payout settled/)).toBeInTheDocument()
+    expect(screen.queryByText('0123456789')).not.toBeInTheDocument()
+  })
+
   it('shows a truthful empty state with a pay CTA and handles load failure', async () => {
     const { onNavigate } = renderPage(apiStub([]))
     expect(await screen.findByText('No activity yet')).toBeInTheDocument()

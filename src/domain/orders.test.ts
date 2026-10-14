@@ -109,7 +109,10 @@ describe('Munus payment order domain', () => {
     expect(canPayOrder(ready)).toBe(true)
     expect(canPayOrder(expired)).toBe(false)
     expect(canPayOrder({ ...ready, paymentStatus: 'DRAFT' })).toBe(false)
-    expect(canPayOrder({ ...ready, quoteLunaAmount: undefined })).toBe(false)
+    // Rail-aware freshness: a quoted amount with a live expiry pays on
+    // either rail; luna is NIM-specific evidence, not a pay gate.
+    expect(canPayOrder({ ...ready, quoteLunaAmount: undefined })).toBe(true)
+    expect(canPayOrder({ ...ready, quotedCryptoAmount: undefined })).toBe(false)
   })
 
   it('converts NGN to luna with integer math, rounding up', () => {
@@ -152,5 +155,14 @@ describe('Munus payment order domain', () => {
     expect(isQuoteFresh(fresh)).toBe(true)
     expect(isQuoteFresh(stale)).toBe(false)
     expect(isQuoteFresh(draftOrder())).toBe(false)
+    // USDT cash-out quotes carry the total without luna.
+    const usdtFresh = draftOrder({
+      serviceType: 'CASH_OUT',
+      paymentAsset: 'USDT',
+      quotedCryptoAmount: '101.5',
+      quoteExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+    expect(isQuoteFresh(usdtFresh)).toBe(true)
+    expect(isQuoteFresh({ ...usdtFresh, quoteExpiresAt: new Date(Date.now() - 1_000).toISOString() })).toBe(false)
   })
 })

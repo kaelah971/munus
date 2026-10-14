@@ -1,5 +1,11 @@
 import type { DataNetwork, DataPlan, PaymentOrder, PaymentOrderDraft } from '../domain/orders'
+import type { CashoutBank, CashoutIntent, CashoutOrderInput, CashoutRatePreview } from '../domain/cashout'
 import type { SupportNetwork } from '../domain/support'
+
+export interface CashoutIntentResponse {
+  order: PaymentOrder
+  intent: CashoutIntent
+}
 
 export interface PaymentIntentResponse {
   order: PaymentOrder
@@ -31,6 +37,20 @@ export interface PaymentApi {
   listDataNetworks(): Promise<DataNetwork[]>
   listDataPlans(network: SupportNetwork): Promise<DataPlan[]>
   createDataOrder(input: DataOrderInput): Promise<PaymentOrder>
+  listCashoutBanks(): Promise<CashoutBank[]>
+  verifyCashoutAccount(input: { institution: string; accountNumber: string }): Promise<{
+    bankCode: string
+    bankName: string
+    accountNumber: string
+    accountName: string
+  }>
+  previewCashoutRate(usdtAmount: string): Promise<CashoutRatePreview>
+  createCashoutOrder(input: CashoutOrderInput): Promise<PaymentOrder>
+  createCashoutQuote(id: string): Promise<PaymentOrder>
+  createCashoutIntent(id: string): Promise<CashoutIntentResponse>
+  submitCashoutPayment(id: string, transactionHash: string): Promise<PaymentOrder>
+  reconcileCashoutOrder(id: string): Promise<PaymentOrder>
+  refreshCashoutQuote(id: string): Promise<PaymentOrder>
 }
 
 export class RemotePaymentApi implements PaymentApi {
@@ -102,6 +122,60 @@ export class RemotePaymentApi implements PaymentApi {
       method: 'POST',
       body: JSON.stringify({ serviceType: 'DATA', ...input }),
     })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async listCashoutBanks(): Promise<CashoutBank[]> {
+    const response = await this.request('/cashout/banks')
+    return ((await response.json()) as { banks: CashoutBank[] }).banks
+  }
+
+  async verifyCashoutAccount(input: { institution: string; accountNumber: string }) {
+    const response = await this.request('/cashout/verify-account', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return (await response.json()) as { bankCode: string; bankName: string; accountNumber: string; accountName: string }
+  }
+
+  async previewCashoutRate(usdtAmount: string): Promise<CashoutRatePreview> {
+    const response = await this.request(`/cashout/rate?amount=${encodeURIComponent(usdtAmount)}`)
+    return (await response.json()) as CashoutRatePreview
+  }
+
+  async createCashoutOrder(input: CashoutOrderInput): Promise<PaymentOrder> {
+    const response = await this.request('/cashout/orders', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async createCashoutQuote(id: string): Promise<PaymentOrder> {
+    const response = await this.request(`/cashout/${encodeURIComponent(id)}/quote`, { method: 'POST' })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async createCashoutIntent(id: string): Promise<CashoutIntentResponse> {
+    const response = await this.request(`/cashout/${encodeURIComponent(id)}/intent`, { method: 'POST' })
+    return (await response.json()) as CashoutIntentResponse
+  }
+
+  async submitCashoutPayment(id: string, transactionHash: string): Promise<PaymentOrder> {
+    const response = await this.request(`/cashout/${encodeURIComponent(id)}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ transactionHash }),
+    })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async reconcileCashoutOrder(id: string): Promise<PaymentOrder> {
+    const response = await this.request(`/cashout/${encodeURIComponent(id)}/reconcile`, { method: 'POST' })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async refreshCashoutQuote(id: string): Promise<PaymentOrder> {
+    const response = await this.request(`/cashout/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
     return (await response.json()) as PaymentOrder
   }
 

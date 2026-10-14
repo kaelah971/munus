@@ -53,11 +53,11 @@ export interface PaymentOrder {
   userId: string
   serviceType: PaymentServiceType
   paymentAsset: PaymentAsset
-  recipientPhone: string
+  recipientPhone?: string
   recipientNetwork?: SupportNetwork
   recipientCountry: 'NG'
   requestedAmount: string
-  requestedCurrency: 'NGN'
+  requestedCurrency: 'NGN' | 'USDT'
   providerPlanId?: string
   planDisplayLabel?: string
   planDataAllowance?: string
@@ -92,6 +92,17 @@ export interface PaymentOrder {
   fulfilmentStatus: FulfilmentStatus
   createdAt: string
   updatedAt: string
+  bankCode?: string
+  bankName?: string
+  bankAccountNumber?: string
+  bankAccountName?: string
+  paycrestReceiveAddress?: string
+  paycrestStatus?: string
+  paycrestValidUntil?: string
+  payoutNgnAmount?: string
+  cashoutFeeUsdt?: string
+  usdtTotalAmount?: string
+  cashoutRate?: string
 }
 
 export interface PaymentOrderDraft {
@@ -105,14 +116,26 @@ export interface PaymentOrderDraft {
 export interface ValidatedPaymentOrderDraft {
   serviceType: PaymentServiceType
   paymentAsset: PaymentAsset
-  recipientPhone: string
+  recipientPhone?: string
   recipientNetwork?: SupportNetwork
   requestedAmount: string
+  requestedCurrency?: 'NGN' | 'USDT'
   providerPlanId?: string
   planDisplayLabel?: string
   planDataAllowance?: string
   planValidity?: string
   essentialRequestId?: string
+  bankCode?: string
+  bankName?: string
+  bankAccountNumber?: string
+  bankAccountName?: string
+  paycrestReceiveAddress?: string
+  paycrestStatus?: string
+  paycrestValidUntil?: string
+  payoutNgnAmount?: string
+  cashoutFeeUsdt?: string
+  usdtTotalAmount?: string
+  cashoutRate?: string
 }
 
 export interface DataOrderDraft {
@@ -266,7 +289,10 @@ export function formatNimFromLunaBigint(luna: bigint): string {
 }
 
 export function isQuoteFresh(order: Pick<PaymentOrder, 'quotedCryptoAmount' | 'quoteExpiresAt' | 'quoteLunaAmount'>, now = Date.now()): boolean {
-  if (!order.quotedCryptoAmount || !order.quoteLunaAmount) return false
+  // Rail-aware: NIM quotes carry luna alongside the crypto amount, while
+  // USDT cash-out quotes carry the USDT total only. Freshness is the quoted
+  // amount plus a live expiry on either rail.
+  if (!order.quotedCryptoAmount) return false
   if (!order.quoteExpiresAt) return false
   return Date.parse(order.quoteExpiresAt) > now
 }
@@ -355,11 +381,12 @@ export function canPayOrder(order: Pick<PaymentOrder, 'paymentStatus' | 'quotedC
   return order.paymentStatus === 'READY_FOR_PAYMENT' && isQuoteFresh(order, now)
 }
 
-export function describeOrderStage(order: Pick<PaymentOrder, 'paymentStatus' | 'fulfilmentStatus'>): string {
+export function describeOrderStage(order: Pick<PaymentOrder, 'paymentStatus' | 'fulfilmentStatus' | 'serviceType'>): string {
+  const wallet = order.serviceType === 'CASH_OUT' ? 'your wallet' : 'Nimiq Pay'
   if (order.paymentStatus === 'DRAFT') return 'Order saved · payment quote not created yet.'
   if (order.paymentStatus === 'QUOTE_PENDING') return 'Waiting for a live payment quote.'
   if (order.paymentStatus === 'READY_FOR_PAYMENT') return 'Quote ready · waiting for wallet approval.'
-  if (order.paymentStatus === 'AWAITING_WALLET_APPROVAL') return 'Waiting for Nimiq Pay approval.'
+  if (order.paymentStatus === 'AWAITING_WALLET_APPROVAL') return `Waiting for ${wallet} approval.`
   if (order.paymentStatus === 'ONCHAIN_PENDING') return 'Payment sent · waiting for confirmation.'
   if (order.paymentStatus === 'PAID') {
     if (order.fulfilmentStatus === 'DELIVERED') return 'Paid and delivered.'

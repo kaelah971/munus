@@ -8,6 +8,7 @@ import {
 } from '../domain/orders'
 import type { DataNetwork, DataPlan } from '../domain/orders'
 import type { SupportNetwork } from '../domain/support'
+import type { CashoutOrderInput } from '../domain/cashout'
 import type { DataOrderInput, PaymentApi, PaymentIntentResponse } from './paymentApi'
 
 const PAYMENT_KEY_PREFIX = 'munus:payments:'
@@ -53,6 +54,51 @@ export class LocalPaymentApi implements PaymentApi {
   async reconcileOrder(id: string): Promise<PaymentOrder> {
     void id
     throw new Error('Provider fulfilment requires the Munus API.')
+  }
+
+  async listCashoutBanks(): Promise<never[]> {
+    throw new Error('Cash out requires the Munus API.')
+  }
+
+  async verifyCashoutAccount(input: { institution: string; accountNumber: string }): Promise<never> {
+    void input
+    throw new Error('Cash out requires the Munus API.')
+  }
+
+  async previewCashoutRate(usdtAmount: string): Promise<never> {
+    void usdtAmount
+    throw new Error('Cash out requires the Munus API.')
+  }
+
+  async createCashoutOrder(input: CashoutOrderInput): Promise<never> {
+    void input
+    throw new Error('Cash out requires the Munus API.')
+  }
+
+  async createCashoutQuote(id: string): Promise<never> {
+    void id
+    throw new Error('Cash out requires the Munus API.')
+  }
+
+  async createCashoutIntent(id: string): Promise<never> {
+    void id
+    throw new Error('Cash out requires the Munus API.')
+  }
+
+  async submitCashoutPayment(id: string, transactionHash: string): Promise<never> {
+    void id
+    void transactionHash
+    throw new Error('Cash out requires the Munus API.')
+  }
+
+  async reconcileCashoutOrder(id: string): Promise<never> {
+    void id
+    throw new Error('Cash out requires the Munus API.')
+  }
+
+  async refreshCashoutQuote(id: string): Promise<never> {
+    void id
+    throw new Error('Cash out requires the Munus API.')
   }
 
   async retryDelivery(id: string): Promise<PaymentOrder> {

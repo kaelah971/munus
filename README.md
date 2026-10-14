@@ -162,6 +162,7 @@ The current repository is a working public-beta foundation for the Munus context
 - App lock and a responsive mobile Mini App shell.
 - PostgreSQL migrations for account, authentication, planning, support, and payment-order layers.
 - A reusable payment order foundation: persisted orders with separate crypto-payment and real-world-fulfilment states, owned per user.
+- USDT → NGN cash out through Paycrest Sender API v2: verified bank payout on Polygon USDT only (no on-ramp), disabled truthfully until server Paycrest configuration is set.
 - A Render-compatible one-origin deployment path for the Vite build and Node API.
 
 The following are deliberately not represented as live features:

@@ -13,6 +13,8 @@ import { ClubKonnectDataCatalog } from './dataCatalog'
 import { NimPaymentService } from './nimPayments'
 import { CoinGeckoNimRateProvider } from './nimRates'
 import { RpcNimiqChainReader } from './nimiqChain'
+import { CashoutService } from './cashout'
+import { PaycrestClient } from './paycrest'
 import { syncEssentialForOrder } from './essentialRequests'
 import type { PaymentOrder } from '../src/domain/orders'
 
@@ -57,6 +59,21 @@ const nimPayments = config.nimPayments.receiverAddress
     },
   )
   : null
+const cashout = config.paycrest
+  ? new CashoutService(
+    payment,
+    new PaycrestClient({
+      credentials: { apiKey: config.paycrest.apiKey, apiSecret: config.paycrest.apiSecret },
+      baseUrl: config.paycrest.baseUrl,
+    }),
+    {
+      network: config.defaultNetwork,
+      quoteTtlMs: config.nimPayments.quoteTtlMs,
+      usdtContractAddress: config.paycrest.usdtContractAddress,
+      refundAddress: config.paycrest.refundAddress,
+    },
+  )
+  : null
 const server = createMunusServer({
   repository,
   planning,
@@ -65,6 +82,8 @@ const server = createMunusServer({
   fulfilment,
   nimPayments,
   dataCatalog,
+  cashout,
+  paycrestApiSecret: config.paycrest?.apiSecret,
   auth,
   staticDir: resolve(process.cwd(), 'dist'),
   config,
