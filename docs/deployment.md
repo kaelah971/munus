@@ -51,6 +51,7 @@ The canonical migration order is:
 2. `migrations/0002_production_auth_hardening.sql`
 3. `migrations/0003_planning_layer.sql`
 4. `migrations/0004_support_layer.sql`
+5. `migrations/0005_payment_orders.sql`
 
 The repository includes a deterministic migration runner. Against the intended Neon project, set `DATABASE_URL` in the server environment and run:
 
@@ -67,11 +68,11 @@ The runner creates `public.schema_migrations`, takes a PostgreSQL advisory lock,
 2. Refresh `/`, `/support`, `/pockets`, and a copied `/request/<opaque-id>` URL; each must load the app rather than a hosting 404.
 3. Outside Nimiq Pay, confirm the wallet connection state is truthfully unavailable. Inside Nimiq Pay, confirm the injected account and balance appear.
 4. Sign in and refresh. Confirm the server session restores without a localStorage auth token.
-5. Save a profile, pocket allocation, reminder, contact, support draft, and Request Help record; refresh and confirm each persists.
+5. Save a profile, pocket allocation, reminder, contact, support draft, Request Help record, and airtime payment order; refresh and confirm each persists.
 6. Open a public request link in a signed-out browser. Confirm it shows only the requester label, need, amount, optional masked phone/network, and message—never a wallet address or internal ID.
 7. Confirm logout revokes the session and private API routes return `401` afterward.
 
-Pay, Activity, provider fulfilment, receipts, refunds, automatic payments, and USDT remain intentionally unavailable. Munus must be tested inside Nimiq Pay for wallet behavior; a normal browser must not be treated as a wallet host.
+Payment quotes, NIM movement, Activity, provider fulfilment, receipts, refunds, automatic payments, and USDT remain intentionally unavailable. Saved payment orders are drafts only. Munus must be tested inside Nimiq Pay for wallet behavior; a normal browser must not be treated as a wallet host.
 
 ## Manual release boundary
 

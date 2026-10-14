@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createAuthGateway } from './auth/session'
 import { munusConfig } from './config'
 import { requestNimiqSignature, getNimiqNetwork } from './integration/nimiq'
@@ -44,6 +44,8 @@ import { profileStore } from './persistence/profileStore'
 import { LocalPlanningApi } from './persistence/planningStore'
 import { RemotePlanningApi, type PlanningApi } from './persistence/planningApi'
 import { RemoteSupportApi, type SupportApi, type SupportData } from './persistence/supportApi'
+import { RemotePaymentApi, type PaymentApi } from './persistence/paymentApi'
+import { LocalPaymentApi } from './persistence/paymentStore'
 import { LocalSupportApi } from './persistence/supportStore'
 import { RemoteProfileApi } from './persistence/profileApi'
 import { sessionStore } from './persistence/sessionStore'
@@ -72,6 +74,12 @@ function createPlanningApi(userId: string): PlanningApi {
   return usesRemotePersistence
     ? new RemotePlanningApi(munusConfig.apiBaseUrl)
     : new LocalPlanningApi(userId)
+}
+
+function createPaymentApi(userId: string): PaymentApi {
+  return usesRemotePersistence
+    ? new RemotePaymentApi(munusConfig.apiBaseUrl)
+    : new LocalPaymentApi(userId)
 }
 
 function createSupportApi(userId: string): SupportApi {
@@ -146,6 +154,8 @@ export function App() {
   const { state: connection, retry: retryConnection, requestAccounts } = useNimiq()
   const wallet = useNimiqWallet(connection, session?.walletAddress)
   const sessionUserId = session?.userId
+
+  const paymentApi = useMemo(() => (sessionUserId ? createPaymentApi(sessionUserId) : null), [sessionUserId])
 
   useEffect(() => {
     if (!usesRemotePersistence || readPublicRequestId()) return
@@ -648,7 +658,7 @@ export function App() {
       onOpenContacts={() => openContacts('list')} onCopyAddress={copyWalletAddress}
     />
   } else if (destination === 'pay') {
-    content = <PayPage />
+    content = paymentApi ? <PayPage api={paymentApi} defaultPhone={profile.defaultPhone} /> : null
   } else if (destination === 'pockets') {
     content = <PocketsPage
       authenticated connection={connection} error={planningError} loading={planningLoading}

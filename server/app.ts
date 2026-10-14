@@ -14,6 +14,14 @@ import {
   type SupportRepository,
 } from './supportRepository'
 import {
+  PaymentRepositoryError,
+  type PaymentRepository,
+} from './paymentRepository'
+import {
+  PaymentValidationError,
+  parsePaymentOrderDraft,
+} from './paymentValidation'
+import {
   PlanningValidationError,
   parseAllocation,
   parsePocketDraft,
@@ -42,6 +50,7 @@ export interface MunusServerDependencies {
   repository: MunusRepository
   planning: PlanningRepository
   support: SupportRepository
+  payment: PaymentRepository
   auth: MunusAuthService
   staticDir?: string
   config: Pick<
@@ -70,7 +79,7 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, support, staticDir, config } = dependencies
+  const { auth, repository, planning, support, payment, staticDir, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
@@ -261,6 +270,32 @@ export async function handleRequest(
       const updated = await support.updateSupportDraft(session.userId, draftId, parseSupportDraftInput(await readJson(request), current))
       if (!updated) { sendError(response, 404, 'Support draft was not found.'); return }
       sendJson(response, 200, updated)
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === '/payment-orders') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 200, { paymentOrders: await payment.listOrders(session.userId) })
+      return
+    }
+    if (request.method === 'POST' && url.pathname === '/payment-orders') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 201, await payment.createOrder(session.userId, parsePaymentOrderDraft(await readJson(request))))
+      return
+    }
+
+    const paymentOrderPath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)$/)
+    if (paymentOrderPath && request.method === 'GET') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const order = await payment.getOrder(session.userId, decodeURIComponent(paymentOrderPath[1]))
+      if (!order) {
+        sendError(response, 404, 'Payment order was not found.')
+        return
+      }
+      sendJson(response, 200, order)
       return
     }
 
@@ -457,9 +492,11 @@ export async function handleRequest(
       error instanceof PlanningValidationError ||
       error instanceof PlanningRepositoryError ||
       error instanceof SupportValidationError ||
-      error instanceof SupportRepositoryError
+      error instanceof SupportRepositoryError ||
+      error instanceof PaymentValidationError ||
+      error instanceof PaymentRepositoryError
     ) {
-      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError
+      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError
         ? error.statusCode
         : 400
       sendError(response, statusCode, error.message, error instanceof AuthServiceError ? error.code : undefined)

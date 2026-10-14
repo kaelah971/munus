@@ -6,12 +6,14 @@ import { loadServerConfig } from './config'
 import { PostgresMunusRepository } from './repository'
 import { PostgresPlanningRepository } from './planningRepository'
 import { PostgresSupportRepository } from './supportRepository'
+import { PostgresPaymentRepository } from './paymentRepository'
 
 const config = loadServerConfig()
 const database = createPostgresPool(config.databaseUrl)
 const repository = new PostgresMunusRepository(database)
 const planning = new PostgresPlanningRepository(database)
 const support = new PostgresSupportRepository(database)
+const payment = new PostgresPaymentRepository(database)
 const auth = new MunusAuthService(repository, {
   challengeTtlMs: config.challengeTtlMs,
   sessionTtlMs: config.sessionTtlMs,
@@ -20,6 +22,7 @@ const server = createMunusServer({
   repository,
   planning,
   support,
+  payment,
   auth,
   staticDir: resolve(process.cwd(), 'dist'),
   config,

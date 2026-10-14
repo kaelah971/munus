@@ -42,7 +42,7 @@ A mobile starting point for connecting an account, viewing wallet state exposed 
 
 ### Pay Essentials
 
-A focused surface for categories such as airtime, data, electricity, and cable or internet. The category UI is present, but payment and provider fulfilment are not live in the current slice. It cannot send NIM.
+A focused surface for categories such as airtime, data, electricity, and cable or internet. Airtime can be saved as a durable payment order (recipient, amount, draft status), but payment quotes, NIM movement, and provider fulfilment are not live in the current slice. It cannot send NIM.
 
 ### Life Pockets
 
@@ -160,13 +160,14 @@ The current repository is a working public-beta foundation for the Munus context
 - Manual contacts, Support Mode, support boundaries, saved support drafts, and Request Help records.
 - Privacy-safe public request link foundations.
 - App lock and a responsive mobile Mini App shell.
-- PostgreSQL migrations for account, authentication, planning, and support layers.
+- PostgreSQL migrations for account, authentication, planning, support, and payment-order layers.
+- A reusable payment order foundation: persisted orders with separate crypto-payment and real-world-fulfilment states, owned per user.
 - A Render-compatible one-origin deployment path for the Vite build and Node API.
 
 The following are deliberately not represented as live features:
 
 - No real airtime, data, electricity, or internet provider fulfilment.
-- No payment execution from the Pay Essentials screen.
+- No payment execution from payment orders: orders persist as drafts with no quote, no wallet transaction, and no receipt.
 - No fabricated wallet transactions, actual-spend totals, or verified Activity history.
 - No completed receipt, provider-confirmation, or recovery system.
 

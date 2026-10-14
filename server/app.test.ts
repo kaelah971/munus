@@ -10,6 +10,7 @@ import { InMemoryMunusRepository } from './repository'
 import { createNimiqSignedMessageDigest } from './nimiqSignature'
 import { InMemoryPlanningRepository } from './planningRepository'
 import { InMemorySupportRepository } from './supportRepository'
+import { InMemoryPaymentRepository } from './paymentRepository'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -28,6 +29,7 @@ async function createTestServer(options: { staticDir?: string } = {}) {
   const repository = new InMemoryMunusRepository()
   const planning = new InMemoryPlanningRepository()
   const support = new InMemorySupportRepository()
+  const payment = new InMemoryPaymentRepository()
   const auth = new MunusAuthService(repository, {
     challengeTtlMs: 5 * 60 * 1000,
     sessionTtlMs: 24 * 60 * 60 * 1000,
@@ -36,6 +38,7 @@ async function createTestServer(options: { staticDir?: string } = {}) {
     repository,
     planning,
     support,
+    payment,
     auth,
     staticDir: options.staticDir,
     config: {
@@ -293,5 +296,41 @@ describe('Munus production API', () => {
     expect(profiles).toHaveLength(2)
     expect(profiles.map((profile) => profile.displayName)).toEqual(['Amina', 'Bola'])
     expect(profiles[0].userId).not.toBe(profiles[1].userId)
+  })
+
+  it('creates private airtime payment orders without quoting or paying', async () => {
+    const { baseUrl } = await createTestServer()
+    const firstCookie = await authenticate(baseUrl, KeyPair.generate())
+    const secondCookie = await authenticate(baseUrl, KeyPair.generate())
+
+    const created = await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie: firstCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '080 1234 5678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })
+    expect(created.status).toBe(201)
+    const order = await created.json() as { id: string; recipientPhone: string; paymentStatus: string; fulfilmentStatus: string; quotedCryptoAmount?: string; walletTxRef?: string }
+    expect(order).toMatchObject({ recipientPhone: '08012345678', paymentStatus: 'DRAFT', fulfilmentStatus: 'NOT_STARTED' })
+    expect(order.quotedCryptoAmount).toBeUndefined()
+    expect(order.walletTxRef).toBeUndefined()
+
+    const listed = await (await fetch(`${baseUrl}/payment-orders`, { headers: { cookie: firstCookie } })).json() as { paymentOrders: Array<{ id: string }> }
+    expect(listed.paymentOrders.map((entry) => entry.id)).toEqual([order.id])
+    expect(await (await fetch(`${baseUrl}/payment-orders`, { headers: { cookie: secondCookie } })).json()).toEqual({ paymentOrders: [] })
+
+    const loaded = await fetch(`${baseUrl}/payment-orders/${order.id}`, { headers: { cookie: firstCookie } })
+    expect(loaded.status).toBe(200)
+    const hidden = await fetch(`${baseUrl}/payment-orders/${order.id}`, { headers: { cookie: secondCookie } })
+    expect(hidden.status).toBe(404)
+
+    const invalid = await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie: firstCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', requestedAmount: '0' }),
+    })
+    expect(invalid.status).toBe(400)
+
+    const unauthenticated = await fetch(`${baseUrl}/payment-orders`)
+    expect(unauthenticated.status).toBe(401)
   })
 })
