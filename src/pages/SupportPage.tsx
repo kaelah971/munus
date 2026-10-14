@@ -14,7 +14,17 @@ import {
   type SupportRequestStatus,
   type SupportRule,
   type SupportRuleDraft,
+  type SupportNetwork,
 } from '../domain/support'
+import {
+  buildEssentialShareText,
+  describeEssentialNeed,
+  describeEssentialStatusCopy,
+  displayEssentialStatus,
+  type EssentialRequest,
+  type EssentialRequestDraft,
+} from '../domain/essentialRequests'
+import type { DataPlan } from '../domain/orders'
 
 export type SupportPageMode = 'support' | 'request' | 'contacts'
 
@@ -30,6 +40,11 @@ export function SupportPage({
   supportRequests,
   supportDrafts,
   onNavigate,
+  essentialRequests,
+  onCreateEssentialRequest,
+  onCancelEssentialRequest,
+  onSyncEssentialRequest,
+  onListDataPlans,
   onCreateSupportRule,
   onUpdateSupportRule,
   onDeleteSupportRule,
@@ -52,6 +67,11 @@ export function SupportPage({
   supportRequests: SupportRequest[]
   supportDrafts: SupportDraft[]
   onNavigate: (destination: AppDestination) => void
+  essentialRequests: EssentialRequest[]
+  onCreateEssentialRequest: (draft: EssentialRequestDraft) => Promise<void>
+  onCancelEssentialRequest: (id: string) => Promise<void>
+  onSyncEssentialRequest: (id: string) => Promise<void>
+  onListDataPlans: (network: SupportNetwork) => Promise<DataPlan[]>
   onCreateContact: (draft: ContactDraft) => Promise<void>
   onUpdateContact: (id: string, draft: ContactDraft) => Promise<void>
   onArchiveContact: (id: string) => Promise<void>
@@ -129,7 +149,7 @@ export function SupportPage({
             </>
           ) : null}
 
-          {authenticated && mode === 'request' ? <RequestHelpSection contacts={contacts} requests={supportRequests} requestForm={requestForm} requestFormOpen={requestFormOpen} onCreate={(draft) => void runAction(() => onCreateSupportRequest(draft), () => { setRequestForm(emptyRequestDraft()); setRequestFormOpen(false) })} onCancel={(id) => void runAction(() => onCancelSupportRequest(id))} onChange={setRequestForm} onConvert={(id) => void runAction(() => onConvertRequest(id))} onToggleForm={() => setRequestFormOpen((open) => !open)} onUpdate={(id, draft, status) => void runAction(() => onUpdateSupportRequest(id, draft, status))} /> : null}
+          {authenticated && mode === 'request' ? <><EssentialRequestsSection requests={essentialRequests} onCreate={(draft) => void runAction(() => onCreateEssentialRequest(draft))} onCancel={(id) => void runAction(() => onCancelEssentialRequest(id))} onSync={(id) => void runAction(() => onSyncEssentialRequest(id))} onListDataPlans={onListDataPlans} /><RequestHelpSection contacts={contacts} requests={supportRequests} requestForm={requestForm} requestFormOpen={requestFormOpen} onCreate={(draft) => void runAction(() => onCreateSupportRequest(draft), () => { setRequestForm(emptyRequestDraft()); setRequestFormOpen(false) })} onCancel={(id) => void runAction(() => onCancelSupportRequest(id))} onChange={setRequestForm} onConvert={(id) => void runAction(() => onConvertRequest(id))} onToggleForm={() => setRequestFormOpen((open) => !open)} onUpdate={(id, draft, status) => void runAction(() => onUpdateSupportRequest(id, draft, status))} /></> : null}
     </section>
   )
 }
@@ -145,6 +165,67 @@ function SupportDraftList({ drafts, onEdit }: { drafts: SupportDraft[]; onEdit: 
 function SupportRulesSection({ contacts, rules, formOpen, editingRule, onToggleForm, onEdit, onDelete, onSubmit }: { contacts: Contact[]; rules: SupportRule[]; formOpen: boolean; editingRule: SupportRule | null; onToggleForm: () => void; onEdit: (rule: SupportRule) => void; onDelete: (id: string) => void; onSubmit: (draft: SupportRuleDraft) => void }) { return <section className="support-section"><div className="section-heading-row"><SectionHeading>Support boundaries</SectionHeading><button className="quiet-button" type="button" onClick={onToggleForm}>{formOpen ? 'Close' : 'Add boundary'}</button></div><p className="section-copy">Soft warnings for planned support only. They never block a future payment.</p>{formOpen ? <SupportRuleForm key={editingRule?.id ?? 'new'} contacts={contacts} initial={editingRule ? ruleToDraft(editingRule) : undefined} onSubmit={onSubmit} /> : null}{rules.length ? <div className="planning-list">{rules.map((rule) => <div className="planning-row" key={rule.id}><div><strong>{rule.category}</strong><small>{rule.softLimitAmount} {rule.unit} · {rule.period} · {rule.enabled ? `Warn at ${rule.warningThreshold}%` : 'Disabled'}</small></div><div className="planning-row-actions"><button className="quiet-button" type="button" onClick={() => onEdit(rule)}>Edit</button><button className="quiet-button" type="button" onClick={() => onDelete(rule.id)}>Delete</button></div></div>)}</div> : <p className="section-copy">No support boundaries set.</p>}</section> }
 
 function SupportRuleForm({ contacts, initial = emptyRuleDraft(), onSubmit }: { contacts: Contact[]; initial?: SupportRuleDraft; onSubmit: (draft: SupportRuleDraft) => void }) { const [draft, setDraft] = useState(initial); return <div className="planning-form planning-form--compact"><div className="form-grid"><label><span>Person (optional)</span><select value={draft.contactId} onChange={(event) => setDraft({ ...draft, contactId: event.target.value })}><option value="">General support</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.displayName}</option>)}</select></label><label><span>Category</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as SupportRuleDraft['category'] })}>{SUPPORT_CATEGORIES.map((category) => <option key={category}>{category}</option>)}</select></label><label><span>Limit</span><input inputMode="decimal" value={draft.softLimitAmount} onChange={(event) => setDraft({ ...draft, softLimitAmount: event.target.value })} placeholder="5000" /></label><label><span>Unit</span><select value={draft.unit} onChange={(event) => setDraft({ ...draft, unit: event.target.value as SupportRuleDraft['unit'] })}><option>NGN</option><option>NIM</option></select></label><label><span>Period</span><select value={draft.period} onChange={(event) => setDraft({ ...draft, period: event.target.value as SupportRuleDraft['period'] })}><option>monthly</option><option>weekly</option></select></label><label><span>Warn at %</span><input inputMode="numeric" value={draft.warningThreshold} onChange={(event) => setDraft({ ...draft, warningThreshold: Number(event.target.value) })} /></label></div><button className="primary-button" type="button" onClick={() => onSubmit(draft)}>Save boundary</button></div> }
+
+function EssentialRequestsSection({ requests, onCreate, onCancel, onSync, onListDataPlans }: { requests: EssentialRequest[]; onCreate: (draft: EssentialRequestDraft) => void; onCancel: (id: string) => void; onSync: (id: string) => void; onListDataPlans: (network: SupportNetwork) => Promise<DataPlan[]> }) {
+  const [formOpen, setFormOpen] = useState(false)
+  const [form, setForm] = useState<EssentialRequestDraft>(emptyEssentialDraft())
+  const [plans, setPlans] = useState<DataPlan[]>([])
+  const [plansLoading, setPlansLoading] = useState(false)
+  const [plansError, setPlansError] = useState<string | null>(null)
+  const [nowMs] = useState(() => Date.now())
+  const groups: Array<{ title: string; rows: EssentialRequest[] }> = [
+    { title: 'Open needs', rows: requests.filter((request) => displayEssentialStatus(request, nowMs) === 'OPEN') },
+    { title: 'In progress', rows: requests.filter((request) => ['PAYMENT_IN_PROGRESS', 'PAID', 'FULFILLING'].includes(displayEssentialStatus(request, nowMs))) },
+    { title: 'Needs attention', rows: requests.filter((request) => displayEssentialStatus(request, nowMs) === 'NEEDS_ATTENTION') },
+    { title: 'Completed', rows: requests.filter((request) => displayEssentialStatus(request, nowMs) === 'COMPLETED') },
+    { title: 'Closed', rows: requests.filter((request) => ['CANCELLED', 'EXPIRED'].includes(displayEssentialStatus(request, nowMs))) },
+  ]
+  function chooseNetwork(network: SupportNetwork | '') {
+    setForm({ ...form, network, providerPlanId: '' })
+    setPlans([])
+    setPlansError(null)
+    if (form.serviceType === 'DATA' && network) {
+      setPlansLoading(true)
+      void onListDataPlans(network).then(setPlans).catch((caught: unknown) => {
+        setPlansError(caught instanceof Error ? caught.message : 'Data bundles could not be loaded.')
+      }).finally(() => setPlansLoading(false))
+    }
+  }
+  function chooseService(serviceType: EssentialRequestDraft['serviceType']) {
+    setForm({ ...emptyEssentialDraft(), serviceType, network: form.network, recipientPhone: form.recipientPhone, message: form.message })
+    setPlans([])
+    setPlansError(null)
+    if (serviceType === 'DATA' && form.network) void chooseNetwork(form.network)
+  }
+  return <><section className="support-section"><div className="section-heading-row"><SectionHeading>Essential needs</SectionHeading><button className="primary-button" type="button" onClick={() => setFormOpen((open) => !open)}>{formOpen ? 'Close' : 'Request a need'}</button></div><p className="section-copy">Ask for airtime or a data bundle someone else can pay directly. You share a link; they pay the need, not cash.</p>{formOpen ? <div className="planning-form"><div className="form-grid"><label><span>Need</span><select value={form.serviceType} onChange={(event) => chooseService(event.target.value as EssentialRequestDraft['serviceType'])}><option value="AIRTIME">Airtime</option><option value="DATA">Data bundle</option></select></label><label><span>Network</span><select value={form.network} onChange={(event) => chooseNetwork(event.target.value as SupportNetwork | '')}><option value="">Choose network</option>{SUPPORT_NETWORKS.map((network) => <option key={network} value={network}>{network}</option>)}</select></label>{form.serviceType === 'AIRTIME' ? <label><span>Amount (NGN)</span><input inputMode="decimal" value={form.requestedAmount} onChange={(event) => setForm({ ...form, requestedAmount: event.target.value })} placeholder="1000" /></label> : <label><span>Bundle</span><select value={form.providerPlanId} onChange={(event) => setForm({ ...form, providerPlanId: event.target.value })}><option value="">{plansLoading ? 'Loading bundles…' : 'Choose bundle'}</option>{plans.map((plan) => <option key={plan.providerPlanId} value={plan.providerPlanId}>{plan.displayName} · ₦{plan.localPriceNgn}</option>)}</select></label>}<label><span>Recipient phone</span><input inputMode="tel" value={form.recipientPhone} onChange={(event) => setForm({ ...form, recipientPhone: event.target.value })} placeholder="08012345678" /></label><label className="form-grid__wide"><span>Note for the payer (optional)</span><textarea value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} placeholder="Need airtime for work" /></label></div>{plansError ? <p className="inline-error" role="alert">{plansError}</p> : null}<button className="primary-button" type="button" onClick={() => { onCreate(form); setForm(emptyEssentialDraft()); setPlans([]); setFormOpen(false) }}>Create shareable request</button></div> : null}</section>{groups.map((group) => group.rows.length ? <section className="support-section" key={group.title}><SectionHeading>{group.title}</SectionHeading><div className="planning-list">{group.rows.map((request) => <EssentialRequestRow key={request.id} request={request} onCancel={() => onCancel(request.id)} onSync={() => onSync(request.id)} />)}</div></section> : null)}</> }
+
+function EssentialRequestRow({ request, onCancel, onSync }: { request: EssentialRequest; onCancel: () => void; onSync: () => void }) {
+  const status = displayEssentialStatus(request)
+  const copy = describeEssentialStatusCopy(status)
+  const link = typeof window !== 'undefined' ? `${window.location.origin}/request/${request.publicRequestId}` : ''
+  const [shared, setShared] = useState(false)
+  async function share() {
+    const text = buildEssentialShareText({ needSummary: describeEssentialNeed(request), linkUrl: link })
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        await navigator.share({ title: 'Munus need', text, url: link })
+        return
+      }
+      throw new Error('Web Share unavailable')
+    } catch {
+      try {
+        await navigator.clipboard?.writeText(text)
+        setShared(true)
+      } catch {
+        // Sharing stays best-effort; the link remains copyable below.
+      }
+    }
+  }
+  const cancellable = status === 'OPEN' || status === 'PAYMENT_IN_PROGRESS'
+  return <div className="planning-row"><div><strong>{describeEssentialNeed(request)}</strong><small>For {maskContact(request.recipientPhone)}{request.network ? ` · ${request.network}` : ''} · {copy.label}{request.message ? ` · “${request.message}”` : ''}</small></div><div className="planning-row-actions">{link ? <button className="quiet-button" type="button" onClick={() => void share()}>{shared ? 'Shared ✓' : 'Share'}</button> : null}{link ? <button className="quiet-button" type="button" onClick={() => void navigator.clipboard?.writeText(link)}>Copy link</button> : null}<button className="quiet-button" type="button" onClick={onSync}>Refresh</button>{cancellable ? <button className="quiet-button" type="button" onClick={onCancel}>Cancel</button> : null}</div></div>
+}
+
+function emptyEssentialDraft(): EssentialRequestDraft { return { serviceType: 'AIRTIME', network: '', recipientPhone: '', requestedAmount: '', providerPlanId: '', message: '' } }
 
 function RequestHelpSection({ contacts, requests, requestForm, requestFormOpen, onCreate, onCancel, onChange, onConvert, onToggleForm, onUpdate }: { contacts: Contact[]; requests: SupportRequest[]; requestForm: SupportRequestDraft; requestFormOpen: boolean; onCreate: (draft: SupportRequestDraft) => void; onCancel: (id: string) => void; onChange: (draft: SupportRequestDraft) => void; onConvert: (id: string) => void; onToggleForm: () => void; onUpdate: (id: string, draft: SupportRequestDraft, status: SupportRequestStatus) => void }) { return <><section className="support-section"><div className="section-heading-row"><SectionHeading>Request a specific essential</SectionHeading><button className="primary-button" type="button" onClick={onToggleForm}>{requestFormOpen ? 'Close' : 'Create request'}</button></div><p className="section-copy">Ask for a specific need, not open-ended cash. Requests are reviewable drafts until payment infrastructure exists.</p>{requestFormOpen ? <RequestForm contacts={contacts} draft={requestForm} onChange={onChange} onSubmit={() => onCreate(requestForm)} /> : null}</section><section className="support-section"><SectionHeading>Your requests</SectionHeading>{requests.length ? <div className="planning-list">{requests.map((request) => <RequestRow key={request.id} request={request} onApprove={() => onUpdate(request.id, requestToDraft(request), 'approved')} onDecline={() => onUpdate(request.id, requestToDraft(request), 'declined')} onCancel={() => onCancel(request.id)} onConvert={() => onConvert(request.id)} />)}</div> : <EmptyState description="Examples: ₦100 airtime, data under ₦500, or ₦2,000 transport." icon="arrow" title="No help requests yet" />}</section></> }
 

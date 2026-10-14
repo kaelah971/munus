@@ -13,6 +13,8 @@ import { ClubKonnectDataCatalog } from './dataCatalog'
 import { NimPaymentService } from './nimPayments'
 import { CoinGeckoNimRateProvider } from './nimRates'
 import { RpcNimiqChainReader } from './nimiqChain'
+import { syncEssentialForOrder } from './essentialRequests'
+import type { PaymentOrder } from '../src/domain/orders'
 
 const config = loadServerConfig()
 const database = createPostgresPool(config.databaseUrl)
@@ -27,6 +29,10 @@ const auth = new MunusAuthService(repository, {
 const dataCatalog = config.clubKonnect
   ? new ClubKonnectDataCatalog({ credentials: config.clubKonnect })
   : null
+const essentialSync = (order: PaymentOrder): Promise<void> =>
+  syncEssentialForOrder({ support, payment }, order).then(() => undefined).catch((error: unknown) => {
+    console.info('Munus essential sync retryable', { orderId: order.id, cause: error instanceof Error ? error.message : 'unknown sync error' })
+  })
 const fulfilment = config.clubKonnect
   ? new AirtimeFulfilmentService(
     payment,
@@ -34,7 +40,7 @@ const fulfilment = config.clubKonnect
       airtime: new ClubKonnectAirtimeProvider({ credentials: config.clubKonnect }),
       data: new ClubKonnectDataProvider({ credentials: config.clubKonnect }),
     },
-    { callbackBaseUrl: config.clubKonnect.callbackBaseUrl },
+    { callbackBaseUrl: config.clubKonnect.callbackBaseUrl, onFulfilmentSettled: essentialSync },
   )
   : null
 const nimPayments = config.nimPayments.receiverAddress
@@ -47,6 +53,7 @@ const nimPayments = config.nimPayments.receiverAddress
       receiverAddress: config.nimPayments.receiverAddress,
       network: config.defaultNetwork,
       quoteTtlMs: config.nimPayments.quoteTtlMs,
+      onPaymentSettled: essentialSync,
     },
   )
   : null

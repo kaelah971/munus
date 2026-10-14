@@ -310,6 +310,45 @@ describe('NIM payment service', () => {
     expect(paid).toMatchObject({ paymentStatus: 'PAID', fulfilmentStatus: 'NOT_STARTED' })
   })
 
+  it('notifies essential sync on settlement without risking payment', async () => {
+    const { repository, rates, chain } = setup()
+    const settled: string[] = []
+    const failingHook = async () => { throw new Error('sync down') }
+    const service = new NimPaymentService(repository, rates, chain, null, {
+      receiverAddress: RECEIVER,
+      network: 'mainnet',
+      quoteTtlMs: 120_000,
+      now: () => NOW,
+      onPaymentSettled: async (order) => { settled.push(order.id) },
+    })
+    const quoted = await quotedOrder(service, repository)
+    const stored = repository.orders.get(quoted.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.essentialRequestId = 'req-1'
+    chain.transaction = matchingTransaction({ dataFields: [quoted.paymentMemo ?? ''] })
+
+    const paid = await service.submitPayment('user-a', quoted.id, HASH)
+    expect(paid.paymentStatus).toBe('PAID')
+    expect(settled).toEqual([quoted.id])
+
+    const failingService = new NimPaymentService(repository, rates, chain, null, {
+      receiverAddress: RECEIVER,
+      network: 'mainnet',
+      quoteTtlMs: 120_000,
+      now: () => NOW,
+      onPaymentSettled: failingHook,
+    })
+    const second = await draftOrder(repository)
+    const secondStored = repository.orders.get(second.id)
+    if (!secondStored) throw new Error('Fixture order was not stored.')
+    secondStored.essentialRequestId = 'req-2'
+    const secondQuoted = await failingService.createQuote('user-a', second.id)
+    chain.transaction = matchingTransaction({ hash: OTHER_HASH, dataFields: [secondQuoted.paymentMemo ?? ''] })
+    // Hook failure never fails the payment itself.
+    const paidAgain = await failingService.submitPayment('user-a', second.id, OTHER_HASH)
+    expect(paidAgain.paymentStatus).toBe('PAID')
+  })
+
   it('requires a configured receiver before quoting', async () => {
     const { repository, rates, chain } = setup({ receiver: '' })
     const service = new NimPaymentService(repository, rates, chain, null, {

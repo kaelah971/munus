@@ -25,6 +25,8 @@ export class FulfilmentError extends Error {
 export interface AirtimeFulfilmentOptions {
   callbackBaseUrl?: string
   now?: () => string
+  /** Optional sync for orders that satisfy an essential request. Never throws into fulfilment flow. */
+  onFulfilmentSettled?: (order: PaymentOrder) => Promise<void>
 }
 
 export interface FulfilmentProviders {
@@ -145,7 +147,9 @@ export class AirtimeFulfilmentService {
       providerRemark: cleanRemark(receipt.remark),
       fulfilmentStatus: 'FULFILLING',
     })
-    return updated ?? await this.requireOwnedOrder(userId, orderId)
+    const settled = updated ?? await this.requireOwnedOrder(userId, orderId)
+    await this.notifySettled(settled)
+    return settled
   }
 
   private requireProvider(serviceType: 'AIRTIME'): AirtimeProviderAdapter
@@ -204,7 +208,18 @@ export class AirtimeFulfilmentService {
     }
     console.info(`Munus ${order.serviceType === 'DATA' ? 'data' : 'airtime'} reconciled`, { orderId: order.id, outcome: record.outcome, fulfilmentStatus: next })
     const updated = await this.payment.recordProviderUpdate(userId, order.id, evidence)
-    return updated ?? order
+    const settled = updated ?? order
+    await this.notifySettled(settled)
+    return settled
+  }
+
+  private async notifySettled(order: PaymentOrder): Promise<void> {
+    if (!order.essentialRequestId || !this.options.onFulfilmentSettled) return
+    try {
+      await this.options.onFulfilmentSettled(order)
+    } catch (error) {
+      console.info('Munus essential sync retryable', { orderId: order.id, cause: error instanceof Error ? error.message : 'unknown sync error' })
+    }
   }
 
   private requireCallbackUrl(): string {

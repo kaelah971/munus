@@ -1,5 +1,14 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import {
+  canTransitionEssential,
+  isClaimableEssential,
+  isEssentialTerminal,
+  toPublicEssentialRequest,
+  type EssentialRequest,
+  type EssentialStatus,
+  type PublicEssentialRequest,
+} from '../src/domain/essentialRequests'
+import {
   canTransitionSupportRequest,
   maskPhone,
   type Contact,
@@ -12,6 +21,7 @@ import {
   type SupportRequestStatus,
   type SupportRule,
   type SupportRuleDraft,
+  type SupportNetwork,
 } from '../src/domain/support'
 import { withTransaction, type DatabasePool, type DatabaseTransaction } from './database'
 
@@ -42,12 +52,43 @@ export interface SupportRepository {
   updateSupportDraft(userId: string, draftId: string, input: SupportDraftInput): Promise<SupportDraft | null>
   getPublicSupportRequest(publicRequestId: string): Promise<PublicSupportRequest | null>
   convertRequestToDraft(userId: string, requestId: string): Promise<SupportDraft | null>
+  createEssentialRequest(userId: string, input: ValidatedEssentialRequest): Promise<EssentialRequest>
+  listEssentialRequests(userId: string): Promise<EssentialRequest[]>
+  getEssentialRequest(userId: string, requestId: string): Promise<EssentialRequest | null>
+  findEssentialRequestByOrder(orderId: string): Promise<EssentialRequest | null>
+  findEssentialRequestByPublicId(publicRequestId: string): Promise<EssentialRequest | null>
+  claimEssentialRequest(payerUserId: string, requestId: string, orderId: string, nowIso: string, claimExpiresIso: string): Promise<EssentialRequest | null>
+  cancelEssentialRequest(userId: string, requestId: string): Promise<EssentialRequest | null>
+  applyEssentialSync(requestId: string, patch: EssentialSyncPatch): Promise<EssentialRequest | null>
+  getPublicEssentialRequest(publicRequestId: string): Promise<PublicEssentialRequest | null>
+}
+
+export interface ValidatedEssentialRequest {
+  serviceType: EssentialRequest['serviceType']
+  network: SupportNetwork
+  recipientPhone: string
+  requestedAmount: string
+  providerPlanId?: string
+  planDisplayLabel?: string
+  planDataAllowance?: string
+  planValidity?: string
+  message?: string
+  expiresAt: string
+}
+
+export interface EssentialSyncPatch {
+  expectedStatus: EssentialStatus
+  essentialStatus: EssentialStatus
+  paidAt?: string
+  fulfilledAt?: string
+  clearClaim?: boolean
 }
 
 export class InMemorySupportRepository implements SupportRepository {
   readonly contacts = new Map<string, Contact>()
   readonly supportRules = new Map<string, SupportRule>()
   readonly supportRequests = new Map<string, SupportRequest>()
+  readonly essentialRequests = new Map<string, EssentialRequest>()
   readonly supportDrafts = new Map<string, SupportDraft>()
   private readonly profileNames = new Map<string, string>()
 
@@ -291,6 +332,106 @@ export class InMemorySupportRepository implements SupportRepository {
     return draft
   }
 
+  async createEssentialRequest(userId: string, input: ValidatedEssentialRequest): Promise<EssentialRequest> {
+    const now = new Date().toISOString()
+    const request: EssentialRequest = {
+      id: randomUUID(),
+      ownerUserId: userId,
+      publicRequestId: randomBytes(18).toString('base64url'),
+      serviceType: input.serviceType,
+      network: input.network,
+      requestedAmount: input.requestedAmount,
+      providerPlanId: input.providerPlanId,
+      planDisplayLabel: input.planDisplayLabel,
+      planDataAllowance: input.planDataAllowance,
+      planValidity: input.planValidity,
+      recipientPhone: input.recipientPhone,
+      message: input.message,
+      essentialStatus: 'OPEN',
+      expiresAt: input.expiresAt,
+      createdAt: now,
+      updatedAt: now,
+    }
+    this.essentialRequests.set(request.id, request)
+    return request
+  }
+
+  async listEssentialRequests(userId: string): Promise<EssentialRequest[]> {
+    return [...this.essentialRequests.values()]
+      .filter((request) => request.ownerUserId === userId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }
+
+  async getEssentialRequest(userId: string, requestId: string): Promise<EssentialRequest | null> {
+    const request = this.essentialRequests.get(requestId)
+    return request?.ownerUserId === userId ? request : null
+  }
+
+  async findEssentialRequestByOrder(orderId: string): Promise<EssentialRequest | null> {
+    const found = [...this.essentialRequests.values()].find((request) => request.paymentOrderId === orderId)
+    return found ?? null
+  }
+
+  async findEssentialRequestByPublicId(publicRequestId: string): Promise<EssentialRequest | null> {
+    const found = [...this.essentialRequests.values()].find((request) => request.publicRequestId === publicRequestId)
+    return found ?? null
+  }
+
+  async claimEssentialRequest(payerUserId: string, requestId: string, orderId: string, nowIso: string, claimExpiresIso: string): Promise<EssentialRequest | null> {
+    void payerUserId
+    const request = this.essentialRequests.get(requestId)
+    if (!request) return null
+    if (!isClaimableEssential(request, Date.parse(nowIso))) return null
+    const claimed: EssentialRequest = {
+      ...request,
+      essentialStatus: 'PAYMENT_IN_PROGRESS',
+      paymentOrderId: orderId,
+      claimExpiresAt: claimExpiresIso,
+      updatedAt: new Date().toISOString(),
+    }
+    this.essentialRequests.set(requestId, claimed)
+    return claimed
+  }
+
+  async cancelEssentialRequest(userId: string, requestId: string): Promise<EssentialRequest | null> {
+    const request = await this.getEssentialRequest(userId, requestId)
+    if (!request) return null
+    if (request.essentialStatus !== 'OPEN' && request.essentialStatus !== 'PAYMENT_IN_PROGRESS') return null
+    const cancelled: EssentialRequest = {
+      ...request,
+      essentialStatus: 'CANCELLED',
+      claimExpiresAt: undefined,
+      updatedAt: new Date().toISOString(),
+    }
+    this.essentialRequests.set(requestId, cancelled)
+    return cancelled
+  }
+
+  async applyEssentialSync(requestId: string, patch: EssentialSyncPatch): Promise<EssentialRequest | null> {
+    const request = this.essentialRequests.get(requestId)
+    if (!request) return null
+    // Lost races return null so callers re-read instead of overwriting.
+    if (request.essentialStatus !== patch.expectedStatus) return null
+    if (isEssentialTerminal(request.essentialStatus)) return null
+    if (!canTransitionEssential(request.essentialStatus, patch.essentialStatus)) return null
+    const updated: EssentialRequest = {
+      ...request,
+      essentialStatus: patch.essentialStatus,
+      paidAt: patch.paidAt ?? request.paidAt,
+      fulfilledAt: patch.fulfilledAt ?? request.fulfilledAt,
+      claimExpiresAt: patch.clearClaim ? undefined : request.claimExpiresAt,
+      updatedAt: new Date().toISOString(),
+    }
+    this.essentialRequests.set(requestId, updated)
+    return updated
+  }
+
+  async getPublicEssentialRequest(publicRequestId: string): Promise<PublicEssentialRequest | null> {
+    const request = await this.findEssentialRequestByPublicId(publicRequestId)
+    if (!request) return null
+    return toPublicEssentialRequest(request, this.profileNames.get(request.ownerUserId) ?? 'A Munus user')
+  }
+
   private async assertContact(userId: string, contactId: string): Promise<void> {
     if (contactId && !(await this.getContact(userId, contactId))) {
       throw new SupportRepositoryError('Contact was not found.', 404)
@@ -420,7 +561,8 @@ export class PostgresSupportRepository implements SupportRepository {
   async listSupportRequests(userId: string): Promise<SupportRequest[]> {
     const result = await this.run('list support requests', () => this.database.query(
       `SELECT * FROM support_requests
-       WHERE owner_user_id = $1 OR requester_user_id = $1 OR recipient_user_id = $1
+       WHERE (owner_user_id = $1 OR requester_user_id = $1 OR recipient_user_id = $1)
+         AND essential_status IS NULL
        ORDER BY created_at DESC`,
       [userId],
     ))
@@ -431,6 +573,7 @@ export class PostgresSupportRepository implements SupportRepository {
     const result = await this.run('load support request', () => this.database.query(
       `SELECT * FROM support_requests
        WHERE id = $1
+         AND essential_status IS NULL
          AND (owner_user_id = $2 OR requester_user_id = $2 OR recipient_user_id = $2)`,
       [requestId, userId],
     ))
@@ -503,7 +646,7 @@ export class PostgresSupportRepository implements SupportRepository {
       `SELECT r.*, p.display_name AS requester_label
        FROM support_requests AS r
        LEFT JOIN profiles AS p ON p.user_id = r.owner_user_id
-       WHERE r.public_request_id = $1`,
+       WHERE r.public_request_id = $1 AND r.essential_status IS NULL`,
       [publicRequestId],
     ))
     const row = result.rows[0]
@@ -586,6 +729,147 @@ export class PostgresSupportRepository implements SupportRepository {
     return mapSupportDraft(requireRow(result.rows[0], 'Support draft'))
   }
 
+  async createEssentialRequest(userId: string, input: ValidatedEssentialRequest): Promise<EssentialRequest> {
+    const result = await this.run('create essential request', () => this.database.query(
+      `INSERT INTO support_requests
+        (requester_user_id, owner_user_id, public_request_id,
+         category, requested_amount, requested_product, phone, network, country,
+         message, status, expires_at,
+         service_type, provider_plan_id, plan_display_label, plan_data_allowance, plan_validity,
+         essential_status)
+       VALUES ($1, $1, $2, $3, $4, $5, $6, $7, 'NG', $8, 'pending', $9,
+         $10, $11, $12, $13, $14, 'OPEN')
+       RETURNING *`,
+      [
+        userId,
+        randomBytes(18).toString('base64url'),
+        input.serviceType === 'AIRTIME' ? 'Airtime' : 'Data',
+        input.requestedAmount,
+        input.planDisplayLabel ?? `\u20a6${input.requestedAmount} ${input.network} ${input.serviceType === 'AIRTIME' ? 'airtime' : 'data'}`.slice(0, 160),
+        input.recipientPhone,
+        input.network,
+        input.message ?? null,
+        input.expiresAt,
+        input.serviceType,
+        input.providerPlanId ?? null,
+        input.planDisplayLabel ?? null,
+        input.planDataAllowance ?? null,
+        input.planValidity ?? null,
+      ],
+    ))
+    return mapEssentialRequest(requireRow(result.rows[0], 'Essential request'))
+  }
+
+  async listEssentialRequests(userId: string): Promise<EssentialRequest[]> {
+    const result = await this.run('list essential requests', () => this.database.query(
+      `SELECT * FROM support_requests
+       WHERE owner_user_id = $1 AND essential_status IS NOT NULL
+       ORDER BY created_at DESC`,
+      [userId],
+    ))
+    return result.rows.map((row) => mapEssentialRequest(row))
+  }
+
+  async getEssentialRequest(userId: string, requestId: string): Promise<EssentialRequest | null> {
+    const result = await this.run('load essential request', () => this.database.query(
+      `SELECT * FROM support_requests
+       WHERE id = $1 AND owner_user_id = $2 AND essential_status IS NOT NULL`,
+      [requestId, userId],
+    ))
+    return result.rows[0] ? mapEssentialRequest(result.rows[0]) : null
+  }
+
+  async findEssentialRequestByOrder(orderId: string): Promise<EssentialRequest | null> {
+    const result = await this.run('find essential request by order', () => this.database.query(
+      `SELECT * FROM support_requests
+       WHERE payment_order_id = $1 AND essential_status IS NOT NULL
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [orderId],
+    ))
+    return result.rows[0] ? mapEssentialRequest(result.rows[0]) : null
+  }
+
+  async findEssentialRequestByPublicId(publicRequestId: string): Promise<EssentialRequest | null> {
+    const result = await this.run('find essential request by public id', () => this.database.query(
+      `SELECT * FROM support_requests
+       WHERE public_request_id = $1 AND essential_status IS NOT NULL
+       LIMIT 1`,
+      [publicRequestId],
+    ))
+    return result.rows[0] ? mapEssentialRequest(result.rows[0]) : null
+  }
+
+  async claimEssentialRequest(payerUserId: string, requestId: string, orderId: string, nowIso: string, claimExpiresIso: string): Promise<EssentialRequest | null> {
+    void payerUserId
+    const result = await this.run('claim essential request', () => this.database.query(
+      `UPDATE support_requests
+       SET essential_status = 'PAYMENT_IN_PROGRESS',
+           payment_order_id = $3,
+           claim_expires_at = $4,
+           updated_at = NOW()
+       WHERE id = $1
+         AND essential_status IS NOT NULL
+         AND (expires_at IS NULL OR expires_at > $5)
+         AND (essential_status = 'OPEN'
+           OR (essential_status = 'PAYMENT_IN_PROGRESS'
+             AND (claim_expires_at IS NULL OR claim_expires_at <= $5)))
+       RETURNING *`,
+      [requestId, payerUserId, orderId, claimExpiresIso, nowIso],
+    ))
+    return result.rows[0] ? mapEssentialRequest(result.rows[0]) : null
+  }
+
+  async cancelEssentialRequest(userId: string, requestId: string): Promise<EssentialRequest | null> {
+    const result = await this.run('cancel essential request', () => this.database.query(
+      `UPDATE support_requests
+       SET essential_status = 'CANCELLED',
+           claim_expires_at = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+         AND owner_user_id = $2
+         AND essential_status IN ('OPEN', 'PAYMENT_IN_PROGRESS')
+       RETURNING *`,
+      [requestId, userId],
+    ))
+    return result.rows[0] ? mapEssentialRequest(result.rows[0]) : null
+  }
+
+  async applyEssentialSync(requestId: string, patch: EssentialSyncPatch): Promise<EssentialRequest | null> {
+    const result = await this.run('sync essential request', () => this.database.query(
+      `UPDATE support_requests
+       SET essential_status = $3,
+           paid_at = COALESCE(paid_at, $4),
+           fulfilled_at = COALESCE(fulfilled_at, $5),
+           claim_expires_at = CASE WHEN $6 THEN NULL ELSE claim_expires_at END,
+           updated_at = NOW()
+       WHERE id = $1
+         AND essential_status = $2
+         AND essential_status NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')
+       RETURNING *`,
+      [requestId, patch.expectedStatus, patch.essentialStatus, patch.paidAt ?? null, patch.fulfilledAt ?? null, patch.clearClaim ?? false],
+    ))
+    const row = result.rows[0]
+    if (!row) return null
+    const updated = mapEssentialRequest(row)
+    if (!canTransitionEssential(patch.expectedStatus, updated.essentialStatus)) return null
+    return updated
+  }
+
+  async getPublicEssentialRequest(publicRequestId: string): Promise<PublicEssentialRequest | null> {
+    const result = await this.run('load public essential request', () => this.database.query(
+      `SELECT r.*, p.display_name AS requester_label
+       FROM support_requests AS r
+       LEFT JOIN profiles AS p ON p.user_id = r.owner_user_id
+       WHERE r.public_request_id = $1 AND r.essential_status IS NOT NULL`,
+      [publicRequestId],
+    ))
+    const row = result.rows[0]
+    if (!row) return null
+    const request = mapEssentialRequest(row)
+    return toPublicEssentialRequest(request, row.requester_label ? String(row.requester_label) : 'A Munus user')
+  }
+
   private async assertContact(userId: string, contactId: string): Promise<void> {
     if (contactId && !(await this.getContact(userId, contactId))) {
       throw new SupportRepositoryError('Contact was not found.', 404)
@@ -653,6 +937,31 @@ function mapSupportRequest(row: Record<string, unknown>): SupportRequest {
     message: row.message ? String(row.message) : undefined,
     status: row.status as SupportRequest['status'],
     expiresAt: row.expires_at ? timestampString(row.expires_at) : undefined,
+    createdAt: timestampString(row.created_at),
+    updatedAt: timestampString(row.updated_at),
+  }
+}
+
+function mapEssentialRequest(row: Record<string, unknown>): EssentialRequest {
+  return {
+    id: String(row.id),
+    ownerUserId: String(row.owner_user_id),
+    publicRequestId: String(row.public_request_id),
+    serviceType: row.service_type as EssentialRequest['serviceType'],
+    network: (row.network ?? undefined) as EssentialRequest['network'],
+    requestedAmount: String(row.requested_amount),
+    providerPlanId: row.provider_plan_id ? String(row.provider_plan_id) : undefined,
+    planDisplayLabel: row.plan_display_label ? String(row.plan_display_label) : undefined,
+    planDataAllowance: row.plan_data_allowance ? String(row.plan_data_allowance) : undefined,
+    planValidity: row.plan_validity ? String(row.plan_validity) : undefined,
+    recipientPhone: row.phone ? String(row.phone) : '',
+    message: row.message ? String(row.message) : undefined,
+    essentialStatus: row.essential_status as EssentialRequest['essentialStatus'],
+    paymentOrderId: row.payment_order_id ? String(row.payment_order_id) : undefined,
+    claimExpiresAt: row.claim_expires_at ? timestampString(row.claim_expires_at) : undefined,
+    paidAt: row.paid_at ? timestampString(row.paid_at) : undefined,
+    fulfilledAt: row.fulfilled_at ? timestampString(row.fulfilled_at) : undefined,
+    expiresAt: timestampString(row.expires_at),
     createdAt: timestampString(row.created_at),
     updatedAt: timestampString(row.updated_at),
   }

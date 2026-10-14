@@ -14,9 +14,20 @@ import {
   type SupportRule,
   type SupportRuleDraft,
 } from '../domain/support'
+import {
+  canTransitionEssential,
+  ESSENTIAL_REQUEST_TTL_MS,
+  toPublicEssentialRequest,
+  type EssentialRequest,
+  type EssentialRequestDraft,
+  type PublicEssentialRequest,
+} from '../domain/essentialRequests'
+import type { PaymentOrder } from '../domain/orders'
+import { SUPPORT_NETWORKS } from '../domain/support'
 import type { SupportApi, SupportData } from './supportApi'
 
 const SUPPORT_KEY_PREFIX = 'munus:support:'
+const ESSENTIAL_KEY_PREFIX = 'munus:essential:'
 
 export class LocalSupportApi implements SupportApi {
   constructor(private readonly userId: string, private readonly storage: Storage | null = getStorage()) {}
@@ -110,6 +121,83 @@ export class LocalSupportApi implements SupportApi {
     const request = this.readData().supportRequests.find((item) => item.publicRequestId === publicRequestId)
     if (!request || (request.status !== 'pending' && request.status !== 'approved')) return null
     return { publicRequestId: request.publicRequestId, requesterLabel: 'A Munus user', category: request.category, requestedAmount: request.requestedAmount, requestedProduct: request.requestedProduct, phone: request.phone ? maskPhone(request.phone) : undefined, network: request.network, country: 'NG', message: request.message, status: request.status, expiresAt: request.expiresAt }
+  }
+
+  async listEssentialRequests(): Promise<EssentialRequest[]> {
+    return this.readEssential().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }
+
+  async getEssentialRequest(id: string): Promise<EssentialRequest> {
+    const request = this.readEssential().find((item) => item.id === id)
+    if (!request) throw new Error('Essential request was not found.')
+    return request
+  }
+
+  async createEssentialRequest(draft: EssentialRequestDraft): Promise<EssentialRequest> {
+    if (draft.serviceType !== 'AIRTIME' && draft.serviceType !== 'DATA') throw new Error('Service is not supported.')
+    if (!(SUPPORT_NETWORKS as readonly string[]).includes(draft.network)) throw new Error('Network is not supported.')
+    const now = new Date().toISOString()
+    const request: EssentialRequest = {
+      id: createId(),
+      ownerUserId: this.userId,
+      publicRequestId: createId(),
+      serviceType: draft.serviceType,
+      network: (draft.network || undefined) as EssentialRequest['network'],
+      requestedAmount: draft.requestedAmount,
+      providerPlanId: draft.providerPlanId || undefined,
+      recipientPhone: normalizePhone(draft.recipientPhone),
+      message: draft.message || undefined,
+      essentialStatus: 'OPEN',
+      expiresAt: new Date(Date.now() + ESSENTIAL_REQUEST_TTL_MS).toISOString(),
+      createdAt: now,
+      updatedAt: now,
+    }
+    const rows = this.readEssential()
+    rows.unshift(request)
+    this.writeEssential(rows)
+    return request
+  }
+
+  async cancelEssentialRequest(id: string): Promise<EssentialRequest> {
+    const rows = this.readEssential()
+    const index = rows.findIndex((item) => item.id === id)
+    if (index < 0) throw new Error('Essential request was not found.')
+    const current = rows[index]
+    if (!canTransitionEssential(current.essentialStatus, 'CANCELLED')) throw new Error('This request can no longer be cancelled.')
+    const updated = { ...current, essentialStatus: 'CANCELLED' as const, claimExpiresAt: undefined, updatedAt: new Date().toISOString() }
+    rows[index] = updated
+    this.writeEssential(rows)
+    return updated
+  }
+
+  async syncEssentialRequest(id: string): Promise<PublicEssentialRequest> {
+    const request = await this.getEssentialRequest(id)
+    return toPublicEssentialRequest(request, 'A Munus user')
+  }
+
+  async claimEssentialRequest(): Promise<{ order: PaymentOrder; request: PublicEssentialRequest | null }> {
+    throw new Error('Paying a need requires the Munus API.')
+  }
+
+  async getPublicEssentialRequest(publicRequestId: string): Promise<PublicEssentialRequest | null> {
+    const request = this.readEssential().find((item) => item.publicRequestId === publicRequestId)
+    if (!request) return null
+    return toPublicEssentialRequest(request, 'A Munus user')
+  }
+
+  private readEssential(): EssentialRequest[] {
+    const raw = this.storage?.getItem(`${ESSENTIAL_KEY_PREFIX}${this.userId}`)
+    if (!raw) return []
+    try {
+      const value = JSON.parse(raw) as unknown
+      return Array.isArray(value) ? (value as EssentialRequest[]) : []
+    } catch {
+      return []
+    }
+  }
+
+  private writeEssential(rows: EssentialRequest[]): void {
+    this.storage?.setItem(`${ESSENTIAL_KEY_PREFIX}${this.userId}`, JSON.stringify(rows))
   }
 
   private readData(): SupportData {

@@ -13,6 +13,7 @@ import {
   type SupportRule,
   type SupportRuleDraft,
 } from '../src/domain/support'
+import type { EssentialRequestDraft } from '../src/domain/essentialRequests'
 
 export class SupportValidationError extends Error {
   constructor(message: string) {
@@ -85,6 +86,22 @@ export function parseSupportDraftInput(value: unknown, current?: SupportDraft): 
     unit: enumValue(input.unit ?? current?.unit ?? 'NGN', ['NIM', 'NGN'] as const, 'unit'),
     productDetails,
   }
+}
+
+export function parseEssentialRequestDraft(value: unknown): EssentialRequestDraft {
+  const input = asRecord(value, 'Essential request body')
+  const serviceType = enumValue(input.serviceType, ['AIRTIME', 'DATA'] as const, 'serviceType')
+  const recipientPhone = normalizePhoneValue(input.recipientPhone)
+  const network = enumValue(input.network, SUPPORT_NETWORKS, 'network')
+  const message = optionalString(input.message, 'message')
+  if (message.length > 280) throw new SupportValidationError('Request note is too long.')
+  if (serviceType === 'AIRTIME') {
+    const requestedAmount = positiveMoney(input.requestedAmount, 'requestedAmount')
+    return { serviceType, network, recipientPhone, requestedAmount, providerPlanId: '', message }
+  }
+  const providerPlanId = requiredString(input.providerPlanId, 'providerPlanId')
+  if (providerPlanId.length > 128) throw new SupportValidationError('Bundle reference is too long.')
+  return { serviceType, network, recipientPhone, requestedAmount: '', providerPlanId, message }
 }
 
 export function parseRequestStatus(value: unknown): SupportRequest['status'] {

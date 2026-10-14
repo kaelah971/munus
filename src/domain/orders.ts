@@ -62,6 +62,7 @@ export interface PaymentOrder {
   planDisplayLabel?: string
   planDataAllowance?: string
   planValidity?: string
+  essentialRequestId?: string
   quotedCryptoAmount?: string
   quoteExpiresAt?: string
   paymentNetwork?: NimiqPaymentNetwork
@@ -110,6 +111,7 @@ export interface ValidatedPaymentOrderDraft {
   planDisplayLabel?: string
   planDataAllowance?: string
   planValidity?: string
+  essentialRequestId?: string
 }
 
 export interface DataOrderDraft {

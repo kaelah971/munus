@@ -238,6 +238,39 @@ describe('Airtime fulfilment service', () => {
     await expect(fulfilment.reconcileByProviderReference(undefined, undefined)).rejects.toMatchObject({ statusCode: 400 })
   })
 
+  it('notifies essential sync on fulfilment progress without risking delivery', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await paidOrder(repository)
+    const stored = repository.orders.get(order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.essentialRequestId = 'req-1'
+    const settled: string[] = []
+    const provider = new FixtureAirtimeProvider()
+    const fulfilment = new AirtimeFulfilmentService(repository, provider, {
+      callbackBaseUrl: 'https://munus.example',
+      now: () => '2026-10-14T00:00:00.000Z',
+      onFulfilmentSettled: async (settledOrder) => { settled.push(settledOrder.id) },
+    })
+
+    await fulfilment.fulfilOrder('user-a', order.id)
+    expect(settled).toEqual([order.id])
+    provider.queryRecord = { providerOrderId: 'ord-1', statusCode: '200', status: 'ORDER_COMPLETED', outcome: 'completed' }
+    await fulfilment.reconcileOrder('user-a', order.id)
+    expect(settled).toEqual([order.id, order.id])
+
+    const failing = new AirtimeFulfilmentService(repository, provider, {
+      callbackBaseUrl: 'https://munus.example',
+      onFulfilmentSettled: async () => { throw new Error('sync down') },
+    })
+    const second = await paidOrder(repository)
+    const secondStored = repository.orders.get(second.id)
+    if (!secondStored) throw new Error('Fixture order was not stored.')
+    secondStored.essentialRequestId = 'req-2'
+    provider.queryRecord = { statusCode: '', status: '', outcome: 'not-found' }
+    const fulfilled = await failing.fulfilOrder('user-a', second.id)
+    expect(fulfilled.fulfilmentStatus).toBe('FULFILLING')
+  })
+
   it('requires network, bounds, and callback configuration before reserving', async () => {
     const repository = new InMemoryPaymentRepository()
     const noNetwork = await repository.createOrder('user-a', parsePaymentOrderDraft({ ...airtimeDraft, recipientNetwork: '' }))

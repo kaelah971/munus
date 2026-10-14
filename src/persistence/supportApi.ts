@@ -10,6 +10,12 @@ import type {
   SupportRule,
   SupportRuleDraft,
 } from '../domain/support'
+import type {
+  EssentialRequest,
+  EssentialRequestDraft,
+  PublicEssentialRequest,
+} from '../domain/essentialRequests'
+import type { PaymentOrder } from '../domain/orders'
 
 export interface SupportData {
   contacts: Contact[]
@@ -33,6 +39,13 @@ export interface SupportApi {
   createSupportDraft(input: SupportDraftInput): Promise<SupportDraft>
   updateSupportDraft(id: string, input: SupportDraftInput): Promise<SupportDraft>
   getPublicRequest(publicRequestId: string): Promise<PublicSupportRequest | null>
+  listEssentialRequests(): Promise<EssentialRequest[]>
+  getEssentialRequest(id: string): Promise<EssentialRequest>
+  createEssentialRequest(draft: EssentialRequestDraft): Promise<EssentialRequest>
+  cancelEssentialRequest(id: string): Promise<EssentialRequest>
+  syncEssentialRequest(id: string): Promise<PublicEssentialRequest>
+  claimEssentialRequest(publicRequestId: string): Promise<{ order: PaymentOrder; request: PublicEssentialRequest | null }>
+  getPublicEssentialRequest(publicRequestId: string): Promise<PublicEssentialRequest | null>
 }
 
 export class RemoteSupportApi implements SupportApi {
@@ -78,6 +91,40 @@ export class RemoteSupportApi implements SupportApi {
     return (await response.json()) as PublicSupportRequest
   }
 
+  async listEssentialRequests(): Promise<EssentialRequest[]> {
+    return (await this.read<{ essentialRequests: EssentialRequest[] }>('/essential-requests')).essentialRequests
+  }
+
+  async getEssentialRequest(id: string): Promise<EssentialRequest> {
+    return this.read(`/essential-requests/${encodeURIComponent(id)}`)
+  }
+
+  async createEssentialRequest(draft: EssentialRequestDraft): Promise<EssentialRequest> {
+    return this.read('/essential-requests', { method: 'POST', body: JSON.stringify(draft) })
+  }
+
+  async cancelEssentialRequest(id: string): Promise<EssentialRequest> {
+    return this.read(`/essential-requests/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+  }
+
+  async syncEssentialRequest(id: string): Promise<PublicEssentialRequest> {
+    return this.read(`/essential-requests/${encodeURIComponent(id)}/sync`, { method: 'POST' })
+  }
+
+  async claimEssentialRequest(publicRequestId: string): Promise<{ order: PaymentOrder; request: PublicEssentialRequest | null }> {
+    return this.read(`/request/${encodeURIComponent(publicRequestId)}/claim`, { method: 'POST' })
+  }
+
+  async getPublicEssentialRequest(publicRequestId: string): Promise<PublicEssentialRequest | null> {
+    const response = await this.request(`/request/${encodeURIComponent(publicRequestId)}`, {
+      headers: { accept: 'application/json' },
+    })
+    if (response.status === 404) return null
+    const body = (await response.json()) as Record<string, unknown>
+    if (typeof body.serviceType !== 'string') return null
+    return body as unknown as PublicEssentialRequest
+  }
+
   private async read<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await this.request(path, init)
     return (await response.json()) as T
@@ -89,7 +136,18 @@ export class RemoteSupportApi implements SupportApi {
       credentials: 'include',
       headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
     })
-    if (!response.ok && response.status !== 404) throw new Error(`Munus support request failed (${response.status}).`)
+    if (!response.ok && response.status !== 404) {
+      throw new Error((await readErrorBody(response)) ?? `Munus support request failed (${response.status}).`)
+    }
     return response
+  }
+}
+
+async function readErrorBody(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { error?: unknown }
+    return typeof body.error === 'string' && body.error ? body.error : null
+  } catch {
+    return null
   }
 }

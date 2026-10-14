@@ -37,6 +37,8 @@ export interface NimPaymentServiceOptions {
   network: NimiqPaymentNetwork
   quoteTtlMs: number
   now?: () => number
+  /** Optional sync for orders that satisfy an essential request. Never throws into payment flow. */
+  onPaymentSettled?: (order: PaymentOrder) => Promise<void>
 }
 
 export interface PaymentIntent {
@@ -172,7 +174,9 @@ export class NimPaymentService {
       if (verification.reason === 'not-found' || verification.reason === 'pending') return order
       const failed = await this.payment.recordPaymentFailure(order.userId, order.id, verification.reason)
       console.info('Munus payment verification failed', { orderId: order.id, reason: verification.reason })
-      return failed ?? order
+      const settledFailure = failed ?? order
+      await this.notifySettled(settledFailure)
+      return settledFailure
     }
 
     const verified: VerifiedNimPayment = {
@@ -187,7 +191,17 @@ export class NimPaymentService {
     const paid = await this.payment.recordVerifiedPayment(order.userId, order.id, verified)
     const current = paid ?? await this.requireOwnedOrder(order.userId, order.id)
     console.info('Munus payment verified', { orderId: order.id, sender: verification.evidence.sender })
+    await this.notifySettled(current)
     return this.maybeHandoffFulfilment(current)
+  }
+
+  private async notifySettled(order: PaymentOrder): Promise<void> {
+    if (!order.essentialRequestId || !this.options.onPaymentSettled) return
+    try {
+      await this.options.onPaymentSettled(order)
+    } catch (error) {
+      console.info('Munus essential sync retryable', { orderId: order.id, cause: errorMessage(error) })
+    }
   }
 
   private async maybeHandoffFulfilment(order: PaymentOrder): Promise<PaymentOrder> {

@@ -50,12 +50,19 @@ import {
 } from './planningValidation'
 import {
   parseContactDraft,
+  parseEssentialRequestDraft,
   parseRequestStatus,
   parseSupportDraftInput,
   parseSupportRequestDraft,
   parseSupportRuleDraft,
   SupportValidationError,
 } from './supportValidation'
+import {
+  cancelEssentialRequest,
+  claimEssentialNeed,
+  createEssentialRequest,
+  syncEssentialRequest,
+} from './essentialRequests'
 import {
   RequestValidationError,
   parsePreferences,
@@ -112,6 +119,11 @@ export async function handleRequest(
   const publicRequestPath = matchPath(url.pathname, /^\/(?:request|support-requests\/public)\/([^/]+)$/)
   if (request.method === 'GET' && publicRequestPath) {
     if (await serveFrontend(staticDir, url.pathname, response, acceptsHtml(request))) return
+    const essentialPublic = await support.getPublicEssentialRequest(decodeURIComponent(publicRequestPath[1]))
+    if (essentialPublic) {
+      sendJson(response, 200, essentialPublic)
+      return
+    }
     const publicRequest = await support.getPublicSupportRequest(decodeURIComponent(publicRequestPath[1]))
     if (!publicRequest) {
       sendError(response, 404, 'This support request is unavailable or expired.')
@@ -291,6 +303,76 @@ export async function handleRequest(
       const updated = await support.updateSupportDraft(session.userId, draftId, parseSupportDraftInput(await readJson(request), current))
       if (!updated) { sendError(response, 404, 'Support draft was not found.'); return }
       sendJson(response, 200, updated)
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === '/essential-requests') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 200, { essentialRequests: await support.listEssentialRequests(session.userId) })
+      return
+    }
+    if (request.method === 'POST' && url.pathname === '/essential-requests') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 201, await createEssentialRequest(
+        { support, payment, catalog: dataCatalog },
+        session.userId,
+        parseEssentialRequestDraft(await readJson(request)),
+      ))
+      return
+    }
+
+    const essentialRequestPath = matchPath(url.pathname, /^\/essential-requests\/([^/]+)$/)
+    if (essentialRequestPath && request.method === 'GET') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const essential = await support.getEssentialRequest(session.userId, decodeURIComponent(essentialRequestPath[1]))
+      if (!essential) {
+        sendError(response, 404, 'Essential request was not found.')
+        return
+      }
+      sendJson(response, 200, essential)
+      return
+    }
+
+    const essentialCancelPath = matchPath(url.pathname, /^\/essential-requests\/([^/]+)\/cancel$/)
+    if (essentialCancelPath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 200, await cancelEssentialRequest(
+        { support, payment },
+        session.userId,
+        decodeURIComponent(essentialCancelPath[1]),
+      ))
+      return
+    }
+
+    const essentialSyncPath = matchPath(url.pathname, /^\/essential-requests\/([^/]+)\/sync$/)
+    if (essentialSyncPath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const synced = await syncEssentialRequest(
+        { support, payment },
+        session.userId,
+        decodeURIComponent(essentialSyncPath[1]),
+      )
+      const projection = await support.getPublicEssentialRequest(synced.publicRequestId)
+      sendJson(response, 200, projection ?? { publicRequestId: synced.publicRequestId })
+      return
+    }
+
+    const claimPath = matchPath(url.pathname, /^\/request\/([^/]+)\/claim$/)
+    if (claimPath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const { order, request: claimed } = await claimEssentialNeed(
+        { support, payment },
+        session.userId,
+        decodeURIComponent(claimPath[1]),
+      )
+      const projection = await support.getPublicEssentialRequest(claimed.publicRequestId)
+      sendJson(response, 201, { order, request: projection ?? null })
       return
     }
 

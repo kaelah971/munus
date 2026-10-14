@@ -40,6 +40,9 @@ import type {
   SupportRequestStatus,
   SupportRuleDraft,
 } from './domain/support'
+import type { EssentialRequest, EssentialRequestDraft } from './domain/essentialRequests'
+import type { DataPlan } from './domain/orders'
+import type { SupportNetwork } from './domain/support'
 import { profileStore } from './persistence/profileStore'
 import { LocalPlanningApi } from './persistence/planningStore'
 import { RemotePlanningApi, type PlanningApi } from './persistence/planningApi'
@@ -149,6 +152,7 @@ export function App() {
   })
   const [contactIntent, setContactIntent] = useState<{ view: 'list' | 'add' | 'detail'; id?: string; returnTo: AppDestination }>({ view: 'list', returnTo: 'home' })
   const [supportContactId, setSupportContactId] = useState<string | undefined>()
+  const [essentialRequests, setEssentialRequests] = useState<EssentialRequest[]>([])
   const authGeneration = useRef(0)
 
   const { state: connection, retry: retryConnection, requestAccounts } = useNimiq()
@@ -231,7 +235,12 @@ export function App() {
 
     let active = true
     void createSupportApi(sessionUserId).load().then((data) => {
-      if (active) setSupport(data)
+      if (active) {
+        setSupport(data)
+        void createSupportApi(sessionUserId).listEssentialRequests()
+          .then((rows) => { if (active) setEssentialRequests(rows) })
+          .catch(() => { if (active) setEssentialRequests([]) })
+      }
     }).catch((error: unknown) => {
       if (active) setSupportError(error instanceof Error ? error.message : 'Munus could not load your support context.')
     }).finally(() => {
@@ -395,6 +404,7 @@ export function App() {
     setPlanningLoading(false)
     setPlanningError(null)
     setSupport(emptySupportData())
+    setEssentialRequests([])
     setSupportLoading(false)
     setSupportError(null)
     setDestination('home')
@@ -522,6 +532,22 @@ export function App() {
     setSupport((current) => ({ ...current, supportRequests: current.supportRequests.map((item) => item.id === id ? request : item) }))
   }
 
+  async function createEssentialRequest(draft: EssentialRequestDraft) {
+    const request = await supportApiForCurrentSession().createEssentialRequest(draft)
+    setEssentialRequests((current) => [request, ...current])
+  }
+
+  async function cancelEssentialRequest(id: string) {
+    const request = await supportApiForCurrentSession().cancelEssentialRequest(id)
+    setEssentialRequests((current) => current.map((item) => item.id === id ? request : item))
+  }
+
+  async function syncEssentialRequest(id: string) {
+    await supportApiForCurrentSession().syncEssentialRequest(id)
+    const request = await supportApiForCurrentSession().getEssentialRequest(id)
+    setEssentialRequests((current) => current.map((item) => item.id === id ? request : item))
+  }
+
   async function convertRequestToDraft(id: string) {
     const draft = await supportApiForCurrentSession().convertRequestToDraft(id)
     setSupport((current) => ({ ...current, supportDrafts: [draft, ...current.supportDrafts], supportRequests: current.supportRequests.map((item) => item.id === id ? { ...item, status: 'prepared' } : item) }))
@@ -611,7 +637,16 @@ export function App() {
 
   const publicRequestId = readPublicRequestId()
   if (publicRequestId) {
-    return <PublicRequestPage apiBaseUrl={munusConfig.apiBaseUrl} publicRequestId={publicRequestId} />
+    return <PublicRequestPage
+      apiBaseUrl={munusConfig.apiBaseUrl}
+      publicRequestId={publicRequestId}
+      session={session}
+      onSignIn={() => void signIn()}
+      onContinueToPay={() => {
+        window.history.replaceState(null, '', '/')
+        navigate('pay')
+      }}
+    />
   }
 
   if (authHydrating) {
@@ -685,6 +720,9 @@ export function App() {
       onCreateSupportRule={createSupportRule} onDeleteSupportRule={deleteSupportRule} onNavigate={navigate}
       onUpdateContact={updateContact} onUpdateSupportDraft={updateSupportDraft} onUpdateSupportRequest={updateSupportRequest}
       onUpdateSupportRule={updateSupportRule} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests} supportRules={support.supportRules}
+      essentialRequests={essentialRequests} onCreateEssentialRequest={createEssentialRequest}
+      onCancelEssentialRequest={cancelEssentialRequest} onSyncEssentialRequest={syncEssentialRequest}
+      onListDataPlans={(network: SupportNetwork) => paymentApi?.listDataPlans(network) ?? Promise.resolve([] as DataPlan[])}
     />
   } else if (destination === 'activity') {
     content = paymentApi ? <ActivityPage api={paymentApi} onNavigate={navigate} /> : null

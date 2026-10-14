@@ -53,6 +53,78 @@ describe('Munus support persistence', () => {
     expect((await repository.getSupportRequest('user-a', request.id))?.status).toBe('prepared')
   })
 
+  it('keeps essential rows out of legacy planning flows', async () => {
+    const repository = new InMemorySupportRepository()
+    repository.setProfileName('user-a', 'Amina')
+    const essential = await repository.createEssentialRequest('user-a', {
+      serviceType: 'AIRTIME',
+      network: 'MTN',
+      recipientPhone: '08012345678',
+      requestedAmount: '1000',
+      message: 'Need airtime',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })
+    expect(essential).toMatchObject({ essentialStatus: 'OPEN', recipientPhone: '08012345678' })
+    expect(await repository.listSupportRequests('user-a')).toEqual([])
+    expect(await repository.getSupportRequest('user-a', essential.id)).toBeNull()
+    expect(await repository.getPublicSupportRequest(essential.publicRequestId)).toBeNull()
+    expect(await repository.listEssentialRequests('user-b')).toEqual([])
+    expect(await repository.getEssentialRequest('user-b', essential.id)).toBeNull()
+    expect(await repository.listEssentialRequests('user-a')).toHaveLength(1)
+    const projection = await repository.getPublicEssentialRequest(essential.publicRequestId)
+    expect(projection).toMatchObject({ requesterLabel: 'Amina', recipientMasked: '080•••5678', essentialStatus: 'OPEN' })
+    expect(projection).not.toHaveProperty('recipientPhone')
+    expect(await repository.getPublicEssentialRequest('missing')).toBeNull()
+  })
+
+  it('claims atomically, releases stale claims, and syncs forward only', async () => {
+    const repository = new InMemorySupportRepository()
+    const created = await repository.createEssentialRequest('user-a', {
+      serviceType: 'DATA',
+      network: 'MTN',
+      recipientPhone: '08012345678',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+      message: '',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })
+    const now = '2026-06-01T00:00:00.000Z'
+    const live = '2026-06-01T00:15:00.000Z'
+    const claimed = await repository.claimEssentialRequest('user-b', created.id, 'ord-1', now, live)
+    expect(claimed).toMatchObject({ essentialStatus: 'PAYMENT_IN_PROGRESS', paymentOrderId: 'ord-1' })
+    expect(await repository.claimEssentialRequest('user-c', created.id, 'ord-2', now, live)).toBeNull()
+    expect(await repository.findEssentialRequestByOrder('ord-1')).toMatchObject({ id: created.id })
+    expect(await repository.findEssentialRequestByOrder('ord-2')).toBeNull()
+
+    // A lapsed claim frees the need for the next payer.
+    const reclaimed = await repository.claimEssentialRequest('user-c', created.id, 'ord-2', '2026-06-01T00:16:00.000Z', '2026-06-01T00:31:00.000Z')
+    expect(reclaimed).toMatchObject({ paymentOrderId: 'ord-2' })
+
+    // Sync guards terminal states and lost races.
+    const advanced = await repository.applyEssentialSync(created.id, { expectedStatus: 'PAYMENT_IN_PROGRESS', essentialStatus: 'PAID', paidAt: now, clearClaim: true })
+    expect(advanced).toMatchObject({ essentialStatus: 'PAID', paidAt: now })
+    expect(await repository.applyEssentialSync(created.id, { expectedStatus: 'PAYMENT_IN_PROGRESS', essentialStatus: 'OPEN', clearClaim: true })).toBeNull()
+    // Illegal jumps are refused; legal steps walk forward.
+    expect(await repository.applyEssentialSync(created.id, { expectedStatus: 'PAID', essentialStatus: 'COMPLETED', fulfilledAt: now, clearClaim: true })).toBeNull()
+    const delivering = await repository.applyEssentialSync(created.id, { expectedStatus: 'PAID', essentialStatus: 'FULFILLING', clearClaim: true })
+    expect(delivering?.essentialStatus).toBe('FULFILLING')
+    const done = await repository.applyEssentialSync(created.id, { expectedStatus: 'FULFILLING', essentialStatus: 'COMPLETED', fulfilledAt: now, clearClaim: true })
+    expect(done?.essentialStatus).toBe('COMPLETED')
+    // Cancel is refused once terminal; owner cancel works while open.
+    expect(await repository.cancelEssentialRequest('user-a', created.id)).toBeNull()
+    const fresh = await repository.createEssentialRequest('user-a', {
+      serviceType: 'AIRTIME',
+      network: 'MTN',
+      recipientPhone: '08012345678',
+      requestedAmount: '100',
+      message: '',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })
+    expect((await repository.cancelEssentialRequest('user-a', fresh.id))?.essentialStatus).toBe('CANCELLED')
+    expect(await repository.cancelEssentialRequest('user-b', fresh.id)).toBeNull()
+  })
+
   it('isolates support rules by account', async () => {
     const repository = new InMemorySupportRepository()
     const rule = await repository.createSupportRule('user-a', {

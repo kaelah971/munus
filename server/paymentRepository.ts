@@ -54,6 +54,7 @@ export interface VerifiedNimPayment {
 export interface PaymentRepository {
   listOrders(userId: string): Promise<PaymentOrder[]>
   getOrder(userId: string, orderId: string): Promise<PaymentOrder | null>
+  findOrderById(orderId: string): Promise<PaymentOrder | null>
   createOrder(userId: string, draft: ValidatedPaymentOrderDraft): Promise<PaymentOrder>
   findOrderByProviderReference(providerRequestId?: string, providerOrderId?: string): Promise<PaymentOrder | null>
   startFulfilment(userId: string, orderId: string, start: FulfilmentStart): Promise<PaymentOrder | null>
@@ -95,6 +96,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       planDisplayLabel: draft.planDisplayLabel,
       planDataAllowance: draft.planDataAllowance,
       planValidity: draft.planValidity,
+      essentialRequestId: draft.essentialRequestId,
       paymentStatus: 'DRAFT',
       fulfilmentStatus: 'NOT_STARTED',
       createdAt: now,
@@ -102,6 +104,10 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     }
     this.orders.set(order.id, order)
     return order
+  }
+
+  async findOrderById(orderId: string): Promise<PaymentOrder | null> {
+    return this.orders.get(orderId) ?? null
   }
 
   async findOrderByProviderReference(providerRequestId?: string, providerOrderId?: string): Promise<PaymentOrder | null> {
@@ -266,10 +272,11 @@ export class PostgresPaymentRepository implements PaymentRepository {
         (user_id, service_type, payment_asset, recipient_phone, recipient_network,
          recipient_country, requested_amount, requested_currency,
          provider_plan_id, plan_display_label, plan_data_allowance, plan_validity,
+         essential_request_id,
          payment_status, fulfilment_status)
-       VALUES ($1, $2, $3, $4, $5, 'NG', $6, 'NGN', $7, $8, $9, $10, 'DRAFT', 'NOT_STARTED')
+       VALUES ($1, $2, $3, $4, $5, 'NG', $6, 'NGN', $7, $8, $9, $10, $11, 'DRAFT', 'NOT_STARTED')
        RETURNING *`,
-      [userId, draft.serviceType, draft.paymentAsset, draft.recipientPhone, draft.recipientNetwork ?? null, draft.requestedAmount, draft.providerPlanId ?? null, draft.planDisplayLabel ?? null, draft.planDataAllowance ?? null, draft.planValidity ?? null],
+      [userId, draft.serviceType, draft.paymentAsset, draft.recipientPhone, draft.recipientNetwork ?? null, draft.requestedAmount, draft.providerPlanId ?? null, draft.planDisplayLabel ?? null, draft.planDataAllowance ?? null, draft.planValidity ?? null, draft.essentialRequestId ?? null],
     ))
     return mapPaymentOrder(requireRow(result.rows[0], 'Payment order'))
   }
@@ -292,6 +299,16 @@ export class PostgresPaymentRepository implements PaymentRepository {
        ORDER BY updated_at DESC
        LIMIT 1`,
       values,
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async findOrderById(orderId: string): Promise<PaymentOrder | null> {
+    const result = await this.run('find payment order by id', () => this.database.query(
+      `SELECT * FROM payment_orders
+       WHERE id = $1
+       LIMIT 1`,
+      [orderId],
     ))
     return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
   }
@@ -453,6 +470,7 @@ function mapPaymentOrder(row: Record<string, unknown>): PaymentOrder {
     requestedAmount: String(row.requested_amount),
     requestedCurrency: 'NGN',
     providerPlanId: row.provider_plan_id ? String(row.provider_plan_id) : undefined,
+    essentialRequestId: row.essential_request_id ? String(row.essential_request_id) : undefined,
     planDisplayLabel: row.plan_display_label ? String(row.plan_display_label) : undefined,
     planDataAllowance: row.plan_data_allowance ? String(row.plan_data_allowance) : undefined,
     planValidity: row.plan_validity ? String(row.plan_validity) : undefined,

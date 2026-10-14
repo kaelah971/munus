@@ -946,4 +946,280 @@ describe('Munus production API', () => {
     expect(await submitted.json()).toMatchObject({ paymentStatus: 'PAID', fulfilmentStatus: 'NOT_STARTED' })
     expect(dataRequests).toHaveLength(0)
   })
+
+  it('creates essential airtime and data needs with server snapshots', async () => {
+    const { baseUrl } = await createTestServer({ dataCatalog: fixtureCatalog() })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+
+    const airtime = await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', network: 'MTN', recipientPhone: '08012345678', requestedAmount: '1000', message: 'Need airtime for work' }),
+    })
+    expect(airtime.status).toBe(201)
+    const airtimeBody = await airtime.json() as Record<string, unknown>
+    expect(airtimeBody).toMatchObject({ serviceType: 'AIRTIME', requestedAmount: '1000', essentialStatus: 'OPEN' })
+    expect(typeof airtimeBody.publicRequestId).toBe('string')
+
+    const data = await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'DATA', network: 'MTN', recipientPhone: '08012345678', providerPlanId: 'MTN-15', requestedAmount: '1' }),
+    })
+    expect(data.status).toBe(201)
+    const dataBody = await data.json() as Record<string, unknown>
+    expect(dataBody).toMatchObject({
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+    })
+
+    const gone = await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'DATA', network: 'MTN', recipientPhone: '08012345678', providerPlanId: 'MTN-GONE' }),
+    })
+    expect(gone.status).toBe(404)
+
+    const listed = await (await fetch(`${baseUrl}/essential-requests`, { headers: { cookie } })).json() as { essentialRequests: unknown[] }
+    expect(listed.essentialRequests).toHaveLength(2)
+
+    const stranger = await authenticate(baseUrl, KeyPair.generate())
+    const hidden = await fetch(`${baseUrl}/essential-requests/${airtimeBody.id}`, { headers: { cookie: stranger } })
+    expect(hidden.status).toBe(404)
+    const anonymous = await fetch(`${baseUrl}/essential-requests`)
+    expect(anonymous.status).toBe(401)
+  })
+
+  it('exposes only a privacy-safe public projection', async () => {
+    const { baseUrl } = await createTestServer({ dataCatalog: fixtureCatalog() })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const created = await (await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', network: 'MTN', recipientPhone: '08012345678', requestedAmount: '1000', message: 'Need airtime for work' }),
+    })).json() as { publicRequestId: string }
+
+    const response = await fetch(`${baseUrl}/request/${created.publicRequestId}`, { headers: { accept: 'application/json' } })
+    expect(response.status).toBe(200)
+    const body = await response.json() as Record<string, unknown>
+    expect(body).toMatchObject({
+      requesterLabel: expect.any(String),
+      serviceType: 'AIRTIME',
+      requestedAmount: '1000',
+      recipientMasked: '080•••5678',
+      essentialStatus: 'OPEN',
+    })
+    const serialized = JSON.stringify(body)
+    for (const secret of ['08012345678', 'userId', 'walletAddress', 'payment_order_id', 'provider_ref', 'APIKey']) {
+      expect(serialized).not.toContain(secret)
+    }
+    expect(await (await fetch(`${baseUrl}/request/does-not-exist`, { headers: { accept: 'application/json' } })).status).toBe(404)
+  })
+
+  it('claims once: payer owns the order, requester cannot read it', async () => {
+    const { baseUrl, payment } = await createTestServer({ dataCatalog: fixtureCatalog() })
+    const requester = await authenticate(baseUrl, KeyPair.generate())
+    const payer = await authenticate(baseUrl, KeyPair.generate())
+    const created = await (await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie: requester, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', network: 'MTN', recipientPhone: '08012345678', requestedAmount: '1000' }),
+    })).json() as { id: string; publicRequestId: string }
+
+    const claim = await fetch(`${baseUrl}/request/${created.publicRequestId}/claim`, { method: 'POST', headers: { cookie: payer } })
+    expect(claim.status).toBe(201)
+    const claimed = await claim.json() as { order: Record<string, unknown>; request: Record<string, unknown> }
+    expect(claimed.order).toMatchObject({ serviceType: 'AIRTIME', requestedAmount: '1000', essentialRequestId: created.id })
+    expect(claimed.request).toMatchObject({ essentialStatus: 'PAYMENT_IN_PROGRESS' })
+    expect(JSON.stringify(claimed.request)).not.toContain('08012345678')
+
+    const stored = payment.orders.get(String(claimed.order.id))
+    expect(stored?.userId).not.toBe(undefined)
+    const requesterRead = await fetch(`${baseUrl}/payment-orders/${claimed.order.id}`, { headers: { cookie: requester } })
+    expect(requesterRead.status).toBe(404)
+
+    const rival = await authenticate(baseUrl, KeyPair.generate())
+    const second = await fetch(`${baseUrl}/request/${created.publicRequestId}/claim`, { method: 'POST', headers: { cookie: rival } })
+    expect(second.status).toBe(409)
+    expect(await second.json()).toMatchObject({ error: expect.stringContaining('already being paid') })
+
+    const anonymous = await fetch(`${baseUrl}/request/${created.publicRequestId}/claim`, { method: 'POST' })
+    expect(anonymous.status).toBe(401)
+
+    const dataNeed = await (await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie: requester, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'DATA', network: 'MTN', recipientPhone: '08012345678', providerPlanId: 'MTN-15' }),
+    })).json() as { publicRequestId: string }
+    const dataClaim = await fetch(`${baseUrl}/request/${dataNeed.publicRequestId}/claim`, { method: 'POST', headers: { cookie: payer } })
+    expect(dataClaim.status).toBe(201)
+    const dataClaimed = await dataClaim.json() as { order: Record<string, unknown> }
+    expect(dataClaimed.order).toMatchObject({
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+    })
+  })
+
+  it('syncs paid and delivered orders into request completion', async () => {
+    const requestedUrls: string[] = []
+    let queryResponse: unknown = {}
+    const { baseUrl, payment } = await createTestServer({
+      dataCatalog: fixtureCatalog(),
+      airtimeRequests: requestedUrls,
+      airtimeFetch: async (url) => {
+        if (url.includes('/APIQueryV1.asp')) return queryResponse
+        return { orderid: 'ord-need', statuscode: '100', status: 'ORDER_RECEIVED' }
+      },
+    })
+    const requester = await authenticate(baseUrl, KeyPair.generate())
+    const payer = await authenticate(baseUrl, KeyPair.generate())
+    const created = await (await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie: requester, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', network: 'MTN', recipientPhone: '08012345678', requestedAmount: '1000' }),
+    })).json() as { id: string; publicRequestId: string }
+    const claimed = await (await fetch(`${baseUrl}/request/${created.publicRequestId}/claim`, { method: 'POST', headers: { cookie: payer } })).json() as { order: { id: string } }
+
+    const stored = payment.orders.get(claimed.order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.paymentStatus = 'PAID'
+    const syncedPaid = await (await fetch(`${baseUrl}/essential-requests/${created.id}/sync`, { method: 'POST', headers: { cookie: requester } })).json() as Record<string, unknown>
+    expect(syncedPaid).toMatchObject({ essentialStatus: 'PAID' })
+    expect(JSON.stringify(syncedPaid)).not.toContain('08012345678')
+
+    const fulfilled = await fetch(`${baseUrl}/payment-orders/${claimed.order.id}/fulfil`, { method: 'POST', headers: { cookie: payer } })
+    expect(fulfilled.status).toBe(200)
+    queryResponse = { orderid: 'ord-need', statuscode: '200', status: 'ORDER_COMPLETED' }
+    await fetch(`${baseUrl}/payment-orders/${claimed.order.id}/reconcile`, { method: 'POST', headers: { cookie: payer } })
+    const syncedDone = await (await fetch(`${baseUrl}/essential-requests/${created.id}/sync`, { method: 'POST', headers: { cookie: requester } })).json() as Record<string, unknown>
+    expect(syncedDone).toMatchObject({ essentialStatus: 'COMPLETED' })
+    expect(typeof syncedDone.fulfilledAt).toBe('string')
+    expect(requestedUrls.filter((url) => url.includes('/APIAirtimeV1.asp'))).toHaveLength(1)
+
+    // Completed requests cannot be paid or cancelled again.
+    const again = await fetch(`${baseUrl}/request/${created.publicRequestId}/claim`, { method: 'POST', headers: { cookie: payer } })
+    expect(again.status).toBe(409)
+    const cancelled = await fetch(`${baseUrl}/essential-requests/${created.id}/cancel`, { method: 'POST', headers: { cookie: requester } })
+    expect(cancelled.status).toBe(409)
+
+    // The shared URL stays useful and privacy-safe after completion.
+    const completed = await (await fetch(`${baseUrl}/request/${created.publicRequestId}`, { headers: { accept: 'application/json' } })).json() as Record<string, unknown>
+    expect(completed).toMatchObject({ essentialStatus: 'COMPLETED' })
+    expect(JSON.stringify(completed)).not.toContain('08012345678')
+  })
+
+  it('cancels open needs but never verified payments, and flags failed delivery', async () => {
+    const { baseUrl, payment } = await createTestServer({ dataCatalog: fixtureCatalog() })
+    const requester = await authenticate(baseUrl, KeyPair.generate())
+    const payer = await authenticate(baseUrl, KeyPair.generate())
+    const created = await (await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie: requester, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', network: 'MTN', recipientPhone: '08012345678', requestedAmount: '1000' }),
+    })).json() as { id: string; publicRequestId: string }
+
+    const cancelled = await fetch(`${baseUrl}/essential-requests/${created.id}/cancel`, { method: 'POST', headers: { cookie: requester } })
+    expect(cancelled.status).toBe(200)
+    expect(await cancelled.json()).toMatchObject({ essentialStatus: 'CANCELLED' })
+    const dead = await fetch(`${baseUrl}/request/${created.publicRequestId}/claim`, { method: 'POST', headers: { cookie: payer } })
+    expect(dead.status).toBe(409)
+
+    const second = await (await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie: requester, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', network: 'MTN', recipientPhone: '08012345678', requestedAmount: '1000' }),
+    })).json() as { id: string; publicRequestId: string }
+    const claimed = await (await fetch(`${baseUrl}/request/${second.publicRequestId}/claim`, { method: 'POST', headers: { cookie: payer } })).json() as { order: { id: string } }
+    const stored = payment.orders.get(claimed.order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.paymentStatus = 'PAID'
+    stored.fulfilmentStatus = 'RECOVERY_REQUIRED'
+    const synced = await (await fetch(`${baseUrl}/essential-requests/${second.id}/sync`, { method: 'POST', headers: { cookie: requester } })).json() as Record<string, unknown>
+    expect(synced).toMatchObject({ essentialStatus: 'NEEDS_ATTENTION' })
+    const blocked = await fetch(`${baseUrl}/essential-requests/${second.id}/cancel`, { method: 'POST', headers: { cookie: requester } })
+    expect(blocked.status).toBe(409)
+  })
+
+  it('pays a need end to end with a distinct chain sender', async () => {
+    const requestedUrls: string[] = []
+    let queryResponse: unknown = {}
+    let chainTx: Record<string, unknown> | null = null
+    const txHash = 'ab'.repeat(32)
+    const chainSender = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const { baseUrl } = await createTestServer({
+      dataCatalog: fixtureCatalog(),
+      airtimeRequests: requestedUrls,
+      airtimeFetch: async (url) => {
+        if (url.includes('/APIQueryV1.asp')) return queryResponse
+        return { orderid: 'ord-need', statuscode: '100', status: 'ORDER_RECEIVED' }
+      },
+      nimChain: {
+        getTransaction: async () => chainTx as never,
+        getHeadBlockNumber: async () => 1000,
+      },
+    })
+    const requesterPair = KeyPair.generate()
+    const payerPair = KeyPair.generate()
+    const requester = await authenticate(baseUrl, requesterPair)
+    const payer = await authenticate(baseUrl, payerPair)
+    const created = await (await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie: requester, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', network: 'MTN', recipientPhone: '08012345678', requestedAmount: '1000' }),
+    })).json() as { id: string; publicRequestId: string }
+
+    // Payer claims, quotes, and approves through the existing rail.
+    const claimed = await (await fetch(`${baseUrl}/request/${created.publicRequestId}/claim`, { method: 'POST', headers: { cookie: payer } })).json() as { order: { id: string } }
+    const quoted = await (await fetch(`${baseUrl}/payment-orders/${claimed.order.id}/quote`, { method: 'POST', headers: { cookie: payer } })).json() as { paymentMemo: string; quoteLunaAmount: string }
+    expect(quoted.quoteLunaAmount).toBe('50000')
+    await fetch(`${baseUrl}/payment-orders/${claimed.order.id}/payment-intent`, { method: 'POST', headers: { cookie: payer } })
+    chainTx = {
+      hash: txHash,
+      from: chainSender,
+      to: TEST_NIM_RECEIVER,
+      valueLuna: '50000',
+      networkId: 42,
+      blockNumber: 990,
+      confirmations: 10,
+      dataFields: [quoted.paymentMemo],
+    }
+    const submitted = await fetch(`${baseUrl}/payment-orders/${claimed.order.id}/payment-submission`, {
+      method: 'POST',
+      headers: { cookie: payer, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: txHash }),
+    })
+    expect(submitted.status).toBe(200)
+    // Chain sender is canonical payer evidence: neither requester nor payer wallet.
+    const verified = await submitted.json() as Record<string, unknown>
+    expect(verified).toMatchObject({ paymentStatus: 'PAID', paymentSender: chainSender })
+    expect(chainSender).not.toBe(requesterPair.toAddress().toUserFriendlyAddress())
+    expect(chainSender).not.toBe(payerPair.toAddress().toUserFriendlyAddress())
+
+    // The payment rail auto-handed off to fulfilment; sync observes it.
+    const synced = await (await fetch(`${baseUrl}/essential-requests/${created.id}/sync`, { method: 'POST', headers: { cookie: requester } })).json() as Record<string, unknown>
+    expect(synced).toMatchObject({ essentialStatus: 'FULFILLING' })
+
+    await fetch(`${baseUrl}/payment-orders/${claimed.order.id}/fulfil`, { method: 'POST', headers: { cookie: payer } })
+    queryResponse = { orderid: 'ord-need', statuscode: '200', status: 'ORDER_COMPLETED' }
+    await fetch(`${baseUrl}/payment-orders/${claimed.order.id}/reconcile`, { method: 'POST', headers: { cookie: payer } })
+    const done = await (await fetch(`${baseUrl}/essential-requests/${created.id}/sync`, { method: 'POST', headers: { cookie: payer } })).json() as Record<string, unknown>
+    expect(done).toMatchObject({ essentialStatus: 'COMPLETED' })
+    expect(requestedUrls.filter((url) => url.includes('/APIAirtimeV1.asp'))).toHaveLength(1)
+  })
+
+  it('keeps essential rows out of legacy support-request flows', async () => {
+    const { baseUrl } = await createTestServer({ dataCatalog: fixtureCatalog() })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    await fetch(`${baseUrl}/essential-requests`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', network: 'MTN', recipientPhone: '08012345678', requestedAmount: '1000' }),
+    })
+    const listed = await (await fetch(`${baseUrl}/support-requests`, { headers: { cookie } })).json() as { supportRequests: unknown[] }
+    expect(listed.supportRequests).toEqual([])
+  })
 })
