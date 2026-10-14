@@ -85,4 +85,20 @@ describe('Pay essentials order flow', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Munus could not save this airtime order.')
     expect(screen.getByLabelText('Recipient phone')).toHaveValue('08012345678')
   })
+
+  it('shows truthful fulfilment state when real provider data exists', async () => {
+    render(<PayPage api={apiStub([order({
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'FULFILLING',
+      provider: 'clubkonnect',
+      providerStatus: 'ORDER_RECEIVED',
+      providerStatusCode: '100',
+    })])} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    expect(await screen.findByText('Paid · fulfilment in progress.')).toBeInTheDocument()
+    expect(screen.getByText('ClubKonnect')).toBeInTheDocument()
+    expect(screen.getByText('ORDER_RECEIVED (100)')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /pay now/i })).not.toBeInTheDocument()
+  })
 })

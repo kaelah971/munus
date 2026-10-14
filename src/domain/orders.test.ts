@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   canPayOrder,
+  canStartFulfilment,
   describeFulfilmentStage,
   describeOrderStage,
+  fulfilmentStatusForOutcome,
+  isFulfilmentTerminal,
   isOrderQuoteAvailable,
   type PaymentOrder,
 } from './orders'
@@ -39,7 +42,28 @@ describe('Munus payment order domain', () => {
     const paidUnfulfilled = draftOrder({ paymentStatus: 'PAID', fulfilmentStatus: 'NOT_STARTED' })
 
     expect(describeOrderStage(paidUnfulfilled)).toBe('Paid · waiting for fulfilment.')
+    expect(describeOrderStage(draftOrder({ paymentStatus: 'PAID', fulfilmentStatus: 'FULFILLMENT_FAILED' })))
+      .toBe('Paid · fulfilment needs recovery.')
     expect(canPayOrder(paidUnfulfilled)).toBe(false)
+  })
+
+  it('gates provider fulfilment on PAID orders waiting to start', () => {
+    expect(canStartFulfilment(draftOrder())).toBe(false)
+    expect(canStartFulfilment(draftOrder({ paymentStatus: 'PAID' }))).toBe(true)
+    expect(canStartFulfilment(draftOrder({ paymentStatus: 'PAID', fulfilmentStatus: 'FULFILLING' }))).toBe(false)
+    expect(canStartFulfilment(draftOrder({ paymentStatus: 'PAID', serviceType: 'DATA' }))).toBe(false)
+    expect(canStartFulfilment(draftOrder({ paymentStatus: 'PAYMENT_FAILED' }))).toBe(false)
+  })
+
+  it('maps reconciled provider outcomes without guessing', () => {
+    expect(fulfilmentStatusForOutcome('completed')).toBe('DELIVERED')
+    expect(fulfilmentStatusForOutcome('failed')).toBe('FULFILLMENT_FAILED')
+    expect(fulfilmentStatusForOutcome('unknown')).toBe('RECOVERY_REQUIRED')
+    expect(fulfilmentStatusForOutcome('pending')).toBeNull()
+    expect(fulfilmentStatusForOutcome('not-found')).toBeNull()
+    expect(isFulfilmentTerminal('DELIVERED')).toBe(true)
+    expect(isFulfilmentTerminal('FULFILLING')).toBe(false)
+    expect(isFulfilmentTerminal('NOT_STARTED')).toBe(false)
   })
 
   it('requires a live quote before an order can pay', () => {

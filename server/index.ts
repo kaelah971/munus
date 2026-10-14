@@ -7,6 +7,8 @@ import { PostgresMunusRepository } from './repository'
 import { PostgresPlanningRepository } from './planningRepository'
 import { PostgresSupportRepository } from './supportRepository'
 import { PostgresPaymentRepository } from './paymentRepository'
+import { AirtimeFulfilmentService } from './airtimeFulfilment'
+import { ClubKonnectAirtimeProvider } from './clubKonnect'
 
 const config = loadServerConfig()
 const database = createPostgresPool(config.databaseUrl)
@@ -18,11 +20,19 @@ const auth = new MunusAuthService(repository, {
   challengeTtlMs: config.challengeTtlMs,
   sessionTtlMs: config.sessionTtlMs,
 })
+const fulfilment = config.clubKonnect
+  ? new AirtimeFulfilmentService(
+    payment,
+    new ClubKonnectAirtimeProvider({ credentials: config.clubKonnect }),
+    { callbackBaseUrl: config.clubKonnect.callbackBaseUrl },
+  )
+  : null
 const server = createMunusServer({
   repository,
   planning,
   support,
   payment,
+  fulfilment,
   auth,
   staticDir: resolve(process.cwd(), 'dist'),
   config,

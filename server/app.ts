@@ -22,6 +22,14 @@ import {
   parsePaymentOrderDraft,
 } from './paymentValidation'
 import {
+  FulfilmentError,
+  type AirtimeFulfilmentService,
+} from './airtimeFulfilment'
+import {
+  CLUBKONNECT_CALLBACK_PATH,
+  ClubKonnectError,
+} from './clubKonnect'
+import {
   PlanningValidationError,
   parseAllocation,
   parsePocketDraft,
@@ -51,6 +59,7 @@ export interface MunusServerDependencies {
   planning: PlanningRepository
   support: SupportRepository
   payment: PaymentRepository
+  fulfilment: AirtimeFulfilmentService | null
   auth: MunusAuthService
   staticDir?: string
   config: Pick<
@@ -79,7 +88,7 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, support, payment, staticDir, config } = dependencies
+  const { auth, repository, planning, support, payment, fulfilment, staticDir, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
@@ -299,6 +308,41 @@ export async function handleRequest(
       return
     }
 
+    const fulfilPath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/(fulfil|reconcile)$/)
+    if (fulfilPath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!fulfilment) {
+        sendError(response, 503, 'Airtime fulfilment is not configured yet.')
+        return
+      }
+      const orderId = decodeURIComponent(fulfilPath[1])
+      const order = fulfilPath[2] === 'reconcile'
+        ? await fulfilment.reconcileOrder(session.userId, orderId)
+        : await fulfilment.fulfilOrder(session.userId, orderId)
+      sendJson(response, 200, order)
+      return
+    }
+
+    if (url.pathname === CLUBKONNECT_CALLBACK_PATH && (request.method === 'GET' || request.method === 'POST')) {
+      if (!fulfilment) {
+        sendError(response, 503, 'Airtime fulfilment is not configured yet.')
+        return
+      }
+      const reference = request.method === 'GET'
+        ? readCallbackQuery(url.searchParams)
+        : readCallbackBody(await readJson(request))
+      // The callback is only a signal: canonical state always comes from a
+      // fresh provider query, never from callback fields.
+      const order = await fulfilment.reconcileByProviderReference(reference.requestId, reference.orderId)
+      if (!order) {
+        sendError(response, 404, 'Provider callback reference was not recognized.')
+        return
+      }
+      sendJson(response, 200, { received: true, fulfilmentStatus: order.fulfilmentStatus })
+      return
+    }
+
     const pocketPath = matchPath(url.pathname, /^\/pockets(?:\/([^/]+))?(\/allocations)?$/)
     if (
       pocketPath &&
@@ -494,9 +538,11 @@ export async function handleRequest(
       error instanceof SupportValidationError ||
       error instanceof SupportRepositoryError ||
       error instanceof PaymentValidationError ||
-      error instanceof PaymentRepositoryError
+      error instanceof PaymentRepositoryError ||
+      error instanceof FulfilmentError ||
+      error instanceof ClubKonnectError
     ) {
-      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError
+      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError || error instanceof FulfilmentError || error instanceof ClubKonnectError
         ? error.statusCode
         : 400
       sendError(response, statusCode, error.message, error instanceof AuthServiceError ? error.code : undefined)
@@ -553,6 +599,35 @@ function requiredString(value: unknown, name: string): string {
     throw new RequestValidationError(`${name} is required.`)
   }
   return value.trim()
+}
+
+function readCallbackQuery(params: URLSearchParams): { requestId?: string; orderId?: string } {
+  return readCallbackFields((name) => params.get(name))
+}
+
+function readCallbackBody(body: unknown): { requestId?: string; orderId?: string } {
+  const record = body && typeof body === 'object' && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : {}
+  const lower = new Map(Object.entries(record).map(([key, value]) => [key.toLowerCase(), value]))
+  return readCallbackFields((name) => {
+    const value = lower.get(name.toLowerCase())
+    return typeof value === 'string' ? value : null
+  })
+}
+
+function readCallbackFields(read: (name: string) => string | null): { requestId?: string; orderId?: string } {
+  const firstPresent = (...names: string[]): string | undefined => {
+    for (const name of names) {
+      const value = read(name)?.trim()
+      if (value) return value
+    }
+    return undefined
+  }
+  return {
+    requestId: firstPresent('requestid', 'requestId', 'RequestID'),
+    orderId: firstPresent('orderid', 'orderId', 'OrderID'),
+  }
 }
 
 function matchPath(path: string, pattern: RegExp): RegExpMatchArray | null {

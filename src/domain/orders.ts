@@ -43,6 +43,13 @@ export interface PaymentOrder {
   walletTxRef?: string
   providerRef?: string
   provider?: string
+  providerRequestId?: string
+  providerStatusCode?: string
+  providerStatus?: string
+  providerAmountCharged?: string
+  providerRemark?: string
+  fulfilmentStartedAt?: string
+  fulfilledAt?: string
   paymentStatus: PaymentStatus
   fulfilmentStatus: FulfilmentStatus
   createdAt: string
@@ -67,12 +74,93 @@ export interface ValidatedPaymentOrderDraft {
 
 /**
  * Extension point for provider adapters (airtime, data, cash-out).
- * No adapter is wired in the order-foundation slice: orders are created as
- * DRAFT records with no quote, no wallet transaction, and no fulfilment.
+ * Adapters own provider-specific translation and never leak provider codes
+ * into the general payment domain or UI.
  */
 export interface PaymentProviderAdapter {
   readonly provider: string
   readonly serviceType: PaymentServiceType
+}
+
+export interface AirtimePurchaseInput {
+  network: SupportNetwork
+  amountNgn: string
+  mobileNumber: string
+  requestId: string
+  callbackUrl: string
+}
+
+export interface AirtimePurchaseReceipt {
+  providerOrderId?: string
+  statusCode: string
+  status: string
+  remark?: string
+}
+
+export interface AirtimeQueryInput {
+  requestId?: string
+  providerOrderId?: string
+}
+
+export type AirtimeProviderOutcome =
+  | 'completed'
+  | 'pending'
+  | 'failed'
+  | 'unknown'
+  | 'not-found'
+
+export interface AirtimeQueryRecord {
+  providerOrderId?: string
+  requestId?: string
+  statusCode: string
+  status: string
+  remark?: string
+  amountCharged?: string
+  outcome: AirtimeProviderOutcome
+}
+
+export interface AirtimeProviderAdapter extends PaymentProviderAdapter {
+  readonly serviceType: 'AIRTIME'
+  /** Stable request identifier for one logical fulfilment attempt. */
+  deriveRequestId(orderId: string): string
+  /** Pure provider-param construction; throws before any network contact. */
+  buildPurchaseParams(input: AirtimePurchaseInput): Record<string, string>
+  purchase(input: AirtimePurchaseInput): Promise<AirtimePurchaseReceipt>
+  query(input: AirtimeQueryInput): Promise<AirtimeQueryRecord>
+}
+
+/**
+ * Only a legitimately PAID airtime order waiting for fulfilment may enter
+ * real provider fulfilment. DRAFT (and every other payment state) is
+ * rejected before any provider contact.
+ */
+export function canStartFulfilment(
+  order: Pick<PaymentOrder, 'serviceType' | 'paymentStatus' | 'fulfilmentStatus'>,
+): boolean {
+  return (
+    order.serviceType === 'AIRTIME' &&
+    order.paymentStatus === 'PAID' &&
+    order.fulfilmentStatus === 'NOT_STARTED'
+  )
+}
+
+export function isFulfilmentTerminal(status: FulfilmentStatus): boolean {
+  return status === 'DELIVERED' || status === 'REFUNDED' || status === 'RESOLVED'
+}
+
+/**
+ * Maps a reconciled provider outcome onto fulfilment state. `pending` and
+ * `not-found` carry no delivery evidence, so the caller must leave state
+ * unchanged for those (null). Explicit failure ends the attempt; an
+ * ambiguous provider response requires human recovery, never a guess.
+ */
+export function fulfilmentStatusForOutcome(
+  outcome: AirtimeProviderOutcome,
+): FulfilmentStatus | null {
+  if (outcome === 'completed') return 'DELIVERED'
+  if (outcome === 'failed') return 'FULFILLMENT_FAILED'
+  if (outcome === 'unknown') return 'RECOVERY_REQUIRED'
+  return null
 }
 
 export function isOrderQuoteAvailable(order: Pick<PaymentOrder, 'quotedCryptoAmount' | 'quoteExpiresAt'>, now = Date.now()): boolean {
@@ -99,6 +187,9 @@ export function describeOrderStage(order: Pick<PaymentOrder, 'paymentStatus' | '
   if (order.paymentStatus === 'PAID') {
     if (order.fulfilmentStatus === 'DELIVERED') return 'Paid and delivered.'
     if (order.fulfilmentStatus === 'FULFILLING') return 'Paid · fulfilment in progress.'
+    if (order.fulfilmentStatus === 'FULFILLMENT_FAILED' || order.fulfilmentStatus === 'RECOVERY_REQUIRED') {
+      return 'Paid · fulfilment needs recovery.'
+    }
     return 'Paid · waiting for fulfilment.'
   }
   if (order.paymentStatus === 'PAYMENT_FAILED') return 'Payment failed · no money moved.'

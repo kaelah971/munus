@@ -11,6 +11,8 @@ import { createNimiqSignedMessageDigest } from './nimiqSignature'
 import { InMemoryPlanningRepository } from './planningRepository'
 import { InMemorySupportRepository } from './supportRepository'
 import { InMemoryPaymentRepository } from './paymentRepository'
+import { AirtimeFulfilmentService } from './airtimeFulfilment'
+import { ClubKonnectAirtimeProvider } from './clubKonnect'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -25,7 +27,7 @@ afterEach(async () => {
   )
 })
 
-async function createTestServer(options: { staticDir?: string } = {}) {
+async function createTestServer(options: { staticDir?: string; airtimeFetch?: (url: string) => Promise<unknown>; airtimeRequests?: string[] } = {}) {
   const repository = new InMemoryMunusRepository()
   const planning = new InMemoryPlanningRepository()
   const support = new InMemorySupportRepository()
@@ -34,11 +36,25 @@ async function createTestServer(options: { staticDir?: string } = {}) {
     challengeTtlMs: 5 * 60 * 1000,
     sessionTtlMs: 24 * 60 * 60 * 1000,
   })
+  const fulfilment = options.airtimeFetch
+    ? new AirtimeFulfilmentService(
+      payment,
+      new ClubKonnectAirtimeProvider({
+        credentials: { userId: 'fixture-user', apiKey: 'fixture-key' },
+        fetchJson: async (url: string) => {
+          options.airtimeRequests?.push(url)
+          return options.airtimeFetch!(url)
+        },
+      }),
+      { callbackBaseUrl: 'https://munus.example' },
+    )
+    : null
   const server = createMunusServer({
     repository,
     planning,
     support,
     payment,
+    fulfilment,
     auth,
     staticDir: options.staticDir,
     config: {
@@ -52,7 +68,22 @@ async function createTestServer(options: { staticDir?: string } = {}) {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Test server did not open a port.')
 
-  return { baseUrl: `http://127.0.0.1:${address.port}`, repository }
+  return { baseUrl: `http://127.0.0.1:${address.port}`, repository, payment }
+}
+
+async function createPaidAirtimeOrder(baseUrl: string, cookie: string, payment: InMemoryPaymentRepository): Promise<string> {
+  const created = await fetch(`${baseUrl}/payment-orders`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+  })
+  const order = await created.json() as { id: string }
+  // Test/admin fixture only: the NIM payment rail lands in P0-2B, so tests
+  // promote the stored order to PAID directly instead of paying on-chain.
+  const stored = payment.orders.get(order.id)
+  if (!stored) throw new Error('Fixture order was not stored.')
+  stored.paymentStatus = 'PAID'
+  return order.id
 }
 
 async function authenticate(baseUrl: string, pair: KeyPair): Promise<string> {
@@ -332,5 +363,122 @@ describe('Munus production API', () => {
 
     const unauthenticated = await fetch(`${baseUrl}/payment-orders`)
     expect(unauthenticated.status).toBe(401)
+  })
+
+  it('refuses fulfilment while the provider is unconfigured', async () => {
+    const { baseUrl, payment } = await createTestServer()
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const orderId = await createPaidAirtimeOrder(baseUrl, cookie, payment)
+
+    const fulfil = await fetch(`${baseUrl}/payment-orders/${orderId}/fulfil`, { method: 'POST', headers: { cookie } })
+    expect(fulfil.status).toBe(503)
+    const callback = await fetch(`${baseUrl}/provider-callback/clubkonnect?requestid=x`)
+    expect(callback.status).toBe(503)
+  })
+
+  it('fulfils only PAID airtime orders through the real provider adapter', async () => {
+    const requestedUrls: string[] = []
+    let queryResponse: unknown = {}
+    const { baseUrl, payment } = await createTestServer({
+      airtimeRequests: requestedUrls,
+      airtimeFetch: async (url) => {
+        if (url.includes('/APIQueryV1.asp')) return queryResponse
+        return { orderid: 'ord-live', statuscode: '100', status: 'ORDER_RECEIVED' }
+      },
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const otherCookie = await authenticate(baseUrl, KeyPair.generate())
+
+    const draft = await (await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })).json() as { id: string }
+    const refused = await fetch(`${baseUrl}/payment-orders/${draft.id}/fulfil`, { method: 'POST', headers: { cookie } })
+    expect(refused.status).toBe(409)
+    expect(requestedUrls).toHaveLength(0)
+
+    const stored = payment.orders.get(draft.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.paymentStatus = 'PAID'
+
+    const fulfilled = await fetch(`${baseUrl}/payment-orders/${draft.id}/fulfil`, { method: 'POST', headers: { cookie } })
+    expect(fulfilled.status).toBe(200)
+    const order = await fulfilled.json() as { paymentStatus: string; fulfilmentStatus: string; provider: string; providerRequestId: string; providerRef: string }
+    expect(order).toMatchObject({ paymentStatus: 'PAID', fulfilmentStatus: 'FULFILLING', provider: 'clubkonnect', providerRef: 'ord-live' })
+    expect(order.providerRequestId).toBe(draft.id.replace(/-/g, ''))
+    expect(requestedUrls.some((url) => url.includes('/APIAirtimeV1.asp'))).toBe(true)
+    const purchaseUrl = requestedUrls.find((url) => url.includes('/APIAirtimeV1.asp')) ?? ''
+    expect(purchaseUrl).toContain('MobileNetwork=01')
+    expect(purchaseUrl).toContain('Amount=1000')
+    expect(purchaseUrl).toContain(`RequestID=${order.providerRequestId}`)
+
+    const stranger = await fetch(`${baseUrl}/payment-orders/${draft.id}/fulfil`, { method: 'POST', headers: { cookie: otherCookie } })
+    expect(stranger.status).toBe(404)
+    const anonymous = await fetch(`${baseUrl}/payment-orders/${draft.id}/fulfil`, { method: 'POST' })
+    expect(anonymous.status).toBe(401)
+
+    queryResponse = {
+      orderid: 'ord-live',
+      requestid: order.providerRequestId,
+      statuscode: '200',
+      status: 'ORDER_COMPLETED',
+      remark: 'Successful',
+      amountcharged: '1000',
+      walletbalance: '500000',
+    }
+    const reconciled = await fetch(`${baseUrl}/payment-orders/${draft.id}/reconcile`, { method: 'POST', headers: { cookie } })
+    expect(reconciled.status).toBe(200)
+    const delivered = await reconciled.json() as Record<string, unknown>
+    expect(delivered).toMatchObject({ fulfilmentStatus: 'DELIVERED', providerStatusCode: '200', providerAmountCharged: '1000' })
+    expect(delivered).not.toHaveProperty('walletbalance')
+  })
+
+  it('reconciles provider callbacks without trusting them', async () => {
+    let queryCalls = 0
+    let queryResponse: unknown = { orderid: 'ord-cb', statuscode: '100', status: 'ORDER_RECEIVED' }
+    const { baseUrl, payment } = await createTestServer({
+      airtimeFetch: async (url) => {
+        if (!url.includes('/APIQueryV1.asp')) return { orderid: 'ord-cb', statuscode: '100', status: 'ORDER_RECEIVED' }
+        queryCalls += 1
+        return queryResponse
+      },
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const created = await (await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'Glo', requestedAmount: '500' }),
+    })).json() as { id: string }
+    const stored = payment.orders.get(created.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.paymentStatus = 'PAID'
+    await fetch(`${baseUrl}/payment-orders/${created.id}/fulfil`, { method: 'POST', headers: { cookie } })
+    const requestId = payment.orders.get(created.id)?.providerRequestId ?? ''
+    queryResponse = { orderid: 'ord-cb', statuscode: '200', status: 'ORDER_COMPLETED', remark: 'Successful', amountcharged: '500' }
+    queryCalls = 0
+
+    // A forged success claim still reconciles through a fresh provider query.
+    const callback = await fetch(`${baseUrl}/provider-callback/clubkonnect?requestid=${requestId}&statuscode=200&orderstatus=ORDER_COMPLETED`)
+    expect(callback.status).toBe(200)
+    expect(await callback.json()).toEqual({ received: true, fulfilmentStatus: 'DELIVERED' })
+    expect(queryCalls).toBe(1)
+
+    // A duplicate callback is harmless.
+    const duplicate = await fetch(`${baseUrl}/provider-callback/clubkonnect`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orderid: 'ord-cb', statuscode: '200' }),
+    })
+    expect(duplicate.status).toBe(200)
+    expect(await duplicate.json()).toEqual({ received: true, fulfilmentStatus: 'DELIVERED' })
+
+    // Unknown references mutate nothing and stay hidden behind a safe 404.
+    const before = queryCalls
+    const forged = await fetch(`${baseUrl}/provider-callback/clubkonnect?requestid=forged-reference`)
+    expect(forged.status).toBe(404)
+    expect(queryCalls).toBe(before)
+    const missing = await fetch(`${baseUrl}/provider-callback/clubkonnect`)
+    expect(missing.status).toBe(400)
   })
 })

@@ -54,4 +54,43 @@ describe('Munus payment order persistence', () => {
     expect(parsePaymentOrderDraft({ ...airtimeDraft, serviceType: 'DATA' }).serviceType).toBe('DATA')
     expect(parsePaymentOrderDraft({ ...airtimeDraft, serviceType: 'CASH_OUT', paymentAsset: 'USDT' }).serviceType).toBe('CASH_OUT')
   })
+
+  it('reserves fulfilment only for PAID orders waiting to start', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const draft = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    expect(await repository.startFulfilment('user-a', draft.id, { provider: 'clubkonnect', providerRequestId: 'req-1' })).toBeNull()
+
+    const stored = repository.orders.get(draft.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.paymentStatus = 'PAID'
+    const started = await repository.startFulfilment('user-a', draft.id, { provider: 'clubkonnect', providerRequestId: 'req-1' })
+    expect(started).toMatchObject({ fulfilmentStatus: 'FULFILLING', provider: 'clubkonnect', providerRequestId: 'req-1' })
+    expect(started?.fulfilmentStartedAt).toBeDefined()
+    expect(await repository.startFulfilment('user-a', draft.id, { provider: 'clubkonnect', providerRequestId: 'req-1' })).toBeNull()
+    expect(await repository.startFulfilment('user-b', draft.id, { provider: 'clubkonnect', providerRequestId: 'req-1' })).toBeNull()
+  })
+
+  it('finds orders by provider reference and records reconciled evidence', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    expect(await repository.findOrderByProviderReference(undefined, undefined)).toBeNull()
+    expect(await repository.findOrderByProviderReference('req-1', undefined)).toBeNull()
+
+    repository.orders.get(order.id)!.paymentStatus = 'PAID'
+    await repository.startFulfilment('user-a', order.id, { provider: 'clubkonnect', providerRequestId: 'req-1' })
+    expect(await repository.findOrderByProviderReference('req-1', undefined)).toMatchObject({ id: order.id })
+
+    const updated = await repository.recordProviderUpdate('user-a', order.id, {
+      providerOrderId: 'ord-1',
+      providerStatusCode: '200',
+      providerStatus: 'ORDER_COMPLETED',
+      providerAmountCharged: '1000',
+      providerRemark: 'Successful',
+      fulfilmentStatus: 'DELIVERED',
+      fulfilledAt: '2026-10-14T00:00:00.000Z',
+    })
+    expect(updated).toMatchObject({ providerRef: 'ord-1', fulfilmentStatus: 'DELIVERED', fulfilledAt: '2026-10-14T00:00:00.000Z' })
+    expect(await repository.findOrderByProviderReference(undefined, 'ord-1')).toMatchObject({ id: order.id })
+    expect(await repository.recordProviderUpdate('user-a', order.id, { fulfilmentStatus: 'FULFILLING' })).toBeNull()
+  })
 })

@@ -26,4 +26,19 @@ describe('Munus server configuration', () => {
     const clientConfig = readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8')
     expect(clientConfig).not.toContain('DATABASE_URL')
   })
+
+  it('leaves the airtime provider unconfigured without credentials', () => {
+    expect(loadServerConfig({ ...validEnv }).clubKonnect).toBeUndefined()
+  })
+
+  it('requires both provider credential halves together', () => {
+    expect(() => loadServerConfig({ ...validEnv, CLUBKONNECT_USER_ID: 'user' })).toThrow(/CLUBKONNECT_USER_ID and CLUBKONNECT_API_KEY/)
+    expect(() => loadServerConfig({ ...validEnv, CLUBKONNECT_API_KEY: 'key' })).toThrow(/CLUBKONNECT_USER_ID and CLUBKONNECT_API_KEY/)
+    expect(loadServerConfig({
+      ...validEnv,
+      CLUBKONNECT_USER_ID: 'user',
+      CLUBKONNECT_API_KEY: 'key',
+      CLUBKONNECT_CALLBACK_BASE_URL: 'https://munus.example/',
+    }).clubKonnect).toEqual({ userId: 'user', apiKey: 'key', callbackBaseUrl: 'https://munus.example/' })
+  })
 })

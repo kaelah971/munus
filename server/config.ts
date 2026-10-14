@@ -5,6 +5,12 @@ export class ServerConfigurationError extends Error {
   }
 }
 
+export interface ClubKonnectServerConfig {
+  userId: string
+  apiKey: string
+  callbackBaseUrl?: string
+}
+
 export interface MunusServerConfig {
   port: number
   databaseUrl: string
@@ -14,6 +20,7 @@ export interface MunusServerConfig {
   sessionTtlMs: number
   defaultNetwork: 'mainnet' | 'testnet'
   corsOrigin?: string
+  clubKonnect?: ClubKonnectServerConfig
 }
 
 export interface ServerEnv {
@@ -27,6 +34,9 @@ export interface ServerEnv {
   MUNUS_CORS_ORIGIN?: string
   NODE_ENV?: string
   DATABASE_URL?: string
+  CLUBKONNECT_USER_ID?: string
+  CLUBKONNECT_API_KEY?: string
+  CLUBKONNECT_CALLBACK_BASE_URL?: string
 }
 
 export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfig {
@@ -59,6 +69,21 @@ export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfi
     sessionTtlMs: sessionTtlSeconds * 1000,
     defaultNetwork,
     corsOrigin: env.MUNUS_CORS_ORIGIN?.trim() || undefined,
+    clubKonnect: loadClubKonnectConfig(env),
+  }
+}
+
+function loadClubKonnectConfig(env: ServerEnv): ClubKonnectServerConfig | undefined {
+  const userId = env.CLUBKONNECT_USER_ID?.trim() || ''
+  const apiKey = env.CLUBKONNECT_API_KEY?.trim() || ''
+  if (!userId && !apiKey) return undefined
+  if (!userId || !apiKey) {
+    throw new ServerConfigurationError('CLUBKONNECT_USER_ID and CLUBKONNECT_API_KEY must both be set.')
+  }
+  return {
+    userId,
+    apiKey,
+    callbackBaseUrl: env.CLUBKONNECT_CALLBACK_BASE_URL?.trim() || undefined,
   }
 }
 

@@ -24,6 +24,11 @@ type PayView =
   | { name: 'airtime-form' }
   | { name: 'review'; orderId: string }
 
+function describeProvider(provider: string): string {
+  if (provider === 'clubkonnect') return 'ClubKonnect'
+  return provider
+}
+
 function emptyAirtimeDraft(defaultPhone: string): PaymentOrderDraft {
   return {
     serviceType: 'AIRTIME',
@@ -150,6 +155,9 @@ export function PayPage({ api, defaultPhone = '' }: { api: PaymentApi; defaultPh
             <div><dt>Pay with</dt><dd>{reviewed.paymentAsset}</dd></div>
             <div><dt>Payment</dt><dd>{reviewed.paymentStatus === 'DRAFT' ? 'Draft · quote not created' : reviewed.paymentStatus}</dd></div>
             <div><dt>Fulfilment</dt><dd>{describeFulfilmentStage(reviewed.fulfilmentStatus)}</dd></div>
+            {reviewed.provider ? <div><dt>Provider</dt><dd>{describeProvider(reviewed.provider)}</dd></div> : null}
+            {reviewed.providerStatus ? <div><dt>Provider status</dt><dd>{reviewed.providerStatus} ({reviewed.providerStatusCode ?? 'no code'})</dd></div> : null}
+            {reviewed.providerAmountCharged ? <div><dt>Amount charged</dt><dd>₦{reviewed.providerAmountCharged}</dd></div> : null}
             <div><dt>Saved</dt><dd>{new Date(reviewed.createdAt).toLocaleString()}</dd></div>
           </dl>
           {canPayOrder(reviewed) ? null : (
