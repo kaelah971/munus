@@ -127,9 +127,10 @@ export function ActivityPage({ api, onNavigate }: {
             {visible.map((order) => {
               const receipt = buildReceipt(order)
               const copy = describeActivityStatusCopy(describeActivityStatus(order))
+              const context = receipt.dataAllowance ? `${receipt.dataAllowance} · ` : ''
               return (
                 <ListRow
-                  description={`${order.recipientNetwork ? `${order.recipientNetwork} · ` : ''}${receipt.recipientMasked} · ${formatActivityDate(order.createdAt)}`}
+                  description={`${context}${order.recipientNetwork ? `${order.recipientNetwork} · ` : ''}${receipt.recipientMasked} · ${formatActivityDate(order.createdAt)}`}
                   icon={serviceIcon(order)}
                   key={order.id}
                   meta={<StatusPill label={copy.label} tone={copy.tone} />}
@@ -181,6 +182,9 @@ function ReceiptDetail({ receipt, onBack }: { receipt: MunusReceipt; onBack: () 
           <div><dt>Service</dt><dd>{receipt.serviceLabel}</dd></div>
           {receipt.network ? <div><dt>Network</dt><dd>{receipt.network}</dd></div> : null}
           <div><dt>Recipient</dt><dd>{receipt.recipientMasked}</dd></div>
+          {receipt.bundleLabel ? <div><dt>Bundle</dt><dd>{receipt.bundleLabel}</dd></div> : null}
+          {receipt.dataAllowance ? <div><dt>Data allowance</dt><dd>{receipt.dataAllowance}</dd></div> : null}
+          {receipt.validity ? <div><dt>Validity</dt><dd>{receipt.validity}</dd></div> : null}
           <div><dt>Local value</dt><dd>₦{receipt.localAmount}</dd></div>
           <div><dt>Receipt reference</dt><dd>{receipt.receiptReference}</dd></div>
         </dl>

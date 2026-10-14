@@ -5,8 +5,10 @@ import {
   AIRTIME_MIN_NGN,
   CLUBKONNECT_AIRTIME_PATH,
   CLUBKONNECT_BASE_URL,
+  CLUBKONNECT_DATA_PURCHASE_PATH,
   CLUBKONNECT_QUERY_PATH,
   ClubKonnectAirtimeProvider,
+  ClubKonnectDataProvider,
   ClubKonnectError,
   classifyOutcome,
   clubKonnectNetworkCode,
@@ -163,5 +165,83 @@ describe('ClubKonnect airtime adapter', () => {
   it(`documents the amount bounds (${AIRTIME_MIN_NGN}/${AIRTIME_MAX_NGN})`, () => {
     expect(AIRTIME_MIN_NGN).toBe(50)
     expect(AIRTIME_MAX_NGN).toBe(200000)
+  })
+})
+
+describe('ClubKonnect data adapter', () => {
+  const dataInput = {
+    network: 'MTN' as const,
+    providerPlanId: 'MTN-15',
+    mobileNumber: '08012345678',
+    requestId: 'abc123',
+    callbackUrl: 'https://munus.example/provider-callback/clubkonnect',
+  }
+
+  function dataProvider(fetchJson: (url: string) => Promise<unknown> = async () => ({})) {
+    return new ClubKonnectDataProvider({ credentials, fetchJson })
+  }
+
+  it('reuses the shared network codes and RequestID derivation', () => {
+    expect(dataProvider().networkCode('Glo')).toBe('02')
+    expect(dataProvider().deriveRequestId('123e4567-e89b-12d3-a456-426614174000'))
+      .toBe('123e4567e89b12d3a456426614174000')
+  })
+
+  it('builds the data purchase parameters with the plan id, never an amount', () => {
+    const params = dataProvider().buildPurchaseParams(dataInput)
+
+    expect(params).toMatchObject({
+      UserID: 'fixture-user',
+      APIKey: 'fixture-key',
+      MobileNetwork: '01',
+      DataPlan: 'MTN-15',
+      MobileNumber: '08012345678',
+      RequestID: 'abc123',
+      CallBackURL: 'https://munus.example/provider-callback/clubkonnect',
+    })
+    expect(params).not.toHaveProperty('Amount')
+    expect(() => dataProvider().buildPurchaseParams({ ...dataInput, providerPlanId: '' }))
+      .toThrow(ClubKonnectError)
+  })
+
+  it('parses data purchase and query responses like airtime', async () => {
+    const urls: string[] = []
+    const adapter = dataProvider(async (url) => {
+      urls.push(url)
+      if (url.startsWith(`${CLUBKONNECT_BASE_URL}${CLUBKONNECT_DATA_PURCHASE_PATH}`)) {
+        return { orderid: 'ord-data-1', statuscode: '100', status: 'ORDER_RECEIVED' }
+      }
+      return {
+        orderid: 'ord-data-1',
+        requestid: 'abc123',
+        statuscode: '200',
+        status: 'ORDER_COMPLETED',
+        amountcharged: '320',
+        walletbalance: '999999',
+      }
+    })
+
+    await expect(adapter.purchase(dataInput)).resolves.toMatchObject({
+      providerOrderId: 'ord-data-1',
+      statusCode: '100',
+      status: 'ORDER_RECEIVED',
+    })
+    const record = await adapter.query({ requestId: 'abc123' })
+    expect(record).toMatchObject({ providerOrderId: 'ord-data-1', outcome: 'completed', amountCharged: '320' })
+    expect(record).not.toHaveProperty('walletbalance')
+    expect(urls).toHaveLength(2)
+  })
+
+  it('never exposes credentials in data errors and requires them upfront', async () => {
+    expect(() => new ClubKonnectDataProvider({ credentials: { userId: '', apiKey: '' } })).toThrow(
+      expect.objectContaining({ statusCode: 503 }),
+    )
+    const adapter = dataProvider(async () => {
+      throw new Error(`boom ${credentials.apiKey}`)
+    })
+    await expect(adapter.purchase(dataInput)).rejects.toSatisfy((error: unknown) => {
+      const message = error instanceof Error ? error.message : ''
+      return !message.includes('fixture-key') && !message.includes('fixture-user')
+    })
   })
 })

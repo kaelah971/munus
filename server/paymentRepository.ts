@@ -91,6 +91,10 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       recipientCountry: 'NG',
       requestedAmount: draft.requestedAmount,
       requestedCurrency: 'NGN',
+      providerPlanId: draft.providerPlanId,
+      planDisplayLabel: draft.planDisplayLabel,
+      planDataAllowance: draft.planDataAllowance,
+      planValidity: draft.planValidity,
       paymentStatus: 'DRAFT',
       fulfilmentStatus: 'NOT_STARTED',
       createdAt: now,
@@ -147,7 +151,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async recordQuote(userId: string, orderId: string, quote: NimQuoteRecord): Promise<PaymentOrder | null> {
     const order = await this.getOrder(userId, orderId)
     if (!order) return null
-    if (order.serviceType !== 'AIRTIME' || order.paymentAsset !== 'NIM') return null
+    if ((order.serviceType !== 'AIRTIME' && order.serviceType !== 'DATA') || order.paymentAsset !== 'NIM') return null
     if (order.paymentStatus !== 'DRAFT' && order.paymentStatus !== 'READY_FOR_PAYMENT') return null
     const updated: PaymentOrder = {
       ...order,
@@ -261,10 +265,11 @@ export class PostgresPaymentRepository implements PaymentRepository {
       `INSERT INTO payment_orders
         (user_id, service_type, payment_asset, recipient_phone, recipient_network,
          recipient_country, requested_amount, requested_currency,
+         provider_plan_id, plan_display_label, plan_data_allowance, plan_validity,
          payment_status, fulfilment_status)
-       VALUES ($1, $2, $3, $4, $5, 'NG', $6, 'NGN', 'DRAFT', 'NOT_STARTED')
+       VALUES ($1, $2, $3, $4, $5, 'NG', $6, 'NGN', $7, $8, $9, $10, 'DRAFT', 'NOT_STARTED')
        RETURNING *`,
-      [userId, draft.serviceType, draft.paymentAsset, draft.recipientPhone, draft.recipientNetwork ?? null, draft.requestedAmount],
+      [userId, draft.serviceType, draft.paymentAsset, draft.recipientPhone, draft.recipientNetwork ?? null, draft.requestedAmount, draft.providerPlanId ?? null, draft.planDisplayLabel ?? null, draft.planDataAllowance ?? null, draft.planValidity ?? null],
     ))
     return mapPaymentOrder(requireRow(result.rows[0], 'Payment order'))
   }
@@ -345,7 +350,7 @@ export class PostgresPaymentRepository implements PaymentRepository {
            updated_at = NOW()
        WHERE id = $1
          AND user_id = $2
-         AND service_type = 'AIRTIME'
+         AND service_type IN ('AIRTIME', 'DATA')
          AND payment_asset = 'NIM'
          AND payment_status IN ('DRAFT', 'READY_FOR_PAYMENT')
        RETURNING *`,
@@ -447,6 +452,10 @@ function mapPaymentOrder(row: Record<string, unknown>): PaymentOrder {
     recipientCountry: 'NG',
     requestedAmount: String(row.requested_amount),
     requestedCurrency: 'NGN',
+    providerPlanId: row.provider_plan_id ? String(row.provider_plan_id) : undefined,
+    planDisplayLabel: row.plan_display_label ? String(row.plan_display_label) : undefined,
+    planDataAllowance: row.plan_data_allowance ? String(row.plan_data_allowance) : undefined,
+    planValidity: row.plan_validity ? String(row.plan_validity) : undefined,
     quotedCryptoAmount: row.quoted_crypto_amount ? String(row.quoted_crypto_amount) : undefined,
     quoteExpiresAt: row.quote_expires_at ? timestampString(row.quote_expires_at) : undefined,
     walletTxRef: row.wallet_tx_ref ? String(row.wallet_tx_ref) : undefined,

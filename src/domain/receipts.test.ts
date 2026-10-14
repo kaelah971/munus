@@ -228,4 +228,31 @@ describe('receipt projection', () => {
       'delivered:attention',
     ])
   })
+
+  it('projects data receipts with snapshotted bundle evidence', () => {
+    const receipt = buildReceipt({
+      ...deliveredOrder(),
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+      planDataAllowance: '1.5 GB',
+      planValidity: '7 days',
+    })
+
+    expect(receipt.completed).toBe(true)
+    expect(receipt.serviceLabel).toBe('Data')
+    expect(receipt.bundleLabel).toBe('1.5GB - 7 days')
+    expect(receipt.dataAllowance).toBe('1.5 GB')
+    expect(receipt.validity).toBe('7 days')
+    expect(receipt.localAmount).toBe('350')
+    expect(receipt.timeline.map((stage) => stage.label)).toEqual([
+      'Order created',
+      'NIM payment submitted',
+      'NIM payment confirmed',
+      'Data sent to provider',
+      'Data delivered',
+    ])
+    expect(JSON.stringify(receipt)).not.toContain('08012345678')
+  })
 })

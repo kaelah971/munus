@@ -19,8 +19,12 @@ import {
 } from './paymentRepository'
 import {
   PaymentValidationError,
+  parseDataOrderDraft,
   parsePaymentOrderDraft,
 } from './paymentValidation'
+import type { DataBundleCatalogProvider } from './dataCatalog'
+import { createDataOrder } from './dataOrders'
+import { assertSupportedNetwork } from './dataCatalog'
 import {
   FulfilmentError,
   type AirtimeFulfilmentService,
@@ -67,6 +71,7 @@ export interface MunusServerDependencies {
   payment: PaymentRepository
   fulfilment: AirtimeFulfilmentService | null
   nimPayments: NimPaymentService | null
+  dataCatalog: DataBundleCatalogProvider | null
   auth: MunusAuthService
   staticDir?: string
   config: Pick<
@@ -95,7 +100,7 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, support, payment, fulfilment, nimPayments, staticDir, config } = dependencies
+  const { auth, repository, planning, support, payment, fulfilment, nimPayments, dataCatalog, staticDir, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
@@ -298,7 +303,43 @@ export async function handleRequest(
     if (request.method === 'POST' && url.pathname === '/payment-orders') {
       const session = await requireSession(request, response, dependencies)
       if (!session) return
-      sendJson(response, 201, await payment.createOrder(session.userId, parsePaymentOrderDraft(await readJson(request))))
+      const body = await readJson(request)
+      if (isDataOrderBody(body)) {
+        if (!dataCatalog) {
+          sendError(response, 503, 'Data bundles are not configured yet.')
+          return
+        }
+        sendJson(response, 201, await createDataOrder(
+          { payment, catalog: dataCatalog },
+          session.userId,
+          parseDataOrderDraft(body),
+        ))
+        return
+      }
+      sendJson(response, 201, await payment.createOrder(session.userId, parsePaymentOrderDraft(body)))
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === '/data-networks') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!dataCatalog) {
+        sendError(response, 503, 'Data bundles are not configured yet.')
+        return
+      }
+      sendJson(response, 200, { networks: await dataCatalog.listNetworks() })
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === '/data-plans') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!dataCatalog) {
+        sendError(response, 503, 'Data bundles are not configured yet.')
+        return
+      }
+      const network = assertSupportedNetwork(url.searchParams.get('network'))
+      sendJson(response, 200, { network, plans: await dataCatalog.listPlans(network) })
       return
     }
 
@@ -370,7 +411,7 @@ export async function handleRequest(
       const session = await requireSession(request, response, dependencies)
       if (!session) return
       if (!fulfilment) {
-        sendError(response, 503, 'Airtime fulfilment is not configured yet.')
+        sendError(response, 503, 'Provider fulfilment is not configured yet.')
         return
       }
       const orderId = decodeURIComponent(fulfilPath[1])
@@ -383,7 +424,7 @@ export async function handleRequest(
 
     if (url.pathname === CLUBKONNECT_CALLBACK_PATH && (request.method === 'GET' || request.method === 'POST')) {
       if (!fulfilment) {
-        sendError(response, 503, 'Airtime fulfilment is not configured yet.')
+        sendError(response, 503, 'Provider fulfilment is not configured yet.')
         return
       }
       const reference = request.method === 'GET'
@@ -652,6 +693,13 @@ function asRecord(value: unknown): Record<string, unknown> {
     throw new RequestValidationError('Request body must be an object.')
   }
   return value as Record<string, unknown>
+}
+
+function isDataOrderBody(value: unknown): boolean {
+  return Boolean(
+    value && typeof value === 'object' && !Array.isArray(value) &&
+    (value as Record<string, unknown>).serviceType === 'DATA',
+  )
 }
 
 function requiredString(value: unknown, name: string): string {

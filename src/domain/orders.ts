@@ -58,6 +58,10 @@ export interface PaymentOrder {
   recipientCountry: 'NG'
   requestedAmount: string
   requestedCurrency: 'NGN'
+  providerPlanId?: string
+  planDisplayLabel?: string
+  planDataAllowance?: string
+  planValidity?: string
   quotedCryptoAmount?: string
   quoteExpiresAt?: string
   paymentNetwork?: NimiqPaymentNetwork
@@ -102,6 +106,39 @@ export interface ValidatedPaymentOrderDraft {
   recipientPhone: string
   recipientNetwork?: SupportNetwork
   requestedAmount: string
+  providerPlanId?: string
+  planDisplayLabel?: string
+  planDataAllowance?: string
+  planValidity?: string
+}
+
+export interface DataOrderDraft {
+  providerPlanId: string
+  recipientPhone: string
+  recipientNetwork: SupportNetwork
+  paymentAsset: 'NIM'
+}
+
+/**
+ * Provider-neutral data bundle. Allowance/validity come from structured
+ * provider fields when present; otherwise the original provider label is
+ * preserved as displayName and the structured fields stay undefined.
+ */
+export interface DataPlan {
+  providerPlanId: string
+  network: SupportNetwork
+  displayName: string
+  dataAllowance?: string
+  validity?: string
+  planType?: string
+  localPriceNgn: string
+  available: boolean
+  provider: string
+}
+
+export interface DataNetwork {
+  network: SupportNetwork
+  label: string
 }
 
 /**
@@ -161,6 +198,24 @@ export interface AirtimeProviderAdapter extends PaymentProviderAdapter {
   query(input: AirtimeQueryInput): Promise<AirtimeQueryRecord>
 }
 
+export interface DataPurchaseInput {
+  network: SupportNetwork
+  providerPlanId: string
+  mobileNumber: string
+  requestId: string
+  callbackUrl: string
+}
+
+export interface DataProviderAdapter extends PaymentProviderAdapter {
+  readonly serviceType: 'DATA'
+  /** Stable request identifier for one logical fulfilment attempt. */
+  deriveRequestId(orderId: string): string
+  /** Pure provider-param construction; throws before any network contact. */
+  buildPurchaseParams(input: DataPurchaseInput): Record<string, string>
+  purchase(input: DataPurchaseInput): Promise<AirtimePurchaseReceipt>
+  query(input: AirtimeQueryInput): Promise<AirtimeQueryRecord>
+}
+
 /**
  * Deterministic compact order reference bound into the on-chain transaction
  * memo, e.g. `MNS:9a6b18d778a6`. Recomputed from the order id on both
@@ -217,6 +272,34 @@ export function isQuoteFresh(order: Pick<PaymentOrder, 'quotedCryptoAmount' | 'q
 export function canCreateQuote(order: Pick<PaymentOrder, 'serviceType' | 'paymentAsset' | 'paymentStatus'>, now = Date.now()): boolean {
   void now
   if (order.serviceType !== 'AIRTIME' || order.paymentAsset !== 'NIM') return false
+  return order.paymentStatus === 'DRAFT' || order.paymentStatus === 'READY_FOR_PAYMENT'
+}
+
+/**
+ * A DATA order may enter provider fulfilment only when PAID, mainnet-bound
+ * exclusions aside, with a snapshotted bundle and no fulfilment started.
+ * Kept separate from canStartFulfilment so airtime guards never drift.
+ */
+export function canStartDataFulfilment(
+  order: Pick<PaymentOrder, 'serviceType' | 'paymentStatus' | 'fulfilmentStatus' | 'providerPlanId'>,
+): boolean {
+  return (
+    order.serviceType === 'DATA' &&
+    order.paymentStatus === 'PAID' &&
+    order.fulfilmentStatus === 'NOT_STARTED' &&
+    Boolean(order.providerPlanId)
+  )
+}
+
+/**
+ * A DATA order is quotable only as NIM, from DRAFT/READY, with a
+ * snapshotted bundle. The snapshot (never client input) prices the quote.
+ */
+export function canCreateDataQuote(
+  order: Pick<PaymentOrder, 'serviceType' | 'paymentAsset' | 'paymentStatus' | 'providerPlanId'>,
+): boolean {
+  if (order.serviceType !== 'DATA' || order.paymentAsset !== 'NIM') return false
+  if (!order.providerPlanId) return false
   return order.paymentStatus === 'DRAFT' || order.paymentStatus === 'READY_FOR_PAYMENT'
 }
 

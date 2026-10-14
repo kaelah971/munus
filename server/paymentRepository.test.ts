@@ -55,6 +55,50 @@ describe('Munus payment order persistence', () => {
     expect(parsePaymentOrderDraft({ ...airtimeDraft, serviceType: 'CASH_OUT', paymentAsset: 'USDT' }).serviceType).toBe('CASH_OUT')
   })
 
+  it('persists data bundle snapshots on creation', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await repository.createOrder('user-a', {
+      ...parsePaymentOrderDraft({ ...airtimeDraft, serviceType: 'DATA' }),
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+      planDataAllowance: '1.5 GB',
+      planValidity: '7 days',
+    })
+
+    expect(order).toMatchObject({
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+      planDataAllowance: '1.5 GB',
+      planValidity: '7 days',
+    })
+    expect(await repository.getOrder('user-a', order.id)).toEqual(order)
+  })
+
+  it('records quotes for data orders with snapshots', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await repository.createOrder('user-a', {
+      ...parsePaymentOrderDraft({ ...airtimeDraft, serviceType: 'DATA' }),
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+    })
+    const quote = {
+      rateNgnPerNim: '2000',
+      nimAmount: '0.175',
+      lunaAmount: '17500',
+      source: 'fixture',
+      observedAt: '2026-10-14T12:00:00.000Z',
+      expiresAt: '2026-10-14T12:02:00.000Z',
+      network: 'mainnet' as const,
+      receiver: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000',
+      memo: 'MNS:abc123def456',
+    }
+    const quoted = await repository.recordQuote('user-a', order.id, quote)
+    expect(quoted).toMatchObject({ paymentStatus: 'READY_FOR_PAYMENT', quoteLunaAmount: '17500' })
+  })
+
   it('reserves fulfilment only for PAID orders waiting to start', async () => {
     const repository = new InMemoryPaymentRepository()
     const draft = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))

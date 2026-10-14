@@ -3,6 +3,7 @@ import { normalizePhone, SUPPORT_NETWORKS } from '../src/domain/support'
 import {
   PAYMENT_ASSETS,
   PAYMENT_SERVICE_TYPES,
+  type DataOrderDraft,
   type ValidatedPaymentOrderDraft,
 } from '../src/domain/orders'
 
@@ -28,6 +29,40 @@ export function parsePaymentOrderDraft(value: unknown): ValidatedPaymentOrderDra
     recipientNetwork: network || undefined,
     requestedAmount,
   }
+}
+
+/**
+ * DATA orders carry no user-supplied amount: the price always comes from
+ * the server-resolved catalog snapshot, so arbitrary NGN input can never
+ * override the bundle price.
+ */
+export function parseDataOrderDraft(value: unknown): DataOrderDraft {
+  const input = asRecord(value, 'Data order body')
+  const providerPlanId = requiredPlanId(input.providerPlanId)
+  if (providerPlanId.length > 128) {
+    throw new PaymentValidationError('providerPlanId is too long.')
+  }
+  const network = input.recipientNetwork
+  if (typeof network !== 'string' || !(SUPPORT_NETWORKS as readonly string[]).includes(network)) {
+    throw new PaymentValidationError('recipientNetwork is not supported.')
+  }
+  const paymentAsset = input.paymentAsset ?? 'NIM'
+  if (paymentAsset !== 'NIM') {
+    throw new PaymentValidationError('Data orders can only be paid with NIM.')
+  }
+  return {
+    providerPlanId,
+    recipientPhone: normalizePhoneValue(input.recipientPhone),
+    recipientNetwork: network as DataOrderDraft['recipientNetwork'],
+    paymentAsset: 'NIM',
+  }
+}
+
+function requiredPlanId(value: unknown): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new PaymentValidationError('providerPlanId is required.')
+  }
+  return value.trim()
 }
 
 function normalizePhoneValue(value: unknown): string {

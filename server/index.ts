@@ -8,7 +8,8 @@ import { PostgresPlanningRepository } from './planningRepository'
 import { PostgresSupportRepository } from './supportRepository'
 import { PostgresPaymentRepository } from './paymentRepository'
 import { AirtimeFulfilmentService } from './airtimeFulfilment'
-import { ClubKonnectAirtimeProvider } from './clubKonnect'
+import { ClubKonnectAirtimeProvider, ClubKonnectDataProvider } from './clubKonnect'
+import { ClubKonnectDataCatalog } from './dataCatalog'
 import { NimPaymentService } from './nimPayments'
 import { CoinGeckoNimRateProvider } from './nimRates'
 import { RpcNimiqChainReader } from './nimiqChain'
@@ -23,10 +24,16 @@ const auth = new MunusAuthService(repository, {
   challengeTtlMs: config.challengeTtlMs,
   sessionTtlMs: config.sessionTtlMs,
 })
+const dataCatalog = config.clubKonnect
+  ? new ClubKonnectDataCatalog({ credentials: config.clubKonnect })
+  : null
 const fulfilment = config.clubKonnect
   ? new AirtimeFulfilmentService(
     payment,
-    new ClubKonnectAirtimeProvider({ credentials: config.clubKonnect }),
+    {
+      airtime: new ClubKonnectAirtimeProvider({ credentials: config.clubKonnect }),
+      data: new ClubKonnectDataProvider({ credentials: config.clubKonnect }),
+    },
     { callbackBaseUrl: config.clubKonnect.callbackBaseUrl },
   )
   : null
@@ -50,6 +57,7 @@ const server = createMunusServer({
   payment,
   fulfilment,
   nimPayments,
+  dataCatalog,
   auth,
   staticDir: resolve(process.cwd(), 'dist'),
   config,

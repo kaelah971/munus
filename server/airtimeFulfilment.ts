@@ -1,12 +1,16 @@
 import { maskPhone } from '../src/domain/support'
 import {
+  canStartDataFulfilment,
   canStartFulfilment,
   fulfilmentStatusForOutcome,
   isFulfilmentTerminal,
   type AirtimeProviderAdapter,
-  type AirtimePurchaseInput,
+  type AirtimePurchaseReceipt,
+  type AirtimeQueryInput,
   type AirtimeQueryRecord,
+  type DataProviderAdapter,
   type PaymentOrder,
+  type PaymentServiceType,
 } from '../src/domain/orders'
 import type { FulfilmentStart, PaymentRepository, ProviderEvidenceUpdate } from './paymentRepository'
 import { CLUBKONNECT_CALLBACK_PATH } from './clubKonnect'
@@ -23,31 +27,43 @@ export interface AirtimeFulfilmentOptions {
   now?: () => string
 }
 
+export interface FulfilmentProviders {
+  airtime?: AirtimeProviderAdapter
+  data?: DataProviderAdapter
+}
+
+interface FulfilmentRunner<Input> {
+  readonly provider: string
+  deriveRequestId(orderId: string): string
+  buildPurchaseParams(input: Input): Record<string, string>
+  purchase(input: Input): Promise<AirtimePurchaseReceipt>
+  query(input: AirtimeQueryInput): Promise<AirtimeQueryRecord>
+}
+
 /**
- * Real airtime fulfilment for PAID orders only. The service never invents
- * payment state: only PAID orders may contact the provider, retries query
- * before any repurchase, and callbacks only trigger reconciliation — the
- * provider query is always canonical.
+ * Real provider fulfilment for PAID airtime and data orders. The service
+ * never invents payment state: only PAID orders may contact the provider,
+ * retries query before any repurchase, and callbacks only trigger
+ * reconciliation — the provider query is always canonical.
  */
 export class AirtimeFulfilmentService {
   private readonly now: () => string
 
   constructor(
     private readonly payment: PaymentRepository,
-    private readonly provider: AirtimeProviderAdapter,
+    providers: AirtimeProviderAdapter | DataProviderAdapter | FulfilmentProviders,
     private readonly options: AirtimeFulfilmentOptions = {},
   ) {
     this.now = options.now ?? (() => new Date().toISOString())
+    this.providers = normalizeProviders(providers)
   }
 
-  get providerId(): string {
-    return this.provider.provider
-  }
+  private readonly providers: FulfilmentProviders
 
   async fulfilOrder(userId: string, orderId: string): Promise<PaymentOrder> {
     const order = await this.requireOwnedOrder(userId, orderId)
-    if (order.serviceType !== 'AIRTIME') {
-      throw new FulfilmentError('Only airtime orders can use this provider.', 400)
+    if (order.serviceType !== 'AIRTIME' && order.serviceType !== 'DATA') {
+      throw new FulfilmentError('Only airtime or data orders can use this provider.', 400)
     }
     if (order.paymentStatus !== 'PAID') {
       throw new FulfilmentError('Only PAID orders can enter provider fulfilment.', 409)
@@ -59,27 +75,52 @@ export class AirtimeFulfilmentService {
       throw new FulfilmentError('Only verified mainnet payments can enter provider fulfilment.', 409)
     }
     if (isFulfilmentTerminal(order.fulfilmentStatus)) return order
-    if (!canStartFulfilment(order) && order.fulfilmentStatus !== 'FULFILLING') {
+    const fresh = order.serviceType === 'AIRTIME' ? canStartFulfilment(order) : canStartDataFulfilment(order)
+    if (!fresh && order.fulfilmentStatus !== 'FULFILLING') {
       throw new FulfilmentError('This order needs manual recovery before it can be fulfilled again.', 409)
     }
     if (!order.recipientNetwork) {
-      throw new FulfilmentError('Recipient network is required before airtime can be sent.', 400)
+      throw new FulfilmentError('Recipient network is required before fulfilment can be sent.', 400)
     }
-
-    const purchaseInput: AirtimePurchaseInput = {
+    const callbackUrl = this.requireCallbackUrl()
+    if (order.serviceType === 'DATA') {
+      const provider = this.requireProvider('DATA')
+      if (!order.providerPlanId) {
+        throw new FulfilmentError('Data order is missing its bundle snapshot. It needs manual recovery.', 409)
+      }
+      return this.executeFulfilment(userId, order, provider, {
+        network: order.recipientNetwork,
+        providerPlanId: order.providerPlanId,
+        mobileNumber: order.recipientPhone,
+        requestId: provider.deriveRequestId(order.id),
+        callbackUrl,
+      })
+    }
+    const provider = this.requireProvider('AIRTIME')
+    return this.executeFulfilment(userId, order, provider, {
       network: order.recipientNetwork,
       amountNgn: order.requestedAmount,
       mobileNumber: order.recipientPhone,
-      requestId: this.provider.deriveRequestId(order.id),
-      callbackUrl: this.requireCallbackUrl(),
-    }
-    // Pure provider validation (network, amount bounds, phone shape) before
+      requestId: provider.deriveRequestId(order.id),
+      callbackUrl,
+    })
+  }
+
+  private async executeFulfilment<Input extends { requestId: string }>(
+    userId: string,
+    order: PaymentOrder,
+    provider: FulfilmentRunner<Input>,
+    purchaseInput: Input,
+  ): Promise<PaymentOrder> {
+    const orderId = order.id
+    const kind = order.serviceType === 'DATA' ? 'data' : 'airtime'
+    // Pure provider validation (network, amount/plan, phone shape) before
     // any state change or network contact.
-    this.provider.buildPurchaseParams(purchaseInput)
+    provider.buildPurchaseParams(purchaseInput)
 
     let current = order
     if (current.fulfilmentStatus === 'NOT_STARTED') {
-      const start: FulfilmentStart = { provider: this.providerId, providerRequestId: purchaseInput.requestId }
+      const start: FulfilmentStart = { provider: provider.provider, providerRequestId: purchaseInput.requestId }
       const reserved = await this.payment.startFulfilment(userId, orderId, start)
       // A null reservation means the attempt was already reserved (retry or
       // race): fall through to the reconcile-first path, never repurchase.
@@ -90,13 +131,13 @@ export class AirtimeFulfilmentService {
 
     // Reconcile-first retry: if the provider already knows this RequestID
     // (earlier purchase reached them), attach it instead of repurchasing.
-    const existing = await this.provider.query({ requestId: purchaseInput.requestId })
+    const existing = await provider.query({ requestId: purchaseInput.requestId })
     if (existing.outcome !== 'not-found') {
       return this.applyQueryRecord(userId, current, existing)
     }
 
-    console.info('Munus airtime purchase sent', { orderId: current.id, recipient: maskPhone(current.recipientPhone) })
-    const receipt = await this.provider.purchase(purchaseInput)
+    console.info(`Munus ${kind} purchase sent`, { orderId: current.id, recipient: maskPhone(current.recipientPhone) })
+    const receipt = await provider.purchase(purchaseInput)
     const updated = await this.payment.recordProviderUpdate(userId, orderId, {
       providerOrderId: receipt.providerOrderId,
       providerStatusCode: receipt.statusCode,
@@ -107,11 +148,27 @@ export class AirtimeFulfilmentService {
     return updated ?? await this.requireOwnedOrder(userId, orderId)
   }
 
+  private requireProvider(serviceType: 'AIRTIME'): AirtimeProviderAdapter
+  private requireProvider(serviceType: 'DATA'): DataProviderAdapter
+  private requireProvider(serviceType: PaymentServiceType): AirtimeProviderAdapter | DataProviderAdapter {
+    const provider = serviceType === 'DATA' ? this.providers.data : this.providers.airtime
+    if (!provider) {
+      throw new FulfilmentError(`${serviceType === 'DATA' ? 'Data' : 'Airtime'} fulfilment is not configured.`, 503)
+    }
+    return provider
+  }
+
   async reconcileOrder(userId: string, orderId: string): Promise<PaymentOrder> {
     const order = await this.requireOwnedOrder(userId, orderId)
     if (isFulfilmentTerminal(order.fulfilmentStatus)) return order
     if (!order.providerRequestId && !order.providerRef) return order
-    const record = await this.provider.query({
+    // Callbacks and retries dispatch by service type; the provider query is
+    // always canonical, never the callback payload.
+    const provider = order.serviceType === 'DATA' ? this.providers.data
+      : order.serviceType === 'AIRTIME' ? this.providers.airtime
+        : undefined
+    if (!provider) return order
+    const record = await provider.query({
       requestId: order.providerRequestId,
       providerOrderId: order.providerRef,
     })
@@ -145,7 +202,7 @@ export class AirtimeFulfilmentService {
       fulfilmentStatus: next,
       fulfilledAt: next === 'DELIVERED' ? this.now() : undefined,
     }
-    console.info('Munus airtime reconciled', { orderId: order.id, outcome: record.outcome, fulfilmentStatus: next })
+    console.info(`Munus ${order.serviceType === 'DATA' ? 'data' : 'airtime'} reconciled`, { orderId: order.id, outcome: record.outcome, fulfilmentStatus: next })
     const updated = await this.payment.recordProviderUpdate(userId, order.id, evidence)
     return updated ?? order
   }
@@ -161,6 +218,14 @@ export class AirtimeFulfilmentService {
     if (!order) throw new FulfilmentError('Payment order was not found.', 404)
     return order
   }
+}
+
+function normalizeProviders(
+  input: AirtimeProviderAdapter | DataProviderAdapter | FulfilmentProviders,
+): FulfilmentProviders {
+  if ('airtime' in input || 'data' in input) return input
+  const adapter = input as AirtimeProviderAdapter | DataProviderAdapter
+  return adapter.serviceType === 'DATA' ? { data: adapter } : { airtime: adapter }
 }
 
 function cleanRemark(remark: string | undefined): string | undefined {

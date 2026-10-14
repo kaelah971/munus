@@ -6,7 +6,9 @@ import {
   type PaymentOrder,
   type PaymentOrderDraft,
 } from '../domain/orders'
-import type { PaymentApi, PaymentIntentResponse } from './paymentApi'
+import type { DataNetwork, DataPlan } from '../domain/orders'
+import type { SupportNetwork } from '../domain/support'
+import type { DataOrderInput, PaymentApi, PaymentIntentResponse } from './paymentApi'
 
 const PAYMENT_KEY_PREFIX = 'munus:payments:'
 
@@ -46,6 +48,20 @@ export class LocalPaymentApi implements PaymentApi {
   async reconcilePayment(id: string): Promise<PaymentOrder> {
     void id
     throw new Error('NIM payments require the Munus API.')
+  }
+
+  async listDataNetworks(): Promise<DataNetwork[]> {
+    throw new Error('Data bundles require the Munus API.')
+  }
+
+  async listDataPlans(network: SupportNetwork): Promise<DataPlan[]> {
+    void network
+    throw new Error('Data bundles require the Munus API.')
+  }
+
+  async createDataOrder(input: DataOrderInput): Promise<PaymentOrder> {
+    void input
+    throw new Error('Data bundles require the Munus API.')
   }
 
   async createOrder(draft: PaymentOrderDraft): Promise<PaymentOrder> {

@@ -12,7 +12,8 @@ import { InMemoryPlanningRepository } from './planningRepository'
 import { InMemorySupportRepository } from './supportRepository'
 import { InMemoryPaymentRepository } from './paymentRepository'
 import { AirtimeFulfilmentService } from './airtimeFulfilment'
-import { ClubKonnectAirtimeProvider } from './clubKonnect'
+import { ClubKonnectAirtimeProvider, ClubKonnectDataProvider } from './clubKonnect'
+import type { DataBundleCatalogProvider } from './dataCatalog'
 import { NimPaymentService } from './nimPayments'
 import { CoinGeckoNimRateProvider } from './nimRates'
 import type { NimiqChainReader } from './nimiqChain'
@@ -32,10 +33,32 @@ afterEach(async () => {
 
 const TEST_NIM_RECEIVER = KeyPair.generate().toAddress().toUserFriendlyAddress()
 
+function fixtureCatalog(): DataBundleCatalogProvider {
+  const plans = [
+    {
+      providerPlanId: 'MTN-15',
+      network: 'MTN' as const,
+      displayName: '1.5GB - 7 days',
+      dataAllowance: '1.5 GB',
+      validity: '7 days',
+      localPriceNgn: '350',
+      available: true,
+      provider: 'clubkonnect',
+    },
+  ]
+  return {
+    listNetworks: async () => [{ network: 'MTN' as const, label: 'MTN' }],
+    listPlans: async () => plans,
+  }
+}
+
 async function createTestServer(options: {
   staticDir?: string
   airtimeFetch?: (url: string) => Promise<unknown>
   airtimeRequests?: string[]
+  dataFetch?: (url: string) => Promise<unknown>
+  dataRequests?: string[]
+  dataCatalog?: DataBundleCatalogProvider | null
   nimRateFetch?: (url: string) => Promise<unknown>
   nimChain?: NimiqChainReader | null
   nimReceiver?: string
@@ -50,16 +73,27 @@ async function createTestServer(options: {
     challengeTtlMs: 5 * 60 * 1000,
     sessionTtlMs: 24 * 60 * 60 * 1000,
   })
-  const fulfilment = options.airtimeFetch
+  const fulfilment = options.airtimeFetch || options.dataFetch
     ? new AirtimeFulfilmentService(
       payment,
-      new ClubKonnectAirtimeProvider({
-        credentials: { userId: 'fixture-user', apiKey: 'fixture-key' },
-        fetchJson: async (url: string) => {
-          options.airtimeRequests?.push(url)
-          return options.airtimeFetch!(url)
-        },
-      }),
+      {
+        airtime: new ClubKonnectAirtimeProvider({
+          credentials: { userId: 'fixture-user', apiKey: 'fixture-key' },
+          fetchJson: async (url: string) => {
+            options.airtimeRequests?.push(url)
+            if (!options.airtimeFetch) throw new Error('No airtime fixture configured.')
+            return options.airtimeFetch(url)
+          },
+        }),
+        data: new ClubKonnectDataProvider({
+          credentials: { userId: 'fixture-user', apiKey: 'fixture-key' },
+          fetchJson: async (url: string) => {
+            options.dataRequests?.push(url)
+            if (!options.dataFetch) throw new Error('No data fixture configured.')
+            return options.dataFetch(url)
+          },
+        }),
+      },
       { callbackBaseUrl: 'https://munus.example' },
     )
     : null
@@ -83,6 +117,7 @@ async function createTestServer(options: {
     payment,
     fulfilment,
     nimPayments,
+    dataCatalog: options.dataCatalog ?? null,
     auth,
     staticDir: options.staticDir,
     config: {
@@ -724,5 +759,191 @@ describe('Munus production API', () => {
     expect(testPaid.status).toBe(200)
     expect(await testPaid.json()).toMatchObject({ paymentStatus: 'PAID', fulfilmentStatus: 'NOT_STARTED' })
     expect(testnetUrls).toHaveLength(0)
+  })
+
+  it('serves a normalized data catalog and fails closed without one', async () => {
+    const { baseUrl } = await createTestServer({ dataCatalog: fixtureCatalog() })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+
+    const networks = await fetch(`${baseUrl}/data-networks`, { headers: { cookie } })
+    expect(networks.status).toBe(200)
+    expect(await networks.json()).toEqual({
+      networks: [{ network: 'MTN', label: 'MTN' }],
+    })
+
+    const plans = await fetch(`${baseUrl}/data-plans?network=MTN`, { headers: { cookie } })
+    expect(plans.status).toBe(200)
+    const catalogBody = await plans.json() as { network: string; plans: Array<Record<string, unknown>> }
+    expect(catalogBody.network).toBe('MTN')
+    expect(catalogBody.plans).toHaveLength(1)
+    expect(catalogBody.plans[0]).toMatchObject({
+      providerPlanId: 'MTN-15',
+      displayName: '1.5GB - 7 days',
+      localPriceNgn: '350',
+    })
+    expect(JSON.stringify(catalogBody)).not.toContain('fixture-key')
+
+    expect((await fetch(`${baseUrl}/data-plans?network=Starlink`, { headers: { cookie } })).status).toBe(400)
+    expect((await fetch(`${baseUrl}/data-networks`)).status).toBe(401)
+
+    const bare = await createTestServer()
+    const bareCookie = await authenticate(bare.baseUrl, KeyPair.generate())
+    expect((await fetch(`${bare.baseUrl}/data-networks`, { headers: { cookie: bareCookie } })).status).toBe(503)
+    expect((await fetch(`${bare.baseUrl}/data-plans?network=MTN`, { headers: { cookie: bareCookie } })).status).toBe(503)
+  })
+
+  it('creates data orders pinned to the catalog price', async () => {
+    const { baseUrl, payment } = await createTestServer({ dataCatalog: fixtureCatalog() })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const otherCookie = await authenticate(baseUrl, KeyPair.generate())
+
+    const created = await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'DATA', providerPlanId: 'MTN-15', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1' }),
+    })
+    expect(created.status).toBe(201)
+    const order = await created.json() as Record<string, unknown>
+    // The client-supplied ₦1 is ignored: the catalog price wins.
+    expect(order).toMatchObject({
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+      planDataAllowance: '1.5 GB',
+      planValidity: '7 days',
+      paymentStatus: 'DRAFT',
+    })
+    void payment
+
+    const hidden = await fetch(`${baseUrl}/payment-orders/${order.id}`, { headers: { cookie: otherCookie } })
+    expect(hidden.status).toBe(404)
+
+    const gone = await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'DATA', providerPlanId: 'MTN-GONE', recipientPhone: '08012345678', recipientNetwork: 'MTN' }),
+    })
+    expect(gone.status).toBe(404)
+
+    const missing = await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'DATA', recipientPhone: '08012345678', recipientNetwork: 'MTN' }),
+    })
+    expect(missing.status).toBe(400)
+  })
+
+  it('runs a data order end to end without repurchasing', async () => {
+    const dataRequests: string[] = []
+    let queryResponse: unknown = {}
+    let chainTx: Record<string, unknown> | null = null
+    const txHash = 'ab'.repeat(32)
+    const chainSender = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const { baseUrl } = await createTestServer({
+      dataCatalog: fixtureCatalog(),
+      dataRequests,
+      dataFetch: async (url) => {
+        if (url.includes('/APIQueryV1.asp')) return queryResponse
+        return { orderid: 'ord-data-9', statuscode: '100', status: 'ORDER_RECEIVED' }
+      },
+      nimChain: {
+        getTransaction: async () => chainTx as never,
+        getHeadBlockNumber: async () => 1000,
+      },
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const draft = await (await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'DATA', providerPlanId: 'MTN-15', recipientPhone: '08012345678', recipientNetwork: 'MTN' }),
+    })).json() as { id: string }
+
+    const quoted = await (await fetch(`${baseUrl}/payment-orders/${draft.id}/quote`, { method: 'POST', headers: { cookie } })).json() as {
+      quoteLunaAmount: string
+      paymentMemo: string
+      quotedCryptoAmount: string
+    }
+    expect(quoted.quoteLunaAmount).toBe('17500')
+    expect(quoted.quotedCryptoAmount).toBe('0.175')
+
+    await fetch(`${baseUrl}/payment-orders/${draft.id}/payment-intent`, { method: 'POST', headers: { cookie } })
+    chainTx = {
+      hash: txHash,
+      from: chainSender,
+      to: TEST_NIM_RECEIVER,
+      valueLuna: '17500',
+      networkId: 42,
+      blockNumber: 990,
+      confirmations: 10,
+      dataFields: [quoted.paymentMemo],
+    }
+    const settled = await fetch(`${baseUrl}/payment-orders/${draft.id}/payment-submission`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: txHash }),
+    })
+    expect(settled.status).toBe(200)
+    const paid = await settled.json() as Record<string, unknown>
+    expect(paid).toMatchObject({ paymentStatus: 'PAID', fulfilmentStatus: 'FULFILLING', providerRef: 'ord-data-9' })
+    const purchaseUrl = dataRequests.find((url) => url.includes('/APIDatabundleV1.asp')) ?? ''
+    expect(purchaseUrl).toContain('DataPlan=MTN-15')
+    expect(purchaseUrl).toContain('MobileNetwork=01')
+    expect(purchaseUrl).not.toContain('Amount=')
+
+    queryResponse = {
+      orderid: 'ord-data-9',
+      statuscode: '200',
+      status: 'ORDER_COMPLETED',
+      amountcharged: '320',
+    }
+    const reconciled = await fetch(`${baseUrl}/payment-orders/${draft.id}/reconcile`, { method: 'POST', headers: { cookie } })
+    expect(await reconciled.json()).toMatchObject({ fulfilmentStatus: 'DELIVERED', providerAmountCharged: '320' })
+    expect(dataRequests.filter((url) => url.includes('/APIDatabundleV1.asp'))).toHaveLength(1)
+
+    // The shared callback reconciles data orders without trusting payloads.
+    const callback = await fetch(`${baseUrl}/provider-callback/clubkonnect?orderid=ord-data-9&statuscode=200`)
+    expect(callback.status).toBe(200)
+    expect(await callback.json()).toEqual({ received: true, fulfilmentStatus: 'DELIVERED' })
+    expect(dataRequests.filter((url) => url.includes('/APIDatabundleV1.asp'))).toHaveLength(1)
+  })
+
+  it('keeps testnet data payments away from provider funds', async () => {
+    const dataRequests: string[] = []
+    let chainTx: Record<string, unknown> | null = null
+    const txHash = 'ef'.repeat(32)
+    const { baseUrl } = await createTestServer({
+      nimNetwork: 'testnet',
+      dataCatalog: fixtureCatalog(),
+      dataRequests,
+      dataFetch: async () => ({ orderid: 'ord-test', statuscode: '100', status: 'ORDER_RECEIVED' }),
+      nimChain: {
+        getTransaction: async () => chainTx as never,
+        getHeadBlockNumber: async () => 100,
+      },
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const draft = await (await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'DATA', providerPlanId: 'MTN-15', recipientPhone: '08012345678', recipientNetwork: 'MTN' }),
+    })).json() as { id: string }
+    const quoted = await (await fetch(`${baseUrl}/payment-orders/${draft.id}/quote`, { method: 'POST', headers: { cookie } })).json() as { paymentMemo: string }
+    chainTx = {
+      hash: txHash,
+      from: KeyPair.generate().toAddress().toUserFriendlyAddress(),
+      to: TEST_NIM_RECEIVER,
+      valueLuna: '17500',
+      blockNumber: 50,
+      confirmations: 2,
+      dataFields: [quoted.paymentMemo],
+    }
+    const submitted = await fetch(`${baseUrl}/payment-orders/${draft.id}/payment-submission`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: txHash }),
+    })
+    expect(await submitted.json()).toMatchObject({ paymentStatus: 'PAID', fulfilmentStatus: 'NOT_STARTED' })
+    expect(dataRequests).toHaveLength(0)
   })
 })

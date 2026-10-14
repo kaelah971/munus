@@ -139,7 +139,7 @@ describe('NIM payment service', () => {
     expect(untouched?.quoteLunaAmount).toBeUndefined()
   })
 
-  it('rejects quotes for non-NIM, non-airtime, and non-draft orders', async () => {
+  it('rejects quotes for non-NIM, snapshot-less, and non-draft orders', async () => {
     const { repository, rates, service } = setup()
     const data = await draftOrder(repository, { ...airtimeDraft, serviceType: 'DATA' })
     const usdt = await draftOrder(repository, { ...airtimeDraft, paymentAsset: 'USDT' })
@@ -147,6 +147,29 @@ describe('NIM payment service', () => {
     await expect(service.createQuote('user-a', usdt.id)).rejects.toMatchObject({ statusCode: 400 })
     expect(rates.calls).toBe(0)
     await expect(service.createQuote('user-a', 'missing')).rejects.toMatchObject({ statusCode: 404 })
+  })
+
+  it('quotes data orders from the snapshotted bundle price', async () => {
+    const { repository, rates, service } = setup()
+    const created = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    const stored = repository.orders.get(created.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    // A snapshotted data order prices from the bundle, whatever the draft said.
+    Object.assign(stored, {
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+    })
+
+    const quoted = await service.createQuote('user-a', created.id)
+    expect(rates.calls).toBe(1)
+    expect(quoted).toMatchObject({
+      paymentStatus: 'READY_FOR_PAYMENT',
+      quotedCryptoAmount: '0.175',
+      quoteLunaAmount: '17500',
+      providerPlanId: 'MTN-15',
+    })
   })
 
   it('refuses wallet progress once the quote expires', async () => {

@@ -165,6 +165,39 @@ describe('Activity and Receipt Vault', () => {
     expect(screen.getAllByText('Delivering airtime').length).toBeGreaterThanOrEqual(1)
   })
 
+  it('shows data orders with bundle context and masked phones', async () => {
+    const data = order({
+      id: 'dddddddd-0000-0000-0000-000000000005',
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+      planDataAllowance: '1.5 GB',
+      planValidity: '7 days',
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'DELIVERED',
+      quotedCryptoAmount: '0.175',
+      quoteLunaAmount: '17500',
+      paymentVerifiedAt: '2026-10-14T12:05:00.000Z',
+      walletTxRef: TX_HASH,
+      provider: 'clubkonnect',
+      providerRef: 'ord-data-1',
+      fulfilledAt: '2026-10-14T12:06:00.000Z',
+    })
+    renderPage(apiStub([data]))
+
+    const row = await screen.findByRole('button', { name: /₦350 data/ })
+    expect(row).toHaveTextContent('1.5 GB · MTN')
+    expect(screen.queryByText('08012345678')).not.toBeInTheDocument()
+
+    fireEvent.click(row)
+    expect(await screen.findByText('Receipt · Delivered')).toBeInTheDocument()
+    expect(screen.getByText('1.5GB - 7 days')).toBeInTheDocument()
+    expect(screen.getByText('Data allowance')).toBeInTheDocument()
+    expect(screen.getByText('Validity')).toBeInTheDocument()
+    expect(screen.getByText(/Data delivered/)).toBeInTheDocument()
+  })
+
   it('shows a truthful empty state with a pay CTA and handles load failure', async () => {
     const { onNavigate } = renderPage(apiStub([]))
     expect(await screen.findByText('No activity yet')).toBeInTheDocument()

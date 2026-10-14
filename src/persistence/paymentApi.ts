@@ -1,4 +1,5 @@
-import type { PaymentOrder, PaymentOrderDraft } from '../domain/orders'
+import type { DataNetwork, DataPlan, PaymentOrder, PaymentOrderDraft } from '../domain/orders'
+import type { SupportNetwork } from '../domain/support'
 
 export interface PaymentIntentResponse {
   order: PaymentOrder
@@ -11,6 +12,12 @@ export interface PaymentIntentResponse {
   }
 }
 
+export interface DataOrderInput {
+  providerPlanId: string
+  recipientPhone: string
+  recipientNetwork: SupportNetwork
+}
+
 export interface PaymentApi {
   list(): Promise<PaymentOrder[]>
   get(id: string): Promise<PaymentOrder>
@@ -19,6 +26,9 @@ export interface PaymentApi {
   createPaymentIntent(id: string): Promise<PaymentIntentResponse>
   submitPayment(id: string, transactionHash: string): Promise<PaymentOrder>
   reconcilePayment(id: string): Promise<PaymentOrder>
+  listDataNetworks(): Promise<DataNetwork[]>
+  listDataPlans(network: SupportNetwork): Promise<DataPlan[]>
+  createDataOrder(input: DataOrderInput): Promise<PaymentOrder>
 }
 
 export class RemotePaymentApi implements PaymentApi {
@@ -62,6 +72,24 @@ export class RemotePaymentApi implements PaymentApi {
 
   async reconcilePayment(id: string): Promise<PaymentOrder> {
     const response = await this.request(`/payment-orders/${encodeURIComponent(id)}/reconcile-payment`, { method: 'POST' })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async listDataNetworks(): Promise<DataNetwork[]> {
+    const response = await this.request('/data-networks')
+    return ((await response.json()) as { networks: DataNetwork[] }).networks
+  }
+
+  async listDataPlans(network: SupportNetwork): Promise<DataPlan[]> {
+    const response = await this.request(`/data-plans?network=${encodeURIComponent(network)}`)
+    return ((await response.json()) as { plans: DataPlan[] }).plans
+  }
+
+  async createDataOrder(input: DataOrderInput): Promise<PaymentOrder> {
+    const response = await this.request('/payment-orders', {
+      method: 'POST',
+      body: JSON.stringify({ serviceType: 'DATA', ...input }),
+    })
     return (await response.json()) as PaymentOrder
   }
 

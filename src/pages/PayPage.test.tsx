@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, type Mock } from 'vitest'
-import type { PaymentOrder } from '../domain/orders'
+import type { DataPlan, PaymentOrder } from '../domain/orders'
 import type { PaymentApi } from '../persistence/paymentApi'
 import type { NimiqConnectionState } from '../integration/nimiq'
 import { requestNimPayment } from '../integration/nimiq'
@@ -64,6 +64,9 @@ function apiStub(initial: PaymentOrder[] = []) {
     createPaymentIntent: Mock
     submitPayment: Mock
     reconcilePayment: Mock
+    listDataNetworks: Mock
+    listDataPlans: Mock
+    createDataOrder: Mock
   } = {
     list: vi.fn().mockImplementation(async () => orders),
     get: vi.fn().mockImplementation(async (id: string) => find(id)),
@@ -92,8 +95,37 @@ function apiStub(initial: PaymentOrder[] = []) {
       paymentStatus: 'ONCHAIN_PENDING' as const,
     })),
     reconcilePayment: vi.fn().mockImplementation(async (id: string) => find(id)),
+    listDataNetworks: vi.fn().mockResolvedValue([{ network: 'MTN', label: 'MTN' }]),
+    listDataPlans: vi.fn().mockImplementation(async () => [dataPlan()]),
+    createDataOrder: vi.fn().mockImplementation(async (input: unknown) => {
+      const created = order({
+        ...(input as Partial<PaymentOrder>),
+        id: 'order-data-new',
+        serviceType: 'DATA',
+        requestedAmount: '350',
+        providerPlanId: 'MTN-15',
+        planDisplayLabel: '1.5GB - 7 days',
+        planDataAllowance: '1.5 GB',
+        planValidity: '7 days',
+      })
+      orders.unshift(created)
+      return created
+    }),
   }
   return api
+}
+
+function dataPlan(): DataPlan {
+  return {
+    providerPlanId: 'MTN-15',
+    network: 'MTN',
+    displayName: '1.5GB - 7 days',
+    dataAllowance: '1.5 GB',
+    validity: '7 days',
+    localPriceNgn: '350',
+    available: true,
+    provider: 'clubkonnect',
+  }
 }
 
 function quotedFields(): Partial<PaymentOrder> {
@@ -141,7 +173,8 @@ describe('Pay essentials order flow', () => {
 
     expect(await screen.findByRole('button', { name: /₦1000 airtime/ })).toBeInTheDocument()
     expect(screen.queryByText('08012345678')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Data/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Data/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Electricity/ })).not.toBeInTheDocument()
     expect(screen.getByText(/NIM never goes to the provider/)).toBeInTheDocument()
   })
 
@@ -180,6 +213,30 @@ describe('Pay essentials order flow', () => {
     })
     await waitFor(() => expect(api.submitPayment).toHaveBeenCalledWith('order-1', 'ab'.repeat(32)))
     expect(await screen.findByText('Submitted · confirming on-chain')).toBeInTheDocument()
+  })
+
+  it('pays quoted data orders through the same explicit wallet tap', async () => {
+    const api = apiStub([quotedOrder({
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      quotedCryptoAmount: '0.175',
+      quoteLunaAmount: '17500',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+    })])
+    mockedRequestNimPayment.mockReset()
+    mockedRequestNimPayment.mockResolvedValue('ab'.repeat(32))
+    render(<PayPage api={api} connection={readyConnection} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦350 data/ }))
+    expect(await screen.findByRole('heading', { name: '₦350 data' })).toBeInTheDocument()
+    expect(mockedRequestNimPayment).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pay 0.175 NIM' }))
+    await waitFor(() => expect(api.createPaymentIntent).toHaveBeenCalledWith('order-1'))
+    expect(mockedRequestNimPayment).toHaveBeenCalledOnce()
+    expect(mockedRequestNimPayment).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lunaAmount: '17500' }))
+    await waitFor(() => expect(api.submitPayment).toHaveBeenCalledWith('order-1', 'ab'.repeat(32)))
   })
 
   it('leaves rejection payable with no submission recorded', async () => {
@@ -246,5 +303,51 @@ describe('Pay essentials order flow', () => {
     render(<PayPage api={apiStub([quotedOrder({ paymentStatus: 'PAYMENT_FAILED', paymentFailureReason: 'wrong-amount' })])} connection={offlineConnection} />)
     fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
     expect(await screen.findByText(/did not match the quoted amount/)).toBeInTheDocument()
+  })
+
+  it('offers data as a real category with live bundles', async () => {
+    const api = apiStub()
+    render(<PayPage api={api} connection={offlineConnection} />)
+    await waitFor(() => expect(api.list).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: /Data/ }))
+    expect(await screen.findByRole('heading', { name: 'Buy data' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Network'), { target: { value: 'MTN' } })
+    await waitFor(() => expect(api.listDataPlans).toHaveBeenCalledWith('MTN'))
+    expect(await screen.findByText('1.5GB - 7 days')).toBeInTheDocument()
+    expect(screen.getByText('1.5 GB · 7 days · ₦350')).toBeInTheDocument()
+  })
+
+  it('creates a data order from the selected bundle price', async () => {
+    const api = apiStub()
+    render(<PayPage api={api} connection={offlineConnection} defaultPhone="08099999999" />)
+    await waitFor(() => expect(api.list).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: /Data/ }))
+    fireEvent.change(screen.getByLabelText('Network'), { target: { value: 'MTN' } })
+    fireEvent.click(await screen.findByRole('button', { name: /1\.5GB - 7 days/ }))
+    fireEvent.change(screen.getByLabelText('Recipient phone'), { target: { value: '08012345678' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Review data order' }))
+
+    await waitFor(() => expect(api.createDataOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ providerPlanId: 'MTN-15', recipientPhone: '08012345678', recipientNetwork: 'MTN' }),
+    ))
+    expect(await screen.findByRole('heading', { name: '₦350 data' })).toBeInTheDocument()
+    expect(screen.getByText('1.5GB - 7 days')).toBeInTheDocument()
+    expect(screen.getByText('Data allowance')).toBeInTheDocument()
+    expect(screen.getByText('Validity')).toBeInTheDocument()
+    expect(screen.queryByText('08012345678')).not.toBeInTheDocument()
+  })
+
+  it('shows bundle unavailability truthfully without inventing plans', async () => {
+    const api = apiStub()
+    api.listDataPlans.mockRejectedValue(new Error('Data bundles are temporarily unavailable. No order was created.'))
+    render(<PayPage api={api} connection={offlineConnection} />)
+    await waitFor(() => expect(api.list).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: /Data/ }))
+    fireEvent.change(screen.getByLabelText('Network'), { target: { value: 'MTN' } })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Data bundles are temporarily unavailable.')
+    expect(screen.queryByRole('button', { name: 'Review data order' })).toBeDisabled()
   })
 })

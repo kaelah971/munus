@@ -5,12 +5,16 @@ import type {
   AirtimePurchaseReceipt,
   AirtimeQueryInput,
   AirtimeQueryRecord,
+  DataProviderAdapter,
+  DataPurchaseInput,
 } from '../src/domain/orders'
 import type { SupportNetwork } from '../src/domain/support'
 
 export const CLUBKONNECT_PROVIDER_ID = 'clubkonnect'
 export const CLUBKONNECT_BASE_URL = 'https://www.nellobytesystems.com'
 export const CLUBKONNECT_AIRTIME_PATH = '/APIAirtimeV1.asp'
+/** Purchase endpoint assumption: confirm against authenticated ClubKonnect docs before live use. */
+export const CLUBKONNECT_DATA_PURCHASE_PATH = '/APIDatabundleV1.asp'
 export const CLUBKONNECT_QUERY_PATH = '/APIQueryV1.asp'
 export const CLUBKONNECT_CALLBACK_PATH = '/provider-callback/clubkonnect'
 
@@ -181,6 +185,107 @@ export class ClubKonnectAirtimeProvider implements AirtimeProviderAdapter {
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new ClubKonnectError('Airtime provider returned an unreadable response. No airtime was confirmed.')
+    }
+    return payload as Record<string, unknown>
+  }
+}
+
+/**
+ * DATA fulfilment behind the same provider architecture as airtime:
+ * deterministic RequestID, reserve-before-purchase, query-before-repurchase,
+ * and the shared status query + outcome mapping. Only the purchase payload
+ * differs (provider plan id instead of a naira amount).
+ */
+export class ClubKonnectDataProvider implements DataProviderAdapter {
+  readonly provider = CLUBKONNECT_PROVIDER_ID
+  readonly serviceType = 'DATA' as const
+  private readonly credentials: ClubKonnectCredentials
+  private readonly baseUrl: string
+  private readonly fetchJson: ClubKonnectFetchJson
+
+  constructor(options: ClubKonnectAdapterOptions) {
+    if (!options.credentials.userId || !options.credentials.apiKey) {
+      throw new ClubKonnectError('Data provider credentials are not configured.', 503)
+    }
+    this.credentials = options.credentials
+    this.baseUrl = (options.baseUrl ?? CLUBKONNECT_BASE_URL).replace(/\/$/, '')
+    this.fetchJson = options.fetchJson ?? defaultFetchJson
+  }
+
+  deriveRequestId(orderId: string): string {
+    return deriveProviderRequestId(orderId)
+  }
+
+  networkCode(network: SupportNetwork): string {
+    return clubKonnectNetworkCode(network)
+  }
+
+  buildPurchaseParams(input: DataPurchaseInput): Record<string, string> {
+    if (!input.network) throw new ClubKonnectError('Mobile network is required for data fulfilment.', 400)
+    return {
+      UserID: this.credentials.userId,
+      APIKey: this.credentials.apiKey,
+      MobileNetwork: clubKonnectNetworkCode(input.network),
+      DataPlan: requiredField(input.providerPlanId, 'DataPlan'),
+      MobileNumber: toProviderMsisdn(input.mobileNumber),
+      RequestID: requiredField(input.requestId, 'RequestID'),
+      CallBackURL: requiredField(input.callbackUrl, 'CallBackURL'),
+    }
+  }
+
+  buildQueryParams(input: AirtimeQueryInput): Record<string, string> {
+    if (!input.requestId && !input.providerOrderId) {
+      throw new ClubKonnectError('A provider RequestID or OrderID is required to query data status.', 400)
+    }
+    const params: Record<string, string> = {
+      UserID: this.credentials.userId,
+      APIKey: this.credentials.apiKey,
+    }
+    if (input.requestId) params.RequestID = input.requestId
+    if (input.providerOrderId) params.OrderID = input.providerOrderId
+    return params
+  }
+
+  async purchase(input: DataPurchaseInput): Promise<AirtimePurchaseReceipt> {
+    const url = withParams(`${this.baseUrl}${CLUBKONNECT_DATA_PURCHASE_PATH}`, this.buildPurchaseParams(input))
+    const body = await this.requestJson(url)
+    const statusCode = requiredField(pickField(body, ['statuscode']), 'provider status')
+    const status = requiredField(pickField(body, ['status']), 'provider status')
+    return {
+      providerOrderId: pickField(body, ['orderid']),
+      statusCode,
+      status,
+      remark: pickField(body, ['remark']),
+    }
+  }
+
+  async query(input: AirtimeQueryInput): Promise<AirtimeQueryRecord> {
+    const url = withParams(`${this.baseUrl}${CLUBKONNECT_QUERY_PATH}`, this.buildQueryParams(input))
+    const body = await this.requestJson(url)
+    const statusCode = pickField(body, ['statuscode'])
+    const status = pickField(body, ['status'])
+    if (!statusCode && !status) return { statusCode: '', status: '', outcome: 'not-found' }
+    return {
+      providerOrderId: pickField(body, ['orderid']),
+      requestId: pickField(body, ['requestid']),
+      statusCode: statusCode ?? '',
+      status: status ?? '',
+      remark: pickField(body, ['remark', 'orderremark', 'orderstatus']),
+      amountCharged: pickField(body, ['amountcharged']),
+      outcome: classifyOutcome(statusCode, status),
+    }
+  }
+
+  private async requestJson(url: string): Promise<Record<string, unknown>> {
+    let payload: unknown
+    try {
+      payload = await this.fetchJson(url)
+    } catch {
+      // Never surface raw URLs (they carry credentials as GET params).
+      throw new ClubKonnectError('Data provider request failed. No bundle was confirmed.')
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new ClubKonnectError('Data provider returned an unreadable response. No bundle was confirmed.')
     }
     return payload as Record<string, unknown>
   }

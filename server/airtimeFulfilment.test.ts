@@ -5,6 +5,8 @@ import type {
   AirtimePurchaseInput,
   AirtimePurchaseReceipt,
   AirtimeQueryRecord,
+  DataProviderAdapter,
+  DataPurchaseInput,
   PaymentOrder,
 } from '../src/domain/orders'
 import { InMemoryPaymentRepository } from './paymentRepository'
@@ -30,6 +32,37 @@ class FixtureAirtimeProvider implements AirtimeProviderAdapter {
 
   async purchase(): Promise<AirtimePurchaseReceipt> {
     this.purchaseCalls += 1
+    return this.purchaseReceipt
+  }
+
+  async query(): Promise<AirtimeQueryRecord> {
+    this.queryCalls += 1
+    return this.queryRecord
+  }
+}
+
+class FixtureDataProvider implements DataProviderAdapter {
+  readonly provider = 'clubkonnect'
+  readonly serviceType = 'DATA' as const
+  purchaseCalls = 0
+  queryCalls = 0
+  purchaseReceipt: AirtimePurchaseReceipt = { providerOrderId: 'ord-data-1', statusCode: '100', status: 'ORDER_RECEIVED' }
+  queryRecord: AirtimeQueryRecord = { statusCode: '', status: '', outcome: 'not-found' }
+  lastInput: DataPurchaseInput | null = null
+
+  deriveRequestId(orderId: string): string {
+    return orderId.replace(/-/g, '')
+  }
+
+  buildPurchaseParams(input: DataPurchaseInput): Record<string, string> {
+    if (!input.network) throw new FulfilmentError('network required', 400)
+    if (!input.providerPlanId) throw new FulfilmentError('plan required', 400)
+    return { RequestID: input.requestId, DataPlan: input.providerPlanId }
+  }
+
+  async purchase(input: DataPurchaseInput): Promise<AirtimePurchaseReceipt> {
+    this.purchaseCalls += 1
+    this.lastInput = input
     return this.purchaseReceipt
   }
 
@@ -80,18 +113,18 @@ describe('Airtime fulfilment service', () => {
     expect(untouched?.providerRequestId).toBeUndefined()
   })
 
-  it('rejects unpaid and non-airtime orders', async () => {
+  it('rejects unpaid and unsupported orders', async () => {
     const repository = new InMemoryPaymentRepository()
     const failed = await paidOrder(repository)
     failed.paymentStatus = 'PAYMENT_FAILED'
-    const data = await repository.createOrder('user-a', parsePaymentOrderDraft({ ...airtimeDraft, serviceType: 'DATA' }))
-    const storedData = repository.orders.get(data.id)
-    if (!storedData) throw new Error('Fixture order was not stored.')
-    storedData.paymentStatus = 'PAID'
+    const cash = await repository.createOrder('user-a', parsePaymentOrderDraft({ ...airtimeDraft, serviceType: 'CASH_OUT' }))
+    const storedCash = repository.orders.get(cash.id)
+    if (!storedCash) throw new Error('Fixture order was not stored.')
+    storedCash.paymentStatus = 'PAID'
     const { fulfilment } = service(repository)
 
     await expect(fulfilment.fulfilOrder('user-a', failed.id)).rejects.toMatchObject({ statusCode: 409 })
-    await expect(fulfilment.fulfilOrder('user-a', data.id)).rejects.toThrow('Only airtime orders')
+    await expect(fulfilment.fulfilOrder('user-a', cash.id)).rejects.toThrow('Only airtime or data orders')
   })
 
   it('moves a PAID order to FULFILLING with one stable RequestID', async () => {
@@ -220,6 +253,84 @@ describe('Airtime fulfilment service', () => {
       expect(current).toMatchObject({ fulfilmentStatus: 'NOT_STARTED' })
       expect(current?.providerRequestId).toBeUndefined()
     }
+  })
+
+  it('fulfils PAID data orders with the snapshotted plan id', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const created = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    const stored = repository.orders.get(created.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    Object.assign(stored, {
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      planDisplayLabel: '1.5GB - 7 days',
+      planDataAllowance: '1.5 GB',
+      planValidity: '7 days',
+      paymentStatus: 'PAID',
+    })
+    const dataProvider = new FixtureDataProvider()
+    const fulfilment = new AirtimeFulfilmentService(repository, { data: dataProvider }, {
+      callbackBaseUrl: 'https://munus.example',
+      now: () => '2026-10-14T00:00:00.000Z',
+    })
+
+    const fulfilled = await fulfilment.fulfilOrder('user-a', created.id)
+    expect(fulfilled).toMatchObject({
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'FULFILLING',
+      provider: 'clubkonnect',
+      providerRef: 'ord-data-1',
+    })
+    expect(dataProvider.purchaseCalls).toBe(1)
+    expect(dataProvider.lastInput).toMatchObject({
+      network: 'MTN',
+      providerPlanId: 'MTN-15',
+      mobileNumber: '08012345678',
+    })
+
+    dataProvider.queryRecord = { providerOrderId: 'ord-data-1', statusCode: '200', status: 'ORDER_COMPLETED', outcome: 'completed' }
+    expect(await fulfilment.reconcileOrder('user-a', created.id)).toMatchObject({ fulfilmentStatus: 'DELIVERED' })
+
+    // A duplicate fulfil attempt re-queries instead of repurchasing.
+    expect(await fulfilment.fulfilOrder('user-a', created.id)).toMatchObject({ fulfilmentStatus: 'DELIVERED' })
+    expect(dataProvider.purchaseCalls).toBe(1)
+  })
+
+  it('refuses data fulfilment without a snapshot or a data provider', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const bare = await repository.createOrder('user-a', parsePaymentOrderDraft({ ...airtimeDraft, serviceType: 'DATA' }))
+    const stored = repository.orders.get(bare.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.paymentStatus = 'PAID'
+    const dataOnly = new AirtimeFulfilmentService(repository, { data: new FixtureDataProvider() }, {
+      callbackBaseUrl: 'https://munus.example',
+    })
+    await expect(dataOnly.fulfilOrder('user-a', bare.id)).rejects.toMatchObject({ statusCode: 409 })
+
+    const airtimeOnly = new AirtimeFulfilmentService(repository, { airtime: new FixtureAirtimeProvider() }, {
+      callbackBaseUrl: 'https://munus.example',
+    })
+    const snapshotted = repository.orders.get(bare.id)
+    if (!snapshotted) throw new Error('Fixture order was not stored.')
+    snapshotted.providerPlanId = 'MTN-15'
+    await expect(airtimeOnly.fulfilOrder('user-a', bare.id)).rejects.toMatchObject({ statusCode: 503 })
+  })
+
+  it('keeps invalid-plan failure on PAID without touching payment state', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const created = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    const stored = repository.orders.get(created.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    Object.assign(stored, { serviceType: 'DATA', requestedAmount: '350', providerPlanId: 'MTN-OLD', paymentStatus: 'PAID' })
+    const dataProvider = new FixtureDataProvider()
+    const fulfilment = new AirtimeFulfilmentService(repository, { data: dataProvider }, {
+      callbackBaseUrl: 'https://munus.example',
+    })
+    await fulfilment.fulfilOrder('user-a', created.id)
+    dataProvider.queryRecord = { statusCode: '400', status: 'ORDER_FAILED', outcome: 'failed' }
+    const failed = await fulfilment.reconcileByProviderReference(created.id.replace(/-/g, ''), undefined)
+    expect(failed).toMatchObject({ paymentStatus: 'PAID', fulfilmentStatus: 'FULFILLMENT_FAILED' })
   })
 
   it('never spends provider funds for non-mainnet payments', async () => {

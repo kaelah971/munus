@@ -14,7 +14,9 @@ import {
   describeActivityStatusCopy,
   describePaymentFailureReason,
   describeProviderName,
+  describeServiceLabel,
 } from '../domain/receipts'
+import type { DataPlan } from '../domain/orders'
 import { maskPhone, SUPPORT_NETWORKS } from '../domain/support'
 import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState } from '../integration/nimiq'
 import type { PaymentApi } from '../persistence/paymentApi'
@@ -29,7 +31,12 @@ const icons: Record<(typeof ESSENTIAL_CATEGORIES)[number]['id'], IconName> = {
 type PayView =
   | { name: 'categories' }
   | { name: 'airtime-form' }
+  | { name: 'data-form' }
   | { name: 'review'; orderId: string }
+
+function serviceNoun(order: Pick<PaymentOrder, 'serviceType'>): 'Airtime' | 'Data' {
+  return order.serviceType === 'DATA' ? 'Data' : 'Airtime'
+}
 
 function emptyAirtimeDraft(defaultPhone: string): PaymentOrderDraft {
   return {
@@ -57,6 +64,12 @@ export function PayPage({ api, defaultPhone = '', connection }: {
   const [refreshing, setRefreshing] = useState(false)
   const [pendingTxHash, setPendingTxHash] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [dataNetwork, setDataNetwork] = useState<PaymentOrderDraft['recipientNetwork']>('')
+  const [dataPlans, setDataPlans] = useState<DataPlan[]>([])
+  const [plansLoading, setPlansLoading] = useState(false)
+  const [plansError, setPlansError] = useState<string | null>(null)
+  const [selectedPlanId, setSelectedPlanId] = useState('')
+  const [dataPhone, setDataPhone] = useState('')
   const [nowMs, setNowMs] = useState(() => Date.now())
   const autoReconciled = useRef<Set<string>>(new Set())
 
@@ -120,6 +133,60 @@ export function PayPage({ api, defaultPhone = '', connection }: {
     setActionError(null)
     setPendingTxHash(null)
     setView({ name: 'airtime-form' })
+  }
+
+  function openDataForm() {
+    setDataNetwork('')
+    setDataPlans([])
+    setPlansError(null)
+    setSelectedPlanId('')
+    setDataPhone(defaultPhone)
+    setActionError(null)
+    setPendingTxHash(null)
+    setView({ name: 'data-form' })
+  }
+
+  async function loadDataPlans(network: PaymentOrderDraft['recipientNetwork']) {
+    if (!network) return
+    setPlansLoading(true)
+    setPlansError(null)
+    setSelectedPlanId('')
+    try {
+      setDataPlans(await api.listDataPlans(network))
+    } catch (error) {
+      setDataPlans([])
+      setPlansError(error instanceof Error ? error.message : 'Munus could not load data bundles.')
+    } finally {
+      setPlansLoading(false)
+    }
+  }
+
+  function chooseDataNetwork(network: PaymentOrderDraft['recipientNetwork']) {
+    setDataNetwork(network)
+    setDataPlans([])
+    setPlansError(null)
+    setSelectedPlanId('')
+    if (network) void loadDataPlans(network)
+  }
+
+  async function saveDataOrder() {
+    const plan = dataPlans.find((entry) => entry.providerPlanId === selectedPlanId)
+    if (!plan || !dataNetwork) return
+    setSaving(true)
+    setActionError(null)
+    try {
+      const order = await api.createDataOrder({
+        providerPlanId: plan.providerPlanId,
+        recipientPhone: dataPhone,
+        recipientNetwork: dataNetwork,
+      })
+      setOrders((current) => [order, ...current.filter((entry) => entry.id !== order.id)])
+      setView({ name: 'review', orderId: order.id })
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Munus could not save this data order.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function saveAirtimeOrder() {
@@ -257,18 +324,87 @@ export function PayPage({ api, defaultPhone = '', connection }: {
             {saving ? 'Saving order…' : 'Review airtime order'}
           </PrimaryButton>
         </section>
+      ) : view.name === 'data-form' ? (
+        <section className="support-section planning-form" aria-labelledby="pay-title">
+          <button className="back-link" type="button" onClick={() => setView({ name: 'categories' })}>
+            <Icon name="back" size={18} /> Pay Essentials
+          </button>
+          <p className="eyebrow">Data order</p>
+          <h1 id="pay-title">Buy data</h1>
+          <p className="screen-lede">Pick a current network bundle. The price comes from the live catalog — never typed in.</p>
+          <div className="form-grid">
+            <label>
+              <span>Network</span>
+              <select
+                value={dataNetwork}
+                onChange={(event) => chooseDataNetwork(event.target.value as PaymentOrderDraft['recipientNetwork'])}
+              >
+                <option value="">Choose network</option>
+                {SUPPORT_NETWORKS.map((network) => <option key={network} value={network}>{network}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Recipient phone</span>
+              <input
+                autoComplete="tel"
+                inputMode="tel"
+                value={dataPhone}
+                onChange={(event) => setDataPhone(event.target.value)}
+                placeholder="08012345678"
+              />
+            </label>
+          </div>
+          {dataNetwork ? (
+            <section aria-label="Data bundles">
+              <SectionHeading>Current bundles</SectionHeading>
+              {plansLoading ? <p role="status">Loading bundles…</p> : null}
+              {plansError ? <p className="inline-error" role="alert">{plansError}</p> : null}
+              {!plansLoading && !plansError && dataPlans.length === 0 ? (
+                <p className="section-copy">No bundles right now. Try another network.</p>
+              ) : null}
+              <div className="category-list">
+                {dataPlans.map((plan) => {
+                  const selected = plan.providerPlanId === selectedPlanId
+                  const details = [
+                    plan.dataAllowance,
+                    plan.validity,
+                    `₦${plan.localPriceNgn}`,
+                  ].filter(Boolean).join(' · ')
+                  return (
+                    <ListRow
+                      description={details}
+                      icon="data"
+                      key={plan.providerPlanId}
+                      meta={<StatusPill label={selected ? 'Selected' : `₦${plan.localPriceNgn}`} tone={selected ? 'ready' : 'quiet'} />}
+                      onClick={() => setSelectedPlanId(plan.providerPlanId)}
+                      title={plan.displayName}
+                    />
+                  )
+                })}
+              </div>
+            </section>
+          ) : null}
+          {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
+          <div className="truth-note"><Icon name="info" size={18} /><p>This saves the order at the catalog price only — no money moves until you review a live quote and approve it in Nimiq Pay.</p></div>
+          <PrimaryButton disabled={saving || !selectedPlanId || !dataPhone.trim()} onClick={() => void saveDataOrder()}>
+            {saving ? 'Saving order…' : 'Review data order'}
+          </PrimaryButton>
+        </section>
       ) : view.name === 'review' && reviewed ? (
         <section aria-labelledby="pay-title">
           <button className="back-link" type="button" onClick={() => setView({ name: 'categories' })}>
             <Icon name="back" size={18} /> Pay Essentials
           </button>
           <p className="eyebrow">Order review</p>
-          <h1 id="pay-title">₦{reviewed.requestedAmount} airtime</h1>
+          <h1 id="pay-title">₦{reviewed.requestedAmount} {describeServiceLabel(reviewed.serviceType).toLowerCase()}</h1>
           <p className="screen-lede">{describeOrderStage(reviewed)}</p>
           <dl className="contact-details">
             <div><dt>Recipient</dt><dd>{maskPhone(reviewed.recipientPhone)}</dd></div>
             <div><dt>Network</dt><dd>{reviewed.recipientNetwork ?? 'Not known'}</dd></div>
             <div><dt>Amount</dt><dd>₦{reviewed.requestedAmount}</dd></div>
+            {reviewed.planDisplayLabel ? <div><dt>Bundle</dt><dd>{reviewed.planDisplayLabel}</dd></div> : null}
+            {reviewed.planDataAllowance ? <div><dt>Data allowance</dt><dd>{reviewed.planDataAllowance}</dd></div> : null}
+            {reviewed.planValidity ? <div><dt>Validity</dt><dd>{reviewed.planValidity}</dd></div> : null}
             <div><dt>Pay with</dt><dd>{reviewed.paymentAsset}</dd></div>
             <div><dt>Payment</dt><dd><PaymentStageLabel order={reviewed} /></dd></div>
             <div><dt>Fulfilment</dt><dd>{describeFulfilmentStage(reviewed.fulfilmentStatus)}</dd></div>
@@ -307,7 +443,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
           <section className="screen-intro">
             <p className="eyebrow">Everyday essentials</p>
             <h1 id="pay-title">Pay Essentials</h1>
-            <p>Start with airtime. Munus saves a real order, quotes live NIM, and delivers after on-chain confirmation.</p>
+            <p>Start with airtime or data. Munus saves a real order, quotes live NIM, and delivers after on-chain confirmation.</p>
           </section>
           {loadError ? <p className="inline-error" role="alert">{loadError}</p> : null}
           <section aria-label="Essential categories" className="category-list">
@@ -324,6 +460,18 @@ export function PayPage({ api, defaultPhone = '', connection }: {
                   />
                 )
               }
+              if (category.id === 'data') {
+                return (
+                  <ListRow
+                    description="Buy a current network bundle at the live catalog price."
+                    icon={icons[category.id]}
+                    key={category.id}
+                    meta={<StatusPill label="Start order" tone="ready" />}
+                    onClick={openDataForm}
+                    title={category.name}
+                  />
+                )
+              }
               return (
                 <ListRow
                   description={category.description}
@@ -336,11 +484,11 @@ export function PayPage({ api, defaultPhone = '', connection }: {
               )
             })}
           </section>
-          <section aria-label="Your airtime orders" className="support-section">
-            <SectionHeading>Your airtime orders</SectionHeading>
+          <section aria-label="Your recent orders" className="support-section">
+            <SectionHeading>Your recent orders</SectionHeading>
             {loading ? <p role="status">Loading your orders…</p> : null}
             {!loading && orders.length === 0 ? (
-              <p className="section-copy">No airtime orders yet. Start one above — it saves as a draft with no payment attached.</p>
+              <p className="section-copy">No orders yet. Start one above — it saves as a draft with no payment attached.</p>
             ) : null}
             <div className="category-list">
               {orders.slice(0, 5).map((order) => (
@@ -350,12 +498,12 @@ export function PayPage({ api, defaultPhone = '', connection }: {
                   key={order.id}
                   meta={<OrderStatusPill order={order} />}
                   onClick={() => setView({ name: 'review', orderId: order.id })}
-                  title={`₦${order.requestedAmount} airtime`}
+                  title={`₦${order.requestedAmount} ${describeServiceLabel(order.serviceType).toLowerCase()}`}
                 />
               ))}
             </div>
           </section>
-          <div className="truth-note"><p>Airtime is bought from Munus with NIM and delivered through the provider rail. NIM never goes to the provider.</p></div>
+          <div className="truth-note"><p>Airtime and data are bought from Munus with NIM and delivered through the provider rail. NIM never goes to the provider.</p></div>
         </>
       )}
     </section>
@@ -374,7 +522,7 @@ function PaymentStageLabel({ order }: { order: PaymentOrder }) {
     case 'AWAITING_WALLET_APPROVAL': return <>Waiting for Nimiq Pay approval</>
     case 'ONCHAIN_PENDING': return <>Submitted · confirming on-chain</>
     case 'PAID': return <>Confirmed on-chain</>
-    case 'PAYMENT_FAILED': return <>Failed · no airtime sent</>
+    case 'PAYMENT_FAILED': return <>Failed · no {serviceNoun(order).toLowerCase()} sent</>
     default: return <>{order.paymentStatus}</>
   }
 }
@@ -401,7 +549,7 @@ function ReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, 
   if (order.paymentStatus === 'DRAFT') {
     return (
       <>
-        <div className="truth-note"><Icon name="info" size={18} /><p>Get a live NIM quote to see exactly what this airtime costs right now.</p></div>
+        <div className="truth-note"><Icon name="info" size={18} /><p>Get a live NIM quote to see exactly what this {serviceNoun(order).toLowerCase()} costs right now.</p></div>
         <PrimaryButton disabled={quoting} onClick={onCreateQuote}>
           {quoting ? 'Getting quote…' : 'Get NIM quote'}
         </PrimaryButton>
@@ -463,11 +611,11 @@ function ReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, 
           <li data-done="true">Wallet approval</li>
           <li data-done="true">NIM payment confirmed</li>
           <li data-done={order.fulfilmentStatus === 'DELIVERED' ? 'true' : 'false'}>
-            {order.fulfilmentStatus === 'DELIVERED' ? 'Airtime delivered' : 'Delivering airtime'}
+            {order.fulfilmentStatus === 'DELIVERED' ? `${serviceNoun(order)} delivered` : `Delivering ${serviceNoun(order).toLowerCase()}`}
           </li>
         </ol>
         {needsAttention ? (
-          <div className="truth-note"><Icon name="info" size={18} /><p>Payment confirmed · airtime delivery needs attention. Your NIM payment is safe and recorded.</p></div>
+          <div className="truth-note"><Icon name="info" size={18} /><p>Payment confirmed · {serviceNoun(order).toLowerCase()} delivery needs attention. Your NIM payment is safe and recorded.</p></div>
         ) : null}
         {order.fulfilmentStatus === 'FULFILLING' || order.fulfilmentStatus === 'NOT_STARTED' ? (
           <QuietButton disabled={refreshing} onClick={onRefresh}>

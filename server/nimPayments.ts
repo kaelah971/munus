@@ -1,6 +1,7 @@
 import {
   buildPaymentMemo,
   calculateQuoteLuna,
+  canCreateDataQuote,
   canCreateQuote,
   formatNimFromLunaBigint,
   isQuoteFresh,
@@ -47,7 +48,7 @@ export interface PaymentIntent {
 }
 
 /**
- * Real NIM payment orchestration for airtime orders. Quotes come from a live
+ * Real NIM payment orchestration for airtime and data orders. Quotes come from a live
  * rate with exact integer luna math; the wallet submission is only a
  * reference; PAID is set solely from independent chain evidence; and only a
  * verified mainnet PAID hands off to provider fulfilment.
@@ -67,15 +68,25 @@ export class NimPaymentService {
 
   async createQuote(userId: string, orderId: string): Promise<PaymentOrder> {
     const order = await this.requireOwnedOrder(userId, orderId)
-    if (order.serviceType !== 'AIRTIME' || order.paymentAsset !== 'NIM') {
-      throw new NimPaymentError('Only NIM airtime orders can be quoted.', 400)
-    }
-    if (!canCreateQuote(order)) {
-      throw new NimPaymentError('This order cannot be quoted in its current state.', 409)
+    if (order.paymentAsset !== 'NIM' || (order.serviceType !== 'AIRTIME' && order.serviceType !== 'DATA')) {
+      throw new NimPaymentError('Only NIM airtime or data orders can be quoted.', 400)
     }
     const receiver = this.requireReceiver()
-    // Provider bounds keep the quote inside fulfilable airtime amounts.
-    toProviderAmount(order.requestedAmount)
+    if (order.serviceType === 'AIRTIME') {
+      if (!canCreateQuote(order)) {
+        throw new NimPaymentError('This order cannot be quoted in its current state.', 409)
+      }
+      // Provider bounds keep the quote inside fulfilable airtime amounts.
+      toProviderAmount(order.requestedAmount)
+    } else {
+      // DATA quotes price the snapshotted bundle, never client input.
+      if (!order.providerPlanId) {
+        throw new NimPaymentError('Data order is missing its bundle snapshot.', 400)
+      }
+      if (!canCreateDataQuote(order)) {
+        throw new NimPaymentError('This order cannot be quoted in its current state.', 409)
+      }
+    }
 
     const rate = await this.rates.getNimNgnRate()
     const luna = calculateQuoteLuna(order.requestedAmount, rate.rateNgnPerNim)

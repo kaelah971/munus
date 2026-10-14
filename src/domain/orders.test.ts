@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   buildPaymentMemo,
   calculateQuoteLuna,
+  canCreateDataQuote,
   canCreateQuote,
   canPayOrder,
+  canStartDataFulfilment,
   canStartFulfilment,
   describeFulfilmentStage,
   describeOrderStage,
@@ -58,6 +60,25 @@ describe('Munus payment order domain', () => {
     expect(canStartFulfilment(draftOrder({ paymentStatus: 'PAID', fulfilmentStatus: 'FULFILLING' }))).toBe(false)
     expect(canStartFulfilment(draftOrder({ paymentStatus: 'PAID', serviceType: 'DATA' }))).toBe(false)
     expect(canStartFulfilment(draftOrder({ paymentStatus: 'PAYMENT_FAILED' }))).toBe(false)
+  })
+
+  it('gates data fulfilment on snapshotted PAID data orders', () => {
+    const base = draftOrder({ serviceType: 'DATA', paymentStatus: 'PAID', providerPlanId: 'MTN-15' })
+    expect(canStartDataFulfilment(base)).toBe(true)
+    expect(canStartDataFulfilment({ ...base, providerPlanId: undefined })).toBe(false)
+    expect(canStartDataFulfilment({ ...base, fulfilmentStatus: 'FULFILLING' })).toBe(false)
+    expect(canStartDataFulfilment({ ...base, paymentStatus: 'DRAFT' })).toBe(false)
+    expect(canStartDataFulfilment({ ...base, serviceType: 'AIRTIME' })).toBe(false)
+  })
+
+  it('gates data quotes on snapshotted NIM data drafts', () => {
+    const base = draftOrder({ serviceType: 'DATA', providerPlanId: 'MTN-15' })
+    expect(canCreateDataQuote(base)).toBe(true)
+    expect(canCreateDataQuote({ ...base, paymentStatus: 'READY_FOR_PAYMENT' })).toBe(true)
+    expect(canCreateDataQuote({ ...base, providerPlanId: undefined })).toBe(false)
+    expect(canCreateDataQuote({ ...base, paymentStatus: 'PAID' })).toBe(false)
+    expect(canCreateDataQuote({ ...base, paymentAsset: 'USDT' })).toBe(false)
+    expect(canCreateDataQuote({ ...base, serviceType: 'AIRTIME' })).toBe(false)
   })
 
   it('maps reconciled provider outcomes without guessing', () => {

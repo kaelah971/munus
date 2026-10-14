@@ -152,6 +152,7 @@ export interface ReceiptTimelineStage {
  * a terminal payment failure closes them. Timestamps are never fabricated.
  */
 export function buildProofTimeline(order: Pick<PaymentOrder,
+  | 'serviceType'
   | 'paymentStatus'
   | 'fulfilmentStatus'
   | 'createdAt'
@@ -161,6 +162,7 @@ export function buildProofTimeline(order: Pick<PaymentOrder,
   | 'fulfilmentStartedAt'
   | 'fulfilledAt'
 >): ReceiptTimelineStage[] {
+  const noun = order.serviceType === 'DATA' ? 'Data' : 'Airtime'
   const stages: ReceiptTimelineStage[] = [
     { id: 'created', label: 'Order created', state: 'done', at: order.createdAt },
   ]
@@ -178,22 +180,22 @@ export function buildProofTimeline(order: Pick<PaymentOrder,
   if (order.providerRequestId || order.fulfilmentStartedAt) {
     stages.push({
       id: 'sent',
-      label: 'Airtime sent to provider',
+      label: `${noun} sent to provider`,
       state: 'done',
       ...(order.fulfilmentStartedAt ? { at: order.fulfilmentStartedAt } : {}),
     })
   } else if (order.paymentStatus === 'PAID' && (order.fulfilmentStatus === 'NOT_STARTED' || order.fulfilmentStatus === 'FULFILLING')) {
-    stages.push({ id: 'sent', label: 'Airtime sent to provider', state: 'idle' })
+    stages.push({ id: 'sent', label: `${noun} sent to provider`, state: 'idle' })
   }
   if (order.fulfilmentStatus === 'DELIVERED') {
     stages.push({
       id: 'delivered',
-      label: 'Airtime delivered',
+      label: `${noun} delivered`,
       state: 'done',
       ...(order.fulfilledAt ? { at: order.fulfilledAt } : {}),
     })
   } else if (order.fulfilmentStatus === 'FULFILLING') {
-    stages.push({ id: 'delivered', label: 'Airtime delivered', state: 'idle' })
+    stages.push({ id: 'delivered', label: `${noun} delivered`, state: 'idle' })
   } else if (order.fulfilmentStatus === 'FULFILLMENT_FAILED' || order.fulfilmentStatus === 'RECOVERY_REQUIRED') {
     stages.push({ id: 'delivered', label: 'Provider delivery', state: 'attention' })
   }
@@ -208,6 +210,9 @@ export interface MunusReceipt {
   recipientMasked: string
   localAmount: string
   localCurrency: 'NGN'
+  bundleLabel?: string
+  dataAllowance?: string
+  validity?: string
   asset: PaymentAsset
   nimAmount?: string
   lunaAmount?: string
@@ -244,6 +249,9 @@ export function buildReceipt(order: PaymentOrder): MunusReceipt {
     recipientMasked: maskPhone(order.recipientPhone),
     localAmount: order.requestedAmount,
     localCurrency: 'NGN',
+    bundleLabel: order.planDisplayLabel,
+    dataAllowance: order.planDataAllowance,
+    validity: order.planValidity,
     asset: order.paymentAsset,
     nimAmount: order.quotedCryptoAmount,
     lunaAmount: order.quoteLunaAmount,
