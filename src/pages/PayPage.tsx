@@ -9,6 +9,12 @@ import {
   type PaymentOrder,
   type PaymentOrderDraft,
 } from '../domain/orders'
+import {
+  describeActivityStatus,
+  describeActivityStatusCopy,
+  describePaymentFailureReason,
+  describeProviderName,
+} from '../domain/receipts'
 import { maskPhone, SUPPORT_NETWORKS } from '../domain/support'
 import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState } from '../integration/nimiq'
 import type { PaymentApi } from '../persistence/paymentApi'
@@ -24,21 +30,6 @@ type PayView =
   | { name: 'categories' }
   | { name: 'airtime-form' }
   | { name: 'review'; orderId: string }
-
-function describeProvider(provider: string): string {
-  if (provider === 'clubkonnect') return 'ClubKonnect'
-  return provider
-}
-
-function describePaymentFailure(reason?: string): string {
-  switch (reason) {
-    case 'wrong-recipient': return 'The confirmed transaction did not pay the Munus receiver.'
-    case 'wrong-amount': return 'The confirmed transaction did not match the quoted amount.'
-    case 'wrong-network': return 'The confirmed transaction was on the wrong Nimiq network.'
-    case 'wrong-memo': return 'The confirmed transaction was missing this order\u2019s payment reference.'
-    default: return 'The wallet transaction could not be verified as this order\u2019s payment.'
-  }
-}
 
 function emptyAirtimeDraft(defaultPhone: string): PaymentOrderDraft {
   return {
@@ -286,7 +277,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
             {reviewed.paymentReceiver ? <div><dt>Paid to</dt><dd>{shortenNimiqAccount(reviewed.paymentReceiver)}</dd></div> : null}
             {reviewed.paymentSender ? <div><dt>Paid by</dt><dd>{shortenNimiqAccount(reviewed.paymentSender)}</dd></div> : null}
             {reviewed.paymentBlockNumber ? <div><dt>Confirmed in block</dt><dd>{reviewed.paymentBlockNumber}</dd></div> : null}
-            {reviewed.provider ? <div><dt>Provider</dt><dd>{describeProvider(reviewed.provider)}</dd></div> : null}
+            {reviewed.provider ? <div><dt>Provider</dt><dd>{describeProviderName(reviewed.provider)}</dd></div> : null}
             {reviewed.providerStatus ? <div><dt>Provider status</dt><dd>{reviewed.providerStatus} ({reviewed.providerStatusCode ?? 'no code'})</dd></div> : null}
             {reviewed.providerAmountCharged ? <div><dt>Amount charged</dt><dd>₦{reviewed.providerAmountCharged}</dd></div> : null}
             <div><dt>Saved</dt><dd>{new Date(reviewed.createdAt).toLocaleString()}</dd></div>
@@ -372,14 +363,8 @@ export function PayPage({ api, defaultPhone = '', connection }: {
 }
 
 function OrderStatusPill({ order }: { order: PaymentOrder }) {
-  if (order.paymentStatus === 'DRAFT') return <StatusPill label="Draft · no quote" />
-  if (order.paymentStatus === 'READY_FOR_PAYMENT') return <StatusPill label="Quote ready" tone="ready" />
-  if (order.paymentStatus === 'PAID' && order.fulfilmentStatus === 'DELIVERED') {
-    return <StatusPill label="Delivered" tone="ready" />
-  }
-  if (order.paymentStatus === 'PAID') return <StatusPill label="Paid" tone="ready" />
-  if (order.paymentStatus === 'PAYMENT_FAILED') return <StatusPill label="Payment failed" tone="attention" />
-  return <StatusPill label="Confirming payment" tone="attention" />
+  const copy = describeActivityStatusCopy(describeActivityStatus(order))
+  return <StatusPill label={copy.label} tone={copy.tone} />
 }
 
 function PaymentStageLabel({ order }: { order: PaymentOrder }) {
@@ -495,7 +480,7 @@ function ReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, 
 
   return (
     <>
-      <div className="truth-note"><Icon name="info" size={18} /><p>{describePaymentFailure(order.paymentFailureReason)}</p></div>
+      <div className="truth-note"><Icon name="info" size={18} /><p>{describePaymentFailureReason(order.paymentFailureReason)}</p></div>
       <QuietButton disabled={refreshing} onClick={onRefresh}>
         {refreshing ? 'Checking…' : 'Refresh order status'}
       </QuietButton>

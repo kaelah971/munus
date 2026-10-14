@@ -6,8 +6,8 @@ import { useNimiq } from './hooks/useNimiq'
 import { useNimiqWallet } from './hooks/useNimiqWallet'
 import type { AppDestination } from './navigation'
 import {
+  ActivityPage,
   AppLockScreen,
-  EmptyPage,
   HomePage,
   OnboardingPage,
   PayPage,
@@ -687,7 +687,7 @@ export function App() {
       onUpdateSupportRule={updateSupportRule} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests} supportRules={support.supportRules}
     />
   } else if (destination === 'activity') {
-    content = <EmptyPage destination="activity" />
+    content = paymentApi ? <ActivityPage api={paymentApi} onNavigate={navigate} /> : null
   } else {
     content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances}
       pockets={planning.pockets} reminders={planning.reminders} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests}

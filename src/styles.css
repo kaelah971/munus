@@ -1959,6 +1959,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus
 .payment-progress > li::before { content: ''; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--line); flex: none; }
 .payment-progress > li[data-done="true"] { color: var(--text); }
 .payment-progress > li[data-done="true"]::before { background: var(--gold, #f5a623); border-color: transparent; }
+.payment-progress > li[data-done="attention"] { color: var(--text); }
+.payment-progress > li[data-done="attention"]::before { background: var(--warning); border-color: transparent; }
+.filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.filter-chip { min-height: 40px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: .8125rem; cursor: pointer; }
+.filter-chip--active { border-color: var(--munus-gold-border); color: var(--munus-gold); }
+.receipt-section { margin-top: 24px; }
+.receipt-section .contact-details { margin: 12px 0 0; }
 
 /* Profile settings are grouped rows, with the existing profile and PIN forms. */
 .profile-settings-group { margin-top: 24px; }
