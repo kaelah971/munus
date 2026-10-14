@@ -55,5 +55,6 @@ export function HomePage({ connection, wallet, profile, hideBalances, pockets, r
     <SavedContactsRail contacts={contacts} loading={contactsLoading} onAdd={() => onOpenContacts('add')} onSeeAll={() => onOpenContacts('list')} onContact={(id) => onOpenContacts('detail', id)} />
     {contactsError && <p className="inline-error" role="alert">{contactsError}</p>}
     {context && <button className="finance-context-row" type="button" onClick={() => onNavigate(context.destination)}><Icon name={context.icon} size={20} /><span><strong>{context.title}</strong><small>{context.description}</small></span><Icon name="arrow" size={18} /></button>}
+    <button className="finance-context-row" type="button" onClick={() => window.location.assign('/live')}><Icon name="spark" size={20} /><span><strong>Munus Live</strong><small>Real verified usage, publicly shown</small></span><Icon name="arrow" size={18} /></button>
   </section>
 }

@@ -21,6 +21,7 @@ import {
   CashoutError,
   type CashoutService,
 } from './cashout'
+import { LiveStatsService } from './liveStats'
 import {
   PaymentValidationError,
   parseCashoutOrderDraft,
@@ -91,6 +92,7 @@ export interface MunusServerDependencies {
   dataCatalog: DataBundleCatalogProvider | null
   cashout: CashoutService | null
   paycrestApiSecret?: string
+  live: LiveStatsService
   auth: MunusAuthService
   staticDir?: string
   config: Pick<
@@ -119,12 +121,19 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, support, payment, fulfilment, nimPayments, dataCatalog, cashout, paycrestApiSecret, staticDir, config } = dependencies
+  const { auth, repository, planning, support, payment, fulfilment, nimPayments, dataCatalog, cashout, paycrestApiSecret, live, staticDir, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
     response.writeHead(204)
     response.end()
+    return
+  }
+
+  if (request.method === 'GET' && url.pathname === '/public/live') {
+    // Public proof surface: aggregate evidence only, no session, no
+    // private fields. Redaction happens server-side in the live source.
+    sendJson(response, 200, await live.getSnapshot())
     return
   }
 

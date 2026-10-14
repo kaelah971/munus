@@ -75,7 +75,8 @@ The runner creates `public.schema_migrations`, takes a PostgreSQL advisory lock,
 ## Smoke test after deploy
 
 1. Open the service URL on desktop and a small mobile viewport.
-2. Refresh `/`, `/support`, `/pockets`, and a copied `/request/<opaque-id>` URL; each must load the app rather than a hosting 404.
+2. Refresh `/`, `/support`, `/pockets`, `/live`, and a copied `/request/<opaque-id>` URL; each must load the app rather than a hosting 404.
+2b. Open `/live` and `GET /public/live` signed out. Confirm only aggregate evidence with masked wallets (no phones, bank details, hashes, or internal IDs) and honest zeros when empty.
 3. Outside Nimiq Pay, confirm the wallet connection state is truthfully unavailable. Inside Nimiq Pay, confirm the injected account and balance appear.
 4. Sign in and refresh. Confirm the server session restores without a localStorage auth token.
 5. Save a profile, pocket allocation, reminder, contact, support draft, Request Help record, and airtime payment order; refresh and confirm each persists.

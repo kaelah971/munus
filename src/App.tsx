@@ -9,6 +9,7 @@ import {
   ActivityPage,
   AppLockScreen,
   HomePage,
+  LivePage,
   OnboardingPage,
   PayPage,
   PocketsPage,
@@ -95,6 +96,11 @@ function readPublicRequestId(): string | null {
   if (typeof window === 'undefined') return null
   const match = window.location.pathname.match(/^\/request\/([^/]+)$/)
   return match ? decodeURIComponent(match[1]) : null
+}
+
+function readLiveRoute(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.location.pathname === '/live'
 }
 
 function saveOnboardingState() {
@@ -633,6 +639,11 @@ export function App() {
     const next = !hideBalances
     preferencesStore.save({ ...preferencesStore.get(session.userId), hideBalances: next })
     setHideBalances(next)
+  }
+
+  // Munus Live is a public proof page: no session, no onboarding gate.
+  if (readLiveRoute()) {
+    return <LivePage apiBaseUrl={munusConfig.apiBaseUrl} />
   }
 
   const publicRequestId = readPublicRequestId()

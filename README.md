@@ -163,6 +163,7 @@ The current repository is a working public-beta foundation for the Munus context
 - PostgreSQL migrations for account, authentication, planning, support, and payment-order layers.
 - A reusable payment order foundation: persisted orders with separate crypto-payment and real-world-fulfilment states, owned per user.
 - USDT → NGN cash out through Paycrest Sender API v2: verified bank payout on Polygon USDT only (no on-ramp), disabled truthfully until server Paycrest configuration is set.
+- Munus Live (`/live` + `GET /public/live`): public privacy-safe proof of verified wallets, activity, deliveries, volumes, and completed requests — derived from production evidence only, cached for 60 seconds, zero-state honest.
 - A Render-compatible one-origin deployment path for the Vite build and Node API.
 
 The following are deliberately not represented as live features:

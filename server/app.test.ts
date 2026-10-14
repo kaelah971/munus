@@ -19,6 +19,7 @@ import { CoinGeckoNimRateProvider } from './nimRates'
 import type { NimiqChainReader } from './nimiqChain'
 import { CashoutService } from './cashout'
 import { PaycrestClient } from './paycrest'
+import { InMemoryLiveStatsSource, LiveStatsService } from './liveStats'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -135,6 +136,13 @@ async function createTestServer(options: {
         refundAddress: `0x${'cd'.repeat(20)}`,
       },
     )
+  const live = new LiveStatsService(new InMemoryLiveStatsSource({
+    users: () => repository.users.values(),
+    sessions: () => repository.sessions.values(),
+    orders: () => payment.orders.values(),
+    essentialRequests: () => support.essentialRequests.values(),
+    supportRequests: () => support.supportRequests.values(),
+  }))
   const server = createMunusServer({
     repository,
     planning,
@@ -147,6 +155,7 @@ async function createTestServer(options: {
     paycrestApiSecret: options.paycrestSecret === undefined
       ? 'fixture-secret'
       : options.paycrestSecret ?? undefined,
+    live,
     auth,
     staticDir: options.staticDir,
     config: {
@@ -160,7 +169,7 @@ async function createTestServer(options: {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Test server did not open a port.')
 
-  return { baseUrl: `http://127.0.0.1:${address.port}`, repository, payment }
+  return { baseUrl: `http://127.0.0.1:${address.port}`, repository, payment, support }
 }
 
 async function createPaidAirtimeOrder(baseUrl: string, cookie: string, payment: InMemoryPaymentRepository): Promise<string> {
@@ -1534,5 +1543,118 @@ describe('USDT cash out', () => {
       body: unknownPayload,
     })
     expect(unknown.status).toBe(404)
+  })
+})
+
+describe('Munus Live public proof', () => {
+  async function seedDeliveredOrder(
+    baseUrl: string,
+    cookie: string,
+    payment: InMemoryPaymentRepository,
+    overrides: Record<string, unknown> = {},
+  ): Promise<string> {
+    const created = await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })
+    expect(created.status).toBe(201)
+    const order = (await created.json()) as { id: string }
+    const stored = payment.orders.get(order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    Object.assign(stored, {
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'DELIVERED',
+      paymentNetwork: 'mainnet',
+      paymentVerifiedAt: '2026-10-14T12:05:00.000Z',
+      fulfilledAt: '2026-10-14T12:06:00.000Z',
+      quoteLunaAmount: '50000',
+      quotedCryptoAmount: '0.5',
+      ...overrides,
+    })
+    return order.id
+  }
+
+  it('serves zero-state proof without authentication while private APIs stay protected', async () => {
+    const { baseUrl } = await createTestServer()
+    expect((await fetch(`${baseUrl}/payment-orders`)).status).toBe(401)
+    const live = await fetch(`${baseUrl}/public/live`)
+    expect(live.status).toBe(200)
+    await expect(live.json()).resolves.toEqual({
+      metrics: {
+        verifiedWallets: 0,
+        activeUsers7d: 0,
+        deliveredEssentials: 0,
+        nimUsed: '0',
+        nimPayments: 0,
+        cashoutOrders: 0,
+        usdtCashedOut: '0',
+        requestsCompleted: 0,
+      },
+      recentActivity: [],
+      updatedAt: expect.any(String),
+    })
+  })
+
+  it('counts only verified production evidence with masked wallets', async () => {
+    const { baseUrl, repository, payment, support } = await createTestServer()
+    const pair = KeyPair.generate()
+    const walletAddress = pair.toAddress().toUserFriendlyAddress()
+    await authenticate(baseUrl, pair)
+    await authenticate(baseUrl, pair)
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+
+    const deliveredId = await seedDeliveredOrder(baseUrl, cookie, payment)
+    await seedDeliveredOrder(baseUrl, cookie, payment, { paymentNetwork: 'testnet' })
+    await seedDeliveredOrder(baseUrl, cookie, payment, {
+      paymentStatus: 'READY_FOR_PAYMENT',
+      fulfilmentStatus: 'NOT_STARTED',
+    })
+
+    const owner = [...repository.users.values()].find((user) => user.walletAddress === walletAddress)
+    if (!owner) throw new Error('Fixture user was not stored.')
+    const now = '2026-10-14T12:00:00.000Z'
+    support.essentialRequests.set('req-live', {
+      id: 'req-live',
+      ownerUserId: owner.id,
+      publicRequestId: 'public-live',
+      serviceType: 'DATA',
+      network: 'Airtel',
+      requestedAmount: '350',
+      planDataAllowance: '5 GB',
+      planDisplayLabel: '5GB - 30 days',
+      recipientPhone: '08098765432',
+      essentialStatus: 'COMPLETED',
+      paymentOrderId: deliveredId,
+      fulfilledAt: '2026-10-14T11:00:00.000Z',
+      expiresAt: '2026-10-21T12:00:00.000Z',
+      createdAt: '2026-10-14T10:00:00.000Z',
+      updatedAt: now,
+    })
+
+    const live = await fetch(`${baseUrl}/public/live`)
+    expect(live.status).toBe(200)
+    const snapshot = (await live.json()) as {
+      metrics: Record<string, unknown>
+      recentActivity: Array<Record<string, unknown>>
+    }
+    // Two wallets authenticated; one wallet's duplicate sessions count once.
+    expect(snapshot.metrics).toMatchObject({
+      verifiedWallets: 2,
+      activeUsers7d: 2,
+      deliveredEssentials: 1,
+      nimUsed: '0.5',
+      nimPayments: 1,
+      requestsCompleted: 1,
+    })
+    const kinds = snapshot.recentActivity.map((event) => event.kind)
+    expect(kinds).toContain('airtime-delivered')
+    expect(kinds).toContain('request-completed')
+    expect(kinds).toContain('wallet-joined')
+    const serialized = JSON.stringify(snapshot)
+    expect(serialized).not.toContain('08012345678')
+    expect(serialized).not.toContain(walletAddress)
+    const compact = walletAddress.replace(/\s+/g, '')
+    expect(serialized).toContain(`${compact.slice(0, 4)}…${compact.slice(-4)}`)
   })
 })
