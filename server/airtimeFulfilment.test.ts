@@ -221,4 +221,16 @@ describe('Airtime fulfilment service', () => {
       expect(current?.providerRequestId).toBeUndefined()
     }
   })
+
+  it('never spends provider funds for non-mainnet payments', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await paidOrder(repository)
+    order.paymentNetwork = 'testnet'
+    const { provider, fulfilment } = service(repository)
+
+    await expect(fulfilment.fulfilOrder('user-a', order.id)).rejects.toMatchObject({ statusCode: 409 })
+    expect(provider.purchaseCalls).toBe(0)
+    expect(provider.queryCalls).toBe(0)
+    expect(await repository.getOrder('user-a', order.id)).toMatchObject({ fulfilmentStatus: 'NOT_STARTED' })
+  })
 })

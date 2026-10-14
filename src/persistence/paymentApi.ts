@@ -1,9 +1,24 @@
 import type { PaymentOrder, PaymentOrderDraft } from '../domain/orders'
 
+export interface PaymentIntentResponse {
+  order: PaymentOrder
+  intent: {
+    receiver: string
+    lunaAmount: string
+    memo: string
+    network: 'mainnet' | 'testnet'
+    quoteExpiresAt: string
+  }
+}
+
 export interface PaymentApi {
   list(): Promise<PaymentOrder[]>
   get(id: string): Promise<PaymentOrder>
   createOrder(draft: PaymentOrderDraft): Promise<PaymentOrder>
+  createQuote(id: string): Promise<PaymentOrder>
+  createPaymentIntent(id: string): Promise<PaymentIntentResponse>
+  submitPayment(id: string, transactionHash: string): Promise<PaymentOrder>
+  reconcilePayment(id: string): Promise<PaymentOrder>
 }
 
 export class RemotePaymentApi implements PaymentApi {
@@ -24,6 +39,29 @@ export class RemotePaymentApi implements PaymentApi {
       method: 'POST',
       body: JSON.stringify(draft),
     })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async createQuote(id: string): Promise<PaymentOrder> {
+    const response = await this.request(`/payment-orders/${encodeURIComponent(id)}/quote`, { method: 'POST' })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async createPaymentIntent(id: string): Promise<PaymentIntentResponse> {
+    const response = await this.request(`/payment-orders/${encodeURIComponent(id)}/payment-intent`, { method: 'POST' })
+    return (await response.json()) as PaymentIntentResponse
+  }
+
+  async submitPayment(id: string, transactionHash: string): Promise<PaymentOrder> {
+    const response = await this.request(`/payment-orders/${encodeURIComponent(id)}/payment-submission`, {
+      method: 'POST',
+      body: JSON.stringify({ transactionHash }),
+    })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async reconcilePayment(id: string): Promise<PaymentOrder> {
+    const response = await this.request(`/payment-orders/${encodeURIComponent(id)}/reconcile-payment`, { method: 'POST' })
     return (await response.json()) as PaymentOrder
   }
 

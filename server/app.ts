@@ -26,6 +26,12 @@ import {
   type AirtimeFulfilmentService,
 } from './airtimeFulfilment'
 import {
+  NimPaymentError,
+  type NimPaymentService,
+} from './nimPayments'
+import { NimRateError } from './nimRates'
+import { NimiqChainError } from './nimiqChain'
+import {
   CLUBKONNECT_CALLBACK_PATH,
   ClubKonnectError,
 } from './clubKonnect'
@@ -60,6 +66,7 @@ export interface MunusServerDependencies {
   support: SupportRepository
   payment: PaymentRepository
   fulfilment: AirtimeFulfilmentService | null
+  nimPayments: NimPaymentService | null
   auth: MunusAuthService
   staticDir?: string
   config: Pick<
@@ -88,7 +95,7 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, support, payment, fulfilment, staticDir, config } = dependencies
+  const { auth, repository, planning, support, payment, fulfilment, nimPayments, staticDir, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
@@ -305,6 +312,56 @@ export async function handleRequest(
         return
       }
       sendJson(response, 200, order)
+      return
+    }
+
+    const quotePath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/quote$/)
+    if (quotePath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!nimPayments) {
+        sendError(response, 503, 'NIM payments are not configured yet.')
+        return
+      }
+      sendJson(response, 200, await nimPayments.createQuote(session.userId, decodeURIComponent(quotePath[1])))
+      return
+    }
+
+    const intentPath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/payment-intent$/)
+    if (intentPath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!nimPayments) {
+        sendError(response, 503, 'NIM payments are not configured yet.')
+        return
+      }
+      const { order, intent } = await nimPayments.createPaymentIntent(session.userId, decodeURIComponent(intentPath[1]))
+      sendJson(response, 200, { order, intent })
+      return
+    }
+
+    const submissionPath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/payment-submission$/)
+    if (submissionPath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!nimPayments) {
+        sendError(response, 503, 'NIM payments are not configured yet.')
+        return
+      }
+      const body = asRecord(await readJson(request))
+      sendJson(response, 200, await nimPayments.submitPayment(session.userId, decodeURIComponent(submissionPath[1]), body.transactionHash))
+      return
+    }
+
+    const paymentReconcilePath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/reconcile-payment$/)
+    if (paymentReconcilePath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!nimPayments) {
+        sendError(response, 503, 'NIM payments are not configured yet.')
+        return
+      }
+      sendJson(response, 200, await nimPayments.reconcilePayment(session.userId, decodeURIComponent(paymentReconcilePath[1])))
       return
     }
 
@@ -540,9 +597,12 @@ export async function handleRequest(
       error instanceof PaymentValidationError ||
       error instanceof PaymentRepositoryError ||
       error instanceof FulfilmentError ||
-      error instanceof ClubKonnectError
+      error instanceof ClubKonnectError ||
+      error instanceof NimPaymentError ||
+      error instanceof NimRateError ||
+      error instanceof NimiqChainError
     ) {
-      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError || error instanceof FulfilmentError || error instanceof ClubKonnectError
+      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError || error instanceof FulfilmentError || error instanceof ClubKonnectError || error instanceof NimPaymentError || error instanceof NimRateError || error instanceof NimiqChainError
         ? error.statusCode
         : 400
       sendError(response, statusCode, error.message, error instanceof AuthServiceError ? error.code : undefined)

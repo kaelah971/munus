@@ -144,6 +144,48 @@ export async function requestNimiqSignature(
   }
 }
 
+export interface NimPaymentIntent {
+  receiver: string
+  /** Exact integer luna string; never a float. */
+  lunaAmount: string
+  memo: string
+}
+
+export async function requestNimPayment(
+  connection: NimiqConnectionState,
+  intent: NimPaymentIntent,
+): Promise<string> {
+  if (connection.status !== 'ready' || !connection.provider) {
+    throw new Error('Connect a Nimiq Pay account before paying with NIM.')
+  }
+  const luna = Number(intent.lunaAmount)
+  if (!Number.isSafeInteger(luna) || luna <= 0) {
+    throw new Error('Munus quote is missing a valid luna amount.')
+  }
+  if (!intent.receiver.trim() || !intent.memo.trim()) {
+    throw new Error('Munus quote is missing its receiver or payment reference.')
+  }
+
+  // The wallet chooses and signs the sender; Munus never selects an account
+  // here. The returned hash is only a submission reference, never proof.
+  let result: unknown
+  try {
+    result = await connection.provider.sendBasicTransactionWithData({
+      recipient: intent.receiver,
+      value: luna,
+      data: intent.memo,
+    }) as unknown
+  } catch (error) {
+    if (isNimiqErrorResponse(error)) throw new Error(error.error.message, { cause: error })
+    throw error
+  }
+  if (isNimiqErrorResponse(result)) throw new Error(result.error.message)
+  if (typeof result !== 'string' || !/^(0x)?[0-9a-fA-F]{64}$/.test(result.trim())) {
+    throw new Error('Nimiq Pay did not return a usable transaction reference.')
+  }
+  return result.trim()
+}
+
 export async function loadNimiqWallet(
   connection: NimiqConnectionState,
   walletAddress = connection.accounts[0],

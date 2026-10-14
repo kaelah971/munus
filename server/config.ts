@@ -1,3 +1,5 @@
+import { Address } from '@nimiq/core'
+
 export class ServerConfigurationError extends Error {
   constructor(message: string) {
     super(message)
@@ -11,6 +13,12 @@ export interface ClubKonnectServerConfig {
   callbackBaseUrl?: string
 }
 
+export interface NimPaymentServerConfig {
+  receiverAddress?: string
+  rpcUrl?: string
+  quoteTtlMs: number
+}
+
 export interface MunusServerConfig {
   port: number
   databaseUrl: string
@@ -21,6 +29,7 @@ export interface MunusServerConfig {
   defaultNetwork: 'mainnet' | 'testnet'
   corsOrigin?: string
   clubKonnect?: ClubKonnectServerConfig
+  nimPayments: NimPaymentServerConfig
 }
 
 export interface ServerEnv {
@@ -34,6 +43,9 @@ export interface ServerEnv {
   MUNUS_CORS_ORIGIN?: string
   NODE_ENV?: string
   DATABASE_URL?: string
+  MUNUS_NIM_RECEIVER_ADDRESS?: string
+  NIMIQ_RPC_URL?: string
+  MUNUS_QUOTE_TTL_SECONDS?: string
   CLUBKONNECT_USER_ID?: string
   CLUBKONNECT_API_KEY?: string
   CLUBKONNECT_CALLBACK_BASE_URL?: string
@@ -70,6 +82,21 @@ export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfi
     defaultNetwork,
     corsOrigin: env.MUNUS_CORS_ORIGIN?.trim() || undefined,
     clubKonnect: loadClubKonnectConfig(env),
+    nimPayments: {
+      receiverAddress: loadReceiverAddress(env),
+      rpcUrl: env.NIMIQ_RPC_URL?.trim() || undefined,
+      quoteTtlMs: positiveInteger(env.MUNUS_QUOTE_TTL_SECONDS ?? '120', 'MUNUS_QUOTE_TTL_SECONDS') * 1000,
+    },
+  }
+}
+
+function loadReceiverAddress(env: ServerEnv): string | undefined {
+  const raw = env.MUNUS_NIM_RECEIVER_ADDRESS?.trim()
+  if (!raw) return undefined
+  try {
+    return normalizeNimiqAddress(raw)
+  } catch {
+    throw new ServerConfigurationError('MUNUS_NIM_RECEIVER_ADDRESS must be a valid Nimiq address.')
   }
 }
 
@@ -85,6 +112,11 @@ function loadClubKonnectConfig(env: ServerEnv): ClubKonnectServerConfig | undefi
     apiKey,
     callbackBaseUrl: env.CLUBKONNECT_CALLBACK_BASE_URL?.trim() || undefined,
   }
+}
+
+function normalizeNimiqAddress(value: string): string {
+  // Validated with the official Nimiq address primitive used by wallet auth.
+  return Address.fromAny(value).toUserFriendlyAddress()
 }
 
 function required(value: string | undefined, name: string): string {

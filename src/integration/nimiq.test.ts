@@ -6,6 +6,7 @@ import {
   loadNimiqWallet,
   requestNimiqAccounts,
   requestNimiqSignature,
+  requestNimPayment,
   shortenNimiqAccount,
 } from './nimiq'
 
@@ -156,6 +157,71 @@ describe('Nimiq Pay integration boundary', () => {
     await expect(
       requestNimiqSignature({ accounts: ['NQ01'], provider, status: 'ready' }, 'Munus login'),
     ).rejects.toThrow('User cancelled the Nimiq Pay request.')
+  })
+
+  it('sends the exact quoted luna to the receiver with the order memo', async () => {
+    const sendBasicTransactionWithData = vi.fn().mockResolvedValue('ab'.repeat(32))
+    const provider = { sendBasicTransactionWithData } as unknown as NimiqProvider
+    const intent = {
+      receiver: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000',
+      lunaAmount: '50000',
+      memo: 'MNS:abc123def456',
+    }
+
+    await expect(
+      requestNimPayment({ accounts: [], provider, status: 'ready' }, intent),
+    ).resolves.toBe('ab'.repeat(32))
+    expect(sendBasicTransactionWithData).toHaveBeenCalledOnce()
+    expect(sendBasicTransactionWithData).toHaveBeenCalledWith({
+      recipient: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000',
+      value: 50000,
+      data: 'MNS:abc123def456',
+    })
+  })
+
+  it('never opens the wallet without a ready provider or a valid intent', async () => {
+    const sendBasicTransactionWithData = vi.fn()
+    const provider = { sendBasicTransactionWithData } as unknown as NimiqProvider
+    const intent = { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' }
+
+    await expect(requestNimPayment({ accounts: [], status: 'unavailable' }, intent)).rejects.toThrow()
+    await expect(requestNimPayment({ accounts: [], provider, status: 'ready' }, { ...intent, lunaAmount: '50.5' })).rejects.toThrow()
+    await expect(requestNimPayment({ accounts: [], provider, status: 'ready' }, { ...intent, memo: '' })).rejects.toThrow()
+    expect(sendBasicTransactionWithData).not.toHaveBeenCalled()
+  })
+
+  it('leaves rejection and malformed results without a usable hash', async () => {
+    const rejected = {
+      sendBasicTransactionWithData: vi.fn().mockRejectedValue(new Error('User cancelled the Nimiq Pay request.')),
+    } as unknown as NimiqProvider
+    await expect(
+      requestNimPayment(
+        { accounts: [], provider: rejected, status: 'ready' },
+        { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' },
+      ),
+    ).rejects.toThrow('User cancelled the Nimiq Pay request.')
+
+    const errorResult = {
+      sendBasicTransactionWithData: vi.fn().mockResolvedValue({
+        error: { type: 'TRANSACTION_REJECTED', message: 'Payment was declined in Nimiq Pay.' },
+      }),
+    } as unknown as NimiqProvider
+    await expect(
+      requestNimPayment(
+        { accounts: [], provider: errorResult, status: 'ready' },
+        { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' },
+      ),
+    ).rejects.toThrow('Payment was declined in Nimiq Pay.')
+
+    const malformed = {
+      sendBasicTransactionWithData: vi.fn().mockResolvedValue({ hash: 'ab'.repeat(32) }),
+    } as unknown as NimiqProvider
+    await expect(
+      requestNimPayment(
+        { accounts: [], provider: malformed, status: 'ready' },
+        { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' },
+      ),
+    ).rejects.toThrow(/usable transaction reference/)
   })
 
   it('formats luna without floating-point conversion', () => {

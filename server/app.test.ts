@@ -13,6 +13,9 @@ import { InMemorySupportRepository } from './supportRepository'
 import { InMemoryPaymentRepository } from './paymentRepository'
 import { AirtimeFulfilmentService } from './airtimeFulfilment'
 import { ClubKonnectAirtimeProvider } from './clubKonnect'
+import { NimPaymentService } from './nimPayments'
+import { CoinGeckoNimRateProvider } from './nimRates'
+import type { NimiqChainReader } from './nimiqChain'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -27,7 +30,18 @@ afterEach(async () => {
   )
 })
 
-async function createTestServer(options: { staticDir?: string; airtimeFetch?: (url: string) => Promise<unknown>; airtimeRequests?: string[] } = {}) {
+const TEST_NIM_RECEIVER = KeyPair.generate().toAddress().toUserFriendlyAddress()
+
+async function createTestServer(options: {
+  staticDir?: string
+  airtimeFetch?: (url: string) => Promise<unknown>
+  airtimeRequests?: string[]
+  nimRateFetch?: (url: string) => Promise<unknown>
+  nimChain?: NimiqChainReader | null
+  nimReceiver?: string
+  nimNetwork?: 'mainnet' | 'testnet'
+  disableNimPayments?: boolean
+} = {}) {
   const repository = new InMemoryMunusRepository()
   const planning = new InMemoryPlanningRepository()
   const support = new InMemorySupportRepository()
@@ -49,12 +63,26 @@ async function createTestServer(options: { staticDir?: string; airtimeFetch?: (u
       { callbackBaseUrl: 'https://munus.example' },
     )
     : null
+  const rates = new CoinGeckoNimRateProvider(
+    options.nimRateFetch ?? (async () => ({ 'nimiq-2': { ngn: 2000 } })),
+  )
+  const chain: NimiqChainReader | null = options.nimChain === undefined
+    ? { getTransaction: async () => null, getHeadBlockNumber: async () => 1000 }
+    : options.nimChain
+  const nimPayments = options.disableNimPayments
+    ? null
+    : new NimPaymentService(payment, rates, chain, fulfilment, {
+      receiverAddress: options.nimReceiver ?? TEST_NIM_RECEIVER,
+      network: options.nimNetwork ?? 'mainnet',
+      quoteTtlMs: 120_000,
+    })
   const server = createMunusServer({
     repository,
     planning,
     support,
     payment,
     fulfilment,
+    nimPayments,
     auth,
     staticDir: options.staticDir,
     config: {
@@ -480,5 +508,221 @@ describe('Munus production API', () => {
     expect(queryCalls).toBe(before)
     const missing = await fetch(`${baseUrl}/provider-callback/clubkonnect`)
     expect(missing.status).toBe(400)
+  })
+
+  it('quotes airtime from a live rate and binds the wallet intent', async () => {
+    const { baseUrl } = await createTestServer()
+    const pair = KeyPair.generate()
+    const cookie = await authenticate(baseUrl, pair)
+    const otherCookie = await authenticate(baseUrl, KeyPair.generate())
+
+    const draft = await (await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })).json() as { id: string }
+
+    const quoted = await fetch(`${baseUrl}/payment-orders/${draft.id}/quote`, { method: 'POST', headers: { cookie } })
+    expect(quoted.status).toBe(200)
+    const order = await quoted.json() as Record<string, unknown>
+    expect(order).toMatchObject({
+      paymentStatus: 'READY_FOR_PAYMENT',
+      quotedCryptoAmount: '0.5',
+      quoteLunaAmount: '50000',
+      quoteRateNgnPerNim: '2000',
+      paymentNetwork: 'mainnet',
+      paymentReceiver: TEST_NIM_RECEIVER,
+    })
+    expect(order.paymentMemo).toMatch(/^MNS:[0-9a-f]{12}$/)
+
+    const intent = await fetch(`${baseUrl}/payment-orders/${draft.id}/payment-intent`, { method: 'POST', headers: { cookie } })
+    expect(intent.status).toBe(200)
+    const body = await intent.json() as { order: { paymentStatus: string }; intent: Record<string, string> }
+    expect(body.order.paymentStatus).toBe('AWAITING_WALLET_APPROVAL')
+    expect(body.intent).toMatchObject({ receiver: TEST_NIM_RECEIVER, lunaAmount: '50000', network: 'mainnet' })
+    expect(body.intent.memo).toBe(order.paymentMemo)
+
+    const stranger = await fetch(`${baseUrl}/payment-orders/${draft.id}/quote`, { method: 'POST', headers: { cookie: otherCookie } })
+    expect(stranger.status).toBe(404)
+    const anonymous = await fetch(`${baseUrl}/payment-orders/${draft.id}/quote`, { method: 'POST' })
+    expect(anonymous.status).toBe(401)
+  })
+
+  it('fails closed when pricing is unavailable or payments unconfigured', async () => {
+    const failing = await createTestServer({ nimRateFetch: async () => { throw new Error('rate down') } })
+    const cookie = await authenticate(failing.baseUrl, KeyPair.generate())
+    const draft = await (await fetch(`${failing.baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })).json() as { id: string }
+    const quote = await fetch(`${failing.baseUrl}/payment-orders/${draft.id}/quote`, { method: 'POST', headers: { cookie } })
+    expect(quote.status).toBe(502)
+    const untouched = await (await fetch(`${failing.baseUrl}/payment-orders/${draft.id}`, { headers: { cookie } })).json() as { paymentStatus: string }
+    expect(untouched.paymentStatus).toBe('DRAFT')
+
+    const off = await createTestServer({ disableNimPayments: true })
+    const offCookie = await authenticate(off.baseUrl, KeyPair.generate())
+    const offDraft = await (await fetch(`${off.baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie: offCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })).json() as { id: string }
+    expect(await (await fetch(`${off.baseUrl}/payment-orders/${offDraft.id}/quote`, { method: 'POST', headers: { cookie: offCookie } })).status).toBe(503)
+  })
+
+  it('settles verified wallet payments to PAID and hands off fulfilment once', async () => {
+    const chainSender = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const txHash = 'ab'.repeat(32)
+    let chainTx: Record<string, unknown> | null = null
+    const requestedUrls: string[] = []
+    const queryResponse: unknown = {}
+    const { baseUrl, payment } = await createTestServer({
+      airtimeRequests: requestedUrls,
+      airtimeFetch: async (url) => {
+        if (url.includes('/APIQueryV1.asp')) return queryResponse
+        return { orderid: 'ord-nim', statuscode: '100', status: 'ORDER_RECEIVED' }
+      },
+      nimChain: {
+        getTransaction: async () => chainTx as never,
+        getHeadBlockNumber: async () => 1000,
+      },
+    })
+    const pair = KeyPair.generate()
+    const cookie = await authenticate(baseUrl, pair)
+    const draft = await (await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })).json() as { id: string }
+    const quoted = await (await fetch(`${baseUrl}/payment-orders/${draft.id}/quote`, { method: 'POST', headers: { cookie } })).json() as { paymentMemo: string }
+
+    // Unknown chain state stays pending without fulfilment.
+    const submitted = await fetch(`${baseUrl}/payment-orders/${draft.id}/payment-submission`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: txHash }),
+    })
+    expect(submitted.status).toBe(200)
+    expect(await submitted.json()).toMatchObject({ paymentStatus: 'ONCHAIN_PENDING', walletTxRef: txHash })
+    expect(requestedUrls.some((url) => url.includes('/APIAirtimeV1.asp'))).toBe(false)
+
+    // Chain evidence settles the same submission exactly once.
+    chainTx = {
+      hash: txHash,
+      from: chainSender,
+      to: TEST_NIM_RECEIVER,
+      valueLuna: '50000',
+      networkId: 42,
+      blockNumber: 990,
+      confirmations: 10,
+      dataFields: [quoted.paymentMemo],
+    }
+    const reconciled = await fetch(`${baseUrl}/payment-orders/${draft.id}/reconcile-payment`, { method: 'POST', headers: { cookie } })
+    expect(reconciled.status).toBe(200)
+    const paid = await reconciled.json() as Record<string, unknown>
+    expect(paid).toMatchObject({
+      paymentStatus: 'PAID',
+      paymentSender: chainSender,
+      paymentBlockNumber: '990',
+      fulfilmentStatus: 'FULFILLING',
+    })
+    expect(paid.paymentSender).not.toBe(pair.toAddress().toUserFriendlyAddress())
+    const purchases = requestedUrls.filter((url) => url.includes('/APIAirtimeV1.asp'))
+    expect(purchases).toHaveLength(1)
+
+    // Repeating the same hash is harmless and never re-spends.
+    const repeated = await fetch(`${baseUrl}/payment-orders/${draft.id}/payment-submission`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: txHash }),
+    })
+    expect(repeated.status).toBe(200)
+    expect(await repeated.json()).toMatchObject({ paymentStatus: 'PAID' })
+    expect(requestedUrls.filter((url) => url.includes('/APIAirtimeV1.asp'))).toHaveLength(1)
+    void payment
+  })
+
+  it('fails mismatched chain payments and keeps testnet away from providers', async () => {
+    const txHash = 'cd'.repeat(32)
+    const chainTx: Record<string, unknown> = {
+      hash: txHash,
+      from: KeyPair.generate().toAddress().toUserFriendlyAddress(),
+      to: TEST_NIM_RECEIVER,
+      valueLuna: '49999',
+      networkId: 42,
+      blockNumber: 990,
+      confirmations: 5,
+      dataFields: ['MNS:whatevermemo'],
+    }
+    const requestedUrls: string[] = []
+    const { baseUrl } = await createTestServer({
+      airtimeRequests: requestedUrls,
+      airtimeFetch: async () => ({ orderid: 'x', statuscode: '100', status: 'ORDER_RECEIVED' }),
+      nimChain: {
+        getTransaction: async () => chainTx as never,
+        getHeadBlockNumber: async () => 1000,
+      },
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const draft = await (await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })).json() as { id: string }
+    await fetch(`${baseUrl}/payment-orders/${draft.id}/quote`, { method: 'POST', headers: { cookie } })
+    const settled = await fetch(`${baseUrl}/payment-orders/${draft.id}/payment-submission`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: txHash }),
+    })
+    expect(await settled.json()).toMatchObject({ paymentStatus: 'PAYMENT_FAILED', paymentFailureReason: 'wrong-amount' })
+    expect(requestedUrls).toHaveLength(0)
+
+    const badHash = await fetch(`${baseUrl}/payment-orders/${draft.id}/payment-submission`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: 'nope' }),
+    })
+    expect(badHash.status).toBe(400)
+
+    // A testnet payment verifies to PAID yet never touches provider funds.
+    let testTx: Record<string, unknown> | null = null
+    const testnetUrls: string[] = []
+    const testnet = await createTestServer({
+      nimNetwork: 'testnet',
+      airtimeRequests: testnetUrls,
+      airtimeFetch: async () => ({ orderid: 'ord-test', statuscode: '100', status: 'ORDER_RECEIVED' }),
+      nimChain: {
+        getTransaction: async () => testTx as never,
+        getHeadBlockNumber: async () => 100,
+      },
+    })
+    const testCookie = await authenticate(testnet.baseUrl, KeyPair.generate())
+    const testDraft = await (await fetch(`${testnet.baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie: testCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })).json() as { id: string }
+    const testQuoted = await (await fetch(`${testnet.baseUrl}/payment-orders/${testDraft.id}/quote`, { method: 'POST', headers: { cookie: testCookie } })).json() as { paymentMemo: string; paymentNetwork: string }
+    expect(testQuoted.paymentNetwork).toBe('testnet')
+    const testHash = 'ef'.repeat(32)
+    testTx = {
+      hash: testHash,
+      from: KeyPair.generate().toAddress().toUserFriendlyAddress(),
+      to: TEST_NIM_RECEIVER,
+      valueLuna: '50000',
+      blockNumber: 50,
+      confirmations: 2,
+      dataFields: [testQuoted.paymentMemo],
+    }
+    const testPaid = await fetch(`${testnet.baseUrl}/payment-orders/${testDraft.id}/payment-submission`, {
+      method: 'POST',
+      headers: { cookie: testCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ transactionHash: testHash }),
+    })
+    expect(testPaid.status).toBe(200)
+    expect(await testPaid.json()).toMatchObject({ paymentStatus: 'PAID', fulfilmentStatus: 'NOT_STARTED' })
+    expect(testnetUrls).toHaveLength(0)
   })
 })

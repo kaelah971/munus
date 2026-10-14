@@ -31,6 +31,22 @@ describe('Munus server configuration', () => {
     expect(loadServerConfig({ ...validEnv }).clubKonnect).toBeUndefined()
   })
 
+  it('defaults NIM payment settings and validates the receiver address', () => {
+    const defaults = loadServerConfig({ ...validEnv }).nimPayments
+    expect(defaults).toMatchObject({ receiverAddress: undefined, rpcUrl: undefined, quoteTtlMs: 120_000 })
+    expect(loadServerConfig({ ...validEnv, NIMIQ_RPC_URL: 'https://rpc.example' }).nimPayments.rpcUrl)
+      .toBe('https://rpc.example')
+    expect(loadServerConfig({ ...validEnv, MUNUS_QUOTE_TTL_SECONDS: '60' }).nimPayments.quoteTtlMs).toBe(60_000)
+    expect(() => loadServerConfig({ ...validEnv, MUNUS_QUOTE_TTL_SECONDS: '0' })).toThrow(/MUNUS_QUOTE_TTL_SECONDS/)
+    expect(() => loadServerConfig({ ...validEnv, MUNUS_NIM_RECEIVER_ADDRESS: 'not-an-address' }))
+      .toThrow(/MUNUS_NIM_RECEIVER_ADDRESS must be a valid Nimiq address/)
+    // The null address is structurally valid and normalizes deterministically.
+    expect(loadServerConfig({
+      ...validEnv,
+      MUNUS_NIM_RECEIVER_ADDRESS: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000',
+    }).nimPayments.receiverAddress).toBe('NQ07 0000 0000 0000 0000 0000 0000 0000 0000')
+  })
+
   it('requires both provider credential halves together', () => {
     expect(() => loadServerConfig({ ...validEnv, CLUBKONNECT_USER_ID: 'user' })).toThrow(/CLUBKONNECT_USER_ID and CLUBKONNECT_API_KEY/)
     expect(() => loadServerConfig({ ...validEnv, CLUBKONNECT_API_KEY: 'key' })).toThrow(/CLUBKONNECT_USER_ID and CLUBKONNECT_API_KEY/)

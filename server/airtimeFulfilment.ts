@@ -52,6 +52,12 @@ export class AirtimeFulfilmentService {
     if (order.paymentStatus !== 'PAID') {
       throw new FulfilmentError('Only PAID orders can enter provider fulfilment.', 409)
     }
+    // Testnet (or any non-mainnet) payments must never spend provider funds.
+    // Orders created before the payment network was durable carry no network
+    // and keep the previous behavior; every quoted payment sets one.
+    if (order.paymentNetwork !== undefined && order.paymentNetwork !== 'mainnet') {
+      throw new FulfilmentError('Only verified mainnet payments can enter provider fulfilment.', 409)
+    }
     if (isFulfilmentTerminal(order.fulfilmentStatus)) return order
     if (!canStartFulfilment(order) && order.fulfilmentStatus !== 'FULFILLING') {
       throw new FulfilmentError('This order needs manual recovery before it can be fulfilled again.', 409)

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
   FulfilmentStatus,
+  NimiqPaymentNetwork,
   PaymentOrder,
   ValidatedPaymentOrderDraft,
 } from '../src/domain/orders'
@@ -28,6 +29,28 @@ export interface ProviderEvidenceUpdate {
   fulfilledAt?: string
 }
 
+export interface NimQuoteRecord {
+  rateNgnPerNim: string
+  nimAmount: string
+  lunaAmount: string
+  source: string
+  observedAt: string
+  expiresAt: string
+  network: NimiqPaymentNetwork
+  receiver: string
+  memo: string
+}
+
+export interface VerifiedNimPayment {
+  transactionHash: string
+  sender: string
+  receiver: string
+  lunaAmount: string
+  blockNumber: string
+  confirmations: number
+  verifiedAt: string
+}
+
 export interface PaymentRepository {
   listOrders(userId: string): Promise<PaymentOrder[]>
   getOrder(userId: string, orderId: string): Promise<PaymentOrder | null>
@@ -35,6 +58,11 @@ export interface PaymentRepository {
   findOrderByProviderReference(providerRequestId?: string, providerOrderId?: string): Promise<PaymentOrder | null>
   startFulfilment(userId: string, orderId: string, start: FulfilmentStart): Promise<PaymentOrder | null>
   recordProviderUpdate(userId: string, orderId: string, evidence: ProviderEvidenceUpdate): Promise<PaymentOrder | null>
+  recordQuote(userId: string, orderId: string, quote: NimQuoteRecord): Promise<PaymentOrder | null>
+  recordPaymentIntent(userId: string, orderId: string, nowIso: string): Promise<PaymentOrder | null>
+  recordPaymentSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null>
+  recordVerifiedPayment(userId: string, orderId: string, payment: VerifiedNimPayment): Promise<PaymentOrder | null>
+  recordPaymentFailure(userId: string, orderId: string, reason: string): Promise<PaymentOrder | null>
 }
 
 export class InMemoryPaymentRepository implements PaymentRepository {
@@ -115,6 +143,95 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     this.orders.set(orderId, updated)
     return updated
   }
+
+  async recordQuote(userId: string, orderId: string, quote: NimQuoteRecord): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.serviceType !== 'AIRTIME' || order.paymentAsset !== 'NIM') return null
+    if (order.paymentStatus !== 'DRAFT' && order.paymentStatus !== 'READY_FOR_PAYMENT') return null
+    const updated: PaymentOrder = {
+      ...order,
+      quotedCryptoAmount: quote.nimAmount,
+      quoteExpiresAt: quote.expiresAt,
+      paymentNetwork: quote.network,
+      quoteRateNgnPerNim: quote.rateNgnPerNim,
+      quoteLunaAmount: quote.lunaAmount,
+      quoteSource: quote.source,
+      quoteObservedAt: quote.observedAt,
+      paymentMemo: quote.memo,
+      paymentReceiver: quote.receiver,
+      paymentStatus: 'READY_FOR_PAYMENT',
+      updatedAt: new Date().toISOString(),
+    }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+
+  async recordPaymentIntent(userId: string, orderId: string, nowIso: string): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.paymentStatus !== 'READY_FOR_PAYMENT' && order.paymentStatus !== 'AWAITING_WALLET_APPROVAL') return null
+    if (!isFreshQuote(order, nowIso)) return null
+    const updated: PaymentOrder = { ...order, paymentStatus: 'AWAITING_WALLET_APPROVAL', updatedAt: new Date().toISOString() }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+
+  async recordPaymentSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.paymentStatus !== 'READY_FOR_PAYMENT' && order.paymentStatus !== 'AWAITING_WALLET_APPROVAL') return null
+    if (!isFreshQuote(order, nowIso)) return null
+    if (order.walletTxRef && order.walletTxRef.toLowerCase() !== transactionHash.toLowerCase()) return null
+    const updated: PaymentOrder = {
+      ...order,
+      walletTxRef: transactionHash,
+      paymentStatus: 'ONCHAIN_PENDING',
+      updatedAt: new Date().toISOString(),
+    }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+
+  async recordVerifiedPayment(userId: string, orderId: string, payment: VerifiedNimPayment): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.paymentStatus !== 'ONCHAIN_PENDING') return null
+    if (!order.walletTxRef || order.walletTxRef.toLowerCase() !== payment.transactionHash.toLowerCase()) return null
+    const updated: PaymentOrder = {
+      ...order,
+      paymentSender: payment.sender,
+      paymentReceiver: payment.receiver,
+      quoteLunaAmount: order.quoteLunaAmount,
+      paymentBlockNumber: payment.blockNumber,
+      paymentConfirmations: payment.confirmations,
+      paymentVerifiedAt: payment.verifiedAt,
+      paymentFailureReason: undefined,
+      paymentStatus: 'PAID',
+      updatedAt: new Date().toISOString(),
+    }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+
+  async recordPaymentFailure(userId: string, orderId: string, reason: string): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.paymentStatus !== 'ONCHAIN_PENDING') return null
+    const updated: PaymentOrder = {
+      ...order,
+      paymentFailureReason: reason,
+      paymentStatus: 'PAYMENT_FAILED',
+      updatedAt: new Date().toISOString(),
+    }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+}
+
+function isFreshQuote(order: PaymentOrder, nowIso: string): boolean {
+  if (!order.quotedCryptoAmount || !order.quoteLunaAmount || !order.quoteExpiresAt) return false
+  return Date.parse(order.quoteExpiresAt) > Date.parse(nowIso)
 }
 
 export class PostgresPaymentRepository implements PaymentRepository {
@@ -212,6 +329,103 @@ export class PostgresPaymentRepository implements PaymentRepository {
     return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
   }
 
+  async recordQuote(userId: string, orderId: string, quote: NimQuoteRecord): Promise<PaymentOrder | null> {
+    const result = await this.run('record payment quote', () => this.database.query(
+      `UPDATE payment_orders
+       SET quoted_crypto_amount = $3,
+           quote_expires_at = $4,
+           payment_network = $5,
+           quote_rate_ngn_per_nim = $6,
+           quote_luna_amount = $7,
+           quote_source = $8,
+           quote_observed_at = $9,
+           payment_memo = $10,
+           payment_receiver = $11,
+           payment_status = 'READY_FOR_PAYMENT',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND service_type = 'AIRTIME'
+         AND payment_asset = 'NIM'
+         AND payment_status IN ('DRAFT', 'READY_FOR_PAYMENT')
+       RETURNING *`,
+      [orderId, userId, quote.nimAmount, quote.expiresAt, quote.network, quote.rateNgnPerNim, quote.lunaAmount, quote.source, quote.observedAt, quote.memo, quote.receiver],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async recordPaymentIntent(userId: string, orderId: string, nowIso: string): Promise<PaymentOrder | null> {
+    const result = await this.run('record payment intent', () => this.database.query(
+      `UPDATE payment_orders
+       SET payment_status = 'AWAITING_WALLET_APPROVAL',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND payment_status IN ('READY_FOR_PAYMENT', 'AWAITING_WALLET_APPROVAL')
+         AND quoted_crypto_amount IS NOT NULL
+         AND quote_luna_amount IS NOT NULL
+         AND quote_expires_at > $3
+       RETURNING *`,
+      [orderId, userId, nowIso],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async recordPaymentSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null> {
+    const result = await this.run('record payment submission', () => this.database.query(
+      `UPDATE payment_orders
+       SET wallet_tx_ref = $3,
+           payment_status = 'ONCHAIN_PENDING',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND payment_status IN ('READY_FOR_PAYMENT', 'AWAITING_WALLET_APPROVAL')
+         AND quoted_crypto_amount IS NOT NULL
+         AND quote_luna_amount IS NOT NULL
+         AND quote_expires_at > $4
+         AND (wallet_tx_ref IS NULL OR LOWER(wallet_tx_ref) = LOWER($3))
+       RETURNING *`,
+      [orderId, userId, transactionHash, nowIso],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async recordVerifiedPayment(userId: string, orderId: string, payment: VerifiedNimPayment): Promise<PaymentOrder | null> {
+    const result = await this.run('record verified payment', () => this.database.query(
+      `UPDATE payment_orders
+       SET payment_sender = $3,
+           payment_receiver = $4,
+           payment_block_number = $5,
+           payment_confirmations = $6,
+           payment_verified_at = $7,
+           payment_failure_reason = NULL,
+           payment_status = 'PAID',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND payment_status = 'ONCHAIN_PENDING'
+         AND LOWER(wallet_tx_ref) = LOWER($8)
+       RETURNING *`,
+      [orderId, userId, payment.sender, payment.receiver, payment.blockNumber, payment.confirmations, payment.verifiedAt, payment.transactionHash],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async recordPaymentFailure(userId: string, orderId: string, reason: string): Promise<PaymentOrder | null> {
+    const result = await this.run('record payment failure', () => this.database.query(
+      `UPDATE payment_orders
+       SET payment_failure_reason = $3,
+           payment_status = 'PAYMENT_FAILED',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND payment_status = 'ONCHAIN_PENDING'
+       RETURNING *`,
+      [orderId, userId, reason],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
   private async run<T>(label: string, operation: () => Promise<T>): Promise<T> {
     try {
       return await operation()
@@ -245,6 +459,18 @@ function mapPaymentOrder(row: Record<string, unknown>): PaymentOrder {
     providerRemark: row.provider_remark ? String(row.provider_remark) : undefined,
     fulfilmentStartedAt: row.fulfilment_started_at ? timestampString(row.fulfilment_started_at) : undefined,
     fulfilledAt: row.fulfilled_at ? timestampString(row.fulfilled_at) : undefined,
+    paymentNetwork: (row.payment_network ?? undefined) as PaymentOrder['paymentNetwork'],
+    quoteRateNgnPerNim: row.quote_rate_ngn_per_nim ? String(row.quote_rate_ngn_per_nim) : undefined,
+    quoteLunaAmount: row.quote_luna_amount ? String(row.quote_luna_amount) : undefined,
+    quoteSource: row.quote_source ? String(row.quote_source) : undefined,
+    quoteObservedAt: row.quote_observed_at ? timestampString(row.quote_observed_at) : undefined,
+    paymentMemo: row.payment_memo ? String(row.payment_memo) : undefined,
+    paymentReceiver: row.payment_receiver ? String(row.payment_receiver) : undefined,
+    paymentSender: row.payment_sender ? String(row.payment_sender) : undefined,
+    paymentBlockNumber: row.payment_block_number ? String(row.payment_block_number) : undefined,
+    paymentConfirmations: row.payment_confirmations === null || row.payment_confirmations === undefined ? undefined : Number(row.payment_confirmations),
+    paymentVerifiedAt: row.payment_verified_at ? timestampString(row.payment_verified_at) : undefined,
+    paymentFailureReason: row.payment_failure_reason ? String(row.payment_failure_reason) : undefined,
     paymentStatus: row.payment_status as PaymentOrder['paymentStatus'],
     fulfilmentStatus: row.fulfilment_status as PaymentOrder['fulfilmentStatus'],
     createdAt: timestampString(row.created_at),

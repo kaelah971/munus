@@ -658,7 +658,7 @@ export function App() {
       onOpenContacts={() => openContacts('list')} onCopyAddress={copyWalletAddress}
     />
   } else if (destination === 'pay') {
-    content = paymentApi ? <PayPage api={paymentApi} defaultPhone={profile.defaultPhone} /> : null
+    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} /> : null
   } else if (destination === 'pockets') {
     content = <PocketsPage
       authenticated connection={connection} error={planningError} loading={planningLoading}

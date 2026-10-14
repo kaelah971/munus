@@ -42,7 +42,7 @@ A mobile starting point for connecting an account, viewing wallet state exposed 
 
 ### Pay Essentials
 
-A focused surface for categories such as airtime, data, electricity, and cable or internet. Airtime can be saved as a durable payment order (recipient, amount, draft status), but payment quotes, NIM movement, and provider fulfilment are not live in the current slice. It cannot send NIM.
+A focused surface for categories such as airtime, data, electricity, and cable or internet. Airtime flows end to end: save an order, take a live NIM quote, approve in Nimiq Pay, and Munus verifies on-chain before the provider rail delivers. Data, electricity, and cable remain planning-only.
 
 ### Life Pockets
 
@@ -199,8 +199,8 @@ Checked items are present in the current repository. Unchecked items are planned
 
 ### Planned direction
 
-- [ ] Execute real NIM payments from supported essential flows.
-- [ ] Real airtime and data services.
+- [x] Real NIM airtime payments with live quotes, wallet approval, and on-chain verification.
+- [ ] Real data services.
 - [ ] Electricity and internet provider integrations.
 - [ ] Provider fulfilment tracking and confirmation.
 - [ ] Payment orchestration across context, approval, and fulfilment.

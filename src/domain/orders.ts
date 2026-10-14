@@ -3,6 +3,12 @@ import type { SupportNetwork } from './support'
 export const PAYMENT_SERVICE_TYPES = ['AIRTIME', 'DATA', 'CASH_OUT'] as const
 export const PAYMENT_ASSETS = ['NIM', 'USDT'] as const
 
+export const LUNA_PER_NIM = 100_000n
+/** Short bounded quote TTL so a volatile rate cannot go stale. */
+export const DEFAULT_QUOTE_TTL_MS = 120_000
+/** Nimiq mainnet network ID (protocol-established). Testnet IDs are never guessed. */
+export const NIMIQ_MAINNET_NETWORK_ID = 42
+
 export const PAYMENT_STATUSES = [
   'DRAFT',
   'QUOTE_PENDING',
@@ -28,6 +34,20 @@ export type PaymentAsset = (typeof PAYMENT_ASSETS)[number]
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number]
 export type FulfilmentStatus = (typeof FULFILMENT_STATUSES)[number]
 
+export type NimiqPaymentNetwork = 'mainnet' | 'testnet'
+
+export interface NimQuote {
+  rateNgnPerNim: string
+  nimAmount: string
+  lunaAmount: string
+  source: string
+  observedAt: string
+  expiresAt: string
+  network: NimiqPaymentNetwork
+  receiver: string
+  memo: string
+}
+
 export interface PaymentOrder {
   id: string
   userId: string
@@ -40,6 +60,18 @@ export interface PaymentOrder {
   requestedCurrency: 'NGN'
   quotedCryptoAmount?: string
   quoteExpiresAt?: string
+  paymentNetwork?: NimiqPaymentNetwork
+  quoteRateNgnPerNim?: string
+  quoteLunaAmount?: string
+  quoteSource?: string
+  quoteObservedAt?: string
+  paymentMemo?: string
+  paymentReceiver?: string
+  paymentSender?: string
+  paymentBlockNumber?: string
+  paymentConfirmations?: number
+  paymentVerifiedAt?: string
+  paymentFailureReason?: string
   walletTxRef?: string
   providerRef?: string
   provider?: string
@@ -130,6 +162,65 @@ export interface AirtimeProviderAdapter extends PaymentProviderAdapter {
 }
 
 /**
+ * Deterministic compact order reference bound into the on-chain transaction
+ * memo, e.g. `MNS:9a6b18d778a6`. Recomputed from the order id on both
+ * sides, so it is never trusted from client input.
+ */
+export function buildPaymentMemo(orderId: string): string {
+  const hex = orderId.replace(/[^0-9a-fA-F]/g, '').toLowerCase()
+  if (hex.length < 12) throw new Error('Payment order cannot be bound to a wallet transaction.')
+  return `MNS:${hex.slice(0, 12)}`
+}
+
+interface DecimalParts {
+  digits: bigint
+  scale: number
+}
+
+function parseDecimal(value: string): DecimalParts {
+  const match = /^\d+(?:\.(\d+))?$/.exec(value.trim())
+  if (!match) throw new Error('Amount must be a non-negative decimal string.')
+  const fraction = match[1] ?? ''
+  return { digits: BigInt(`${value.trim().split('.')[0]}${fraction}`), scale: fraction.length }
+}
+
+/**
+ * Exact NGN → luna conversion with integer arithmetic, rounding UP to the
+ * nearest luna so decimal truncation can never underpay the receiver.
+ * `rateNgnPerNim` is NGN per 1 NIM (e.g. `"2450.5"`).
+ */
+export function calculateQuoteLuna(requestedNgn: string, rateNgnPerNim: string): bigint {
+  const ngn = parseDecimal(requestedNgn)
+  const rate = parseDecimal(rateNgnPerNim)
+  if (rate.digits <= 0n) throw new Error('Rate must be greater than zero.')
+  if (ngn.digits <= 0n) throw new Error('Amount must be greater than zero.')
+  const numerator = ngn.digits * LUNA_PER_NIM * 10n ** BigInt(rate.scale)
+  const denominator = rate.digits * 10n ** BigInt(ngn.scale)
+  return (numerator + denominator - 1n) / denominator
+}
+
+export function formatNimFromLunaBigint(luna: bigint): string {
+  if (luna < 0n) throw new Error('Luna must be a non-negative integer.')
+  const whole = luna / LUNA_PER_NIM
+  const fraction = luna % LUNA_PER_NIM
+  if (fraction === 0n) return `${whole}`
+  return `${whole}.${fraction.toString().padStart(5, '0').replace(/0+$/, '')}`
+}
+
+export function isQuoteFresh(order: Pick<PaymentOrder, 'quotedCryptoAmount' | 'quoteExpiresAt' | 'quoteLunaAmount'>, now = Date.now()): boolean {
+  if (!order.quotedCryptoAmount || !order.quoteLunaAmount) return false
+  if (!order.quoteExpiresAt) return false
+  return Date.parse(order.quoteExpiresAt) > now
+}
+
+/** A new quote is allowed for untouched drafts or payable orders whose quote lapsed. */
+export function canCreateQuote(order: Pick<PaymentOrder, 'serviceType' | 'paymentAsset' | 'paymentStatus'>, now = Date.now()): boolean {
+  void now
+  if (order.serviceType !== 'AIRTIME' || order.paymentAsset !== 'NIM') return false
+  return order.paymentStatus === 'DRAFT' || order.paymentStatus === 'READY_FOR_PAYMENT'
+}
+
+/**
  * Only a legitimately PAID airtime order waiting for fulfilment may enter
  * real provider fulfilment. DRAFT (and every other payment state) is
  * rejected before any provider contact.
@@ -170,12 +261,12 @@ export function isOrderQuoteAvailable(order: Pick<PaymentOrder, 'quotedCryptoAmo
 }
 
 /**
- * Payment is only possible once a live quote exists and the order is ready.
- * This guard stays false for every order in the foundation slice, so the UI
- * can never present a pay button before a real quote/payment path exists.
+ * Payment is only possible once a live quote with an exact integer luna
+ * amount exists, is fresh, and the order is ready. The UI can never present
+ * a pay button before a real quote path exists.
  */
-export function canPayOrder(order: Pick<PaymentOrder, 'paymentStatus' | 'quotedCryptoAmount' | 'quoteExpiresAt'>, now = Date.now()): boolean {
-  return order.paymentStatus === 'READY_FOR_PAYMENT' && isOrderQuoteAvailable(order, now)
+export function canPayOrder(order: Pick<PaymentOrder, 'paymentStatus' | 'quotedCryptoAmount' | 'quoteExpiresAt' | 'quoteLunaAmount'>, now = Date.now()): boolean {
+  return order.paymentStatus === 'READY_FOR_PAYMENT' && isQuoteFresh(order, now)
 }
 
 export function describeOrderStage(order: Pick<PaymentOrder, 'paymentStatus' | 'fulfilmentStatus'>): string {

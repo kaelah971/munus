@@ -1954,6 +1954,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus
 .contact-more-details[open] { display: grid; gap: 16px; }
 .contact-more-details > label { margin-top: 16px; }
 .contact-editor .form-actions { margin-top: 8px; }
+.payment-progress { margin: 20px 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.payment-progress > li { display: flex; align-items: center; gap: 10px; font-size: .875rem; color: var(--muted); }
+.payment-progress > li::before { content: ''; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--line); flex: none; }
+.payment-progress > li[data-done="true"] { color: var(--text); }
+.payment-progress > li[data-done="true"]::before { background: var(--gold, #f5a623); border-color: transparent; }
 
 /* Profile settings are grouped rows, with the existing profile and PIN forms. */
 .profile-settings-group { margin-top: 24px; }

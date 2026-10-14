@@ -9,6 +9,9 @@ import { PostgresSupportRepository } from './supportRepository'
 import { PostgresPaymentRepository } from './paymentRepository'
 import { AirtimeFulfilmentService } from './airtimeFulfilment'
 import { ClubKonnectAirtimeProvider } from './clubKonnect'
+import { NimPaymentService } from './nimPayments'
+import { CoinGeckoNimRateProvider } from './nimRates'
+import { RpcNimiqChainReader } from './nimiqChain'
 
 const config = loadServerConfig()
 const database = createPostgresPool(config.databaseUrl)
@@ -27,12 +30,26 @@ const fulfilment = config.clubKonnect
     { callbackBaseUrl: config.clubKonnect.callbackBaseUrl },
   )
   : null
+const nimPayments = config.nimPayments.receiverAddress
+  ? new NimPaymentService(
+    payment,
+    new CoinGeckoNimRateProvider(),
+    config.nimPayments.rpcUrl ? new RpcNimiqChainReader(config.nimPayments.rpcUrl) : null,
+    fulfilment,
+    {
+      receiverAddress: config.nimPayments.receiverAddress,
+      network: config.defaultNetwork,
+      quoteTtlMs: config.nimPayments.quoteTtlMs,
+    },
+  )
+  : null
 const server = createMunusServer({
   repository,
   planning,
   support,
   payment,
   fulfilment,
+  nimPayments,
   auth,
   staticDir: resolve(process.cwd(), 'dist'),
   config,

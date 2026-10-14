@@ -6,7 +6,7 @@ import {
   type PaymentOrder,
   type PaymentOrderDraft,
 } from '../domain/orders'
-import type { PaymentApi } from './paymentApi'
+import type { PaymentApi, PaymentIntentResponse } from './paymentApi'
 
 const PAYMENT_KEY_PREFIX = 'munus:payments:'
 
@@ -25,6 +25,27 @@ export class LocalPaymentApi implements PaymentApi {
     const order = this.readData().find((entry) => entry.id === id)
     if (!order) throw new Error('Payment order was not found.')
     return order
+  }
+
+  async createQuote(id: string): Promise<PaymentOrder> {
+    void id
+    throw new Error('NIM payment quotes require the Munus API.')
+  }
+
+  async createPaymentIntent(id: string): Promise<PaymentIntentResponse> {
+    void id
+    throw new Error('NIM payments require the Munus API.')
+  }
+
+  async submitPayment(id: string, transactionHash: string): Promise<PaymentOrder> {
+    void id
+    void transactionHash
+    throw new Error('NIM payments require the Munus API.')
+  }
+
+  async reconcilePayment(id: string): Promise<PaymentOrder> {
+    void id
+    throw new Error('NIM payments require the Munus API.')
   }
 
   async createOrder(draft: PaymentOrderDraft): Promise<PaymentOrder> {

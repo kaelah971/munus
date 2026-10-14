@@ -93,4 +93,73 @@ describe('Munus payment order persistence', () => {
     expect(await repository.findOrderByProviderReference(undefined, 'ord-1')).toMatchObject({ id: order.id })
     expect(await repository.recordProviderUpdate('user-a', order.id, { fulfilmentStatus: 'FULFILLING' })).toBeNull()
   })
+
+  it('records quotes, intents, submissions, verification, and failure with guards', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    const quote = {
+      rateNgnPerNim: '2000',
+      nimAmount: '0.5',
+      lunaAmount: '50000',
+      source: 'fixture',
+      observedAt: '2026-10-14T12:00:00.000Z',
+      expiresAt: '2026-10-14T12:02:00.000Z',
+      network: 'mainnet' as const,
+      receiver: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000',
+      memo: 'MNS:abc123def456',
+    }
+
+    const quoted = await repository.recordQuote('user-a', order.id, quote)
+    expect(quoted).toMatchObject({
+      paymentStatus: 'READY_FOR_PAYMENT',
+      quotedCryptoAmount: '0.5',
+      quoteLunaAmount: '50000',
+      paymentNetwork: 'mainnet',
+      paymentMemo: 'MNS:abc123def456',
+    })
+    // Re-quote overwrites while still quotable.
+    expect(await repository.recordQuote('user-a', order.id, { ...quote, lunaAmount: '50001' }))
+      .toMatchObject({ quoteLunaAmount: '50001' })
+    expect(await repository.recordQuote('user-b', order.id, quote)).toBeNull()
+
+    // Intent requires a fresh quote.
+    expect(await repository.recordPaymentIntent('user-a', order.id, '2026-10-14T12:05:00.000Z')).toBeNull()
+    expect(await repository.recordPaymentIntent('user-a', order.id, '2026-10-14T12:01:00.000Z'))
+      .toMatchObject({ paymentStatus: 'AWAITING_WALLET_APPROVAL' })
+
+    // Submission binds one hash idempotently and advances.
+    const submitted = await repository.recordPaymentSubmission('user-a', order.id, 'HASH', '2026-10-14T12:01:00.000Z')
+    expect(submitted).toMatchObject({ paymentStatus: 'ONCHAIN_PENDING', walletTxRef: 'HASH' })
+    expect(await repository.recordPaymentSubmission('user-a', order.id, 'OTHER', '2026-10-14T12:01:00.000Z')).toBeNull()
+
+    // Verification requires the bound hash and pending state.
+    expect(await repository.recordVerifiedPayment('user-a', order.id, {
+      transactionHash: 'other',
+      sender: 's',
+      receiver: 'r',
+      lunaAmount: '50000',
+      blockNumber: '1',
+      confirmations: 1,
+      verifiedAt: '2026-10-14T12:03:00.000Z',
+    })).toBeNull()
+    const paid = await repository.recordVerifiedPayment('user-a', order.id, {
+      transactionHash: 'hash',
+      sender: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000',
+      receiver: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000',
+      lunaAmount: '50000',
+      blockNumber: '99',
+      confirmations: 2,
+      verifiedAt: '2026-10-14T12:03:00.000Z',
+    })
+    expect(paid).toMatchObject({ paymentStatus: 'PAID', paymentBlockNumber: '99', paymentConfirmations: 2 })
+
+    // Failure only lands on pending orders.
+    expect(await repository.recordPaymentFailure('user-a', order.id, 'wrong-amount')).toBeNull()
+    const pending = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    const stored = repository.orders.get(pending.id)
+    if (!stored) throw new Error('Fixture order missing.')
+    stored.paymentStatus = 'ONCHAIN_PENDING'
+    expect(await repository.recordPaymentFailure('user-a', pending.id, 'wrong-amount'))
+      .toMatchObject({ paymentStatus: 'PAYMENT_FAILED', paymentFailureReason: 'wrong-amount' })
+  })
 })
