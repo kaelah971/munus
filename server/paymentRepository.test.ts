@@ -138,6 +138,39 @@ describe('Munus payment order persistence', () => {
     expect(await repository.recordProviderUpdate('user-a', order.id, { fulfilmentStatus: 'FULFILLING' })).toBeNull()
   })
 
+  it('allows failed deliveries back into recovery while stamping each check', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    repository.orders.get(order.id)!.paymentStatus = 'PAID'
+    await repository.startFulfilment('user-a', order.id, { provider: 'clubkonnect', providerRequestId: 'req-1' })
+    const failed = await repository.recordProviderUpdate('user-a', order.id, {
+      providerStatusCode: '400',
+      providerStatus: 'ORDER_FAILED',
+      fulfilmentStatus: 'FULFILLMENT_FAILED',
+    })
+    expect(failed?.fulfilmentStatus).toBe('FULFILLMENT_FAILED')
+    expect(failed?.lastReconciledAt).toBeDefined()
+    // Recovery may advance a failed row; terminal rows stay frozen.
+    const recovering = await repository.recordProviderUpdate('user-a', order.id, {
+      providerStatusCode: '300',
+      providerStatus: 'ORDER_UNKNOWN',
+      fulfilmentStatus: 'RECOVERY_REQUIRED',
+    })
+    expect(recovering?.fulfilmentStatus).toBe('RECOVERY_REQUIRED')
+    expect(recovering?.lastReconciledAt).toBeDefined()
+    const retrying = await repository.recordProviderUpdate('user-a', order.id, { fulfilmentStatus: 'FULFILLING' })
+    expect(retrying?.fulfilmentStatus).toBe('FULFILLING')
+    const delivered = await repository.recordProviderUpdate('user-a', order.id, {
+      providerStatusCode: '200',
+      providerStatus: 'ORDER_COMPLETED',
+      fulfilmentStatus: 'DELIVERED',
+      fulfilledAt: '2026-10-14T00:00:00.000Z',
+    })
+    expect(delivered?.fulfilmentStatus).toBe('DELIVERED')
+    expect(await repository.recordProviderUpdate('user-a', order.id, { fulfilmentStatus: 'FULFILLING' })).toBeNull()
+    expect(await repository.recordProviderUpdate('user-b', order.id, { fulfilmentStatus: 'FULFILLING' })).toBeNull()
+  })
+
   it('records quotes, intents, submissions, verification, and failure with guards', async () => {
     const repository = new InMemoryPaymentRepository()
     const order = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))

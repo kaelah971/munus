@@ -186,4 +186,34 @@ describe('essential request service', () => {
     const request = await createEssentialRequest(deps, 'user-a', airtimeDraft())
     await expect(syncEssentialRequest(deps, 'user-stranger', request.id)).rejects.toMatchObject({ statusCode: 404 })
   })
+
+  it('moves a need from NEEDS_ATTENTION to COMPLETED on later delivery', async () => {
+    const { deps, payment } = setup()
+    const request = await createEssentialRequest(deps, 'user-a', airtimeDraft())
+    const { order } = await claimEssentialNeed(deps, 'user-b', request.publicRequestId)
+    const stored = payment.orders.get(order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.paymentStatus = 'PAID'
+    stored.fulfilmentStatus = 'RECOVERY_REQUIRED'
+    expect((await syncEssentialForOrder(deps, stored))?.essentialStatus).toBe('NEEDS_ATTENTION')
+    stored.fulfilmentStatus = 'DELIVERED'
+    stored.fulfilledAt = new Date(NOW).toISOString()
+    const completed = await syncEssentialForOrder(deps, stored)
+    expect(completed?.essentialStatus).toBe('COMPLETED')
+    expect(completed?.fulfilledAt).toBeDefined()
+  })
+
+  it('never fabricates refunds or resolutions', async () => {
+    const { deps, payment } = setup()
+    const request = await createEssentialRequest(deps, 'user-a', airtimeDraft())
+    const { order } = await claimEssentialNeed(deps, 'user-b', request.publicRequestId)
+    const stored = payment.orders.get(order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    for (const fulfilmentStatus of ['NOT_STARTED', 'FULFILLING', 'DELIVERED', 'FULFILLMENT_FAILED', 'RECOVERY_REQUIRED'] as const) {
+      stored.paymentStatus = 'PAID'
+      stored.fulfilmentStatus = fulfilmentStatus
+      const synced = await syncEssentialForOrder(deps, { ...stored })
+      expect(['REFUNDED', 'RESOLVED']).not.toContain(synced?.essentialStatus ?? '')
+    }
+  })
 })

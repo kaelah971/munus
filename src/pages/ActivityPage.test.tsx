@@ -51,7 +51,7 @@ function deliveredOrder(): PaymentOrder {
   })
 }
 
-function apiStub(initial: PaymentOrder[] = []): PaymentApi & { list: Mock; get: Mock } {
+function apiStub(initial: PaymentOrder[] = []): PaymentApi & { list: Mock; get: Mock; reconcileOrder: Mock; retryDelivery: Mock } {
   return {
     list: vi.fn().mockResolvedValue(initial),
     get: vi.fn().mockImplementation(async (id: string) => {
@@ -64,7 +64,17 @@ function apiStub(initial: PaymentOrder[] = []): PaymentApi & { list: Mock; get: 
     createPaymentIntent: vi.fn(),
     submitPayment: vi.fn(),
     reconcilePayment: vi.fn(),
-  } as unknown as PaymentApi & { list: Mock; get: Mock }
+    reconcileOrder: vi.fn(async (id: string) => {
+      const found = initial.find((entry) => entry.id === id)
+      if (!found) throw new Error('Payment order was not found.')
+      return found
+    }) as Mock,
+    retryDelivery: vi.fn(async (id: string) => {
+      const found = initial.find((entry) => entry.id === id)
+      if (!found) throw new Error('Payment order was not found.')
+      return found
+    }) as Mock,
+  } as unknown as PaymentApi & { list: Mock; get: Mock; reconcileOrder: Mock; retryDelivery: Mock }
 }
 
 function renderPage(api: ReturnType<typeof apiStub>) {
@@ -123,6 +133,62 @@ describe('Activity and Receipt Vault', () => {
     expect(screen.getAllByRole('button', { name: /airtime/ })).toHaveLength(3)
   })
 
+  it('opens Recovery Center from attention rows instead of a receipt', async () => {
+    const stuck = order({
+      id: 'dddddddd-0000-0000-0000-000000000005',
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'FULFILLMENT_FAILED',
+      walletTxRef: TX_HASH,
+      paymentVerifiedAt: '2026-10-14T12:05:00.000Z',
+      quotedCryptoAmount: '0.5',
+      provider: 'clubkonnect',
+      providerRequestId: 'req-9',
+      providerStatusCode: '400',
+      providerStatus: 'ORDER_FAILED',
+    })
+    const api = apiStub([stuck])
+    renderPage(api)
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+
+    expect(await screen.findByText('Recovery Center')).toBeInTheDocument()
+    expect(screen.getByText('Airtime delivery failed')).toBeInTheDocument()
+    expect(screen.queryByText('08012345678')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh status' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry delivery' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }))
+    await waitFor(() => expect(api.reconcileOrder).toHaveBeenCalledWith(stuck.id))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+    await waitFor(() => expect(api.retryDelivery).toHaveBeenCalledWith(stuck.id))
+  })
+
+  it('routes back to the receipt once recovery resolves delivery', async () => {
+    const stuck = order({
+      id: 'eeeeeeee-0000-0000-0000-000000000006',
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'RECOVERY_REQUIRED',
+      walletTxRef: TX_HASH,
+      paymentVerifiedAt: '2026-10-14T12:05:00.000Z',
+      quotedCryptoAmount: '0.5',
+      quoteLunaAmount: '50000',
+      provider: 'clubkonnect',
+      providerRequestId: 'req-9',
+    })
+    const api = apiStub([stuck])
+    api.retryDelivery.mockImplementation(async () => ({
+      ...stuck,
+      fulfilmentStatus: 'DELIVERED',
+      fulfilledAt: '2026-10-14T12:09:00.000Z',
+    }))
+    renderPage(api)
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    expect(await screen.findByText('Recovery Center')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+    expect(await screen.findByText('Receipt · Delivered')).toBeInTheDocument()
+    expect(screen.queryByText('Recovery Center')).not.toBeInTheDocument()
+  })
+
   it('opens a completed receipt with sections, timeline, and copy action', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
@@ -152,7 +218,8 @@ describe('Activity and Receipt Vault', () => {
       paymentStatus: 'PAID',
       fulfilmentStatus: 'FULFILLING',
       walletTxRef: TX_HASH,
-      paymentVerifiedAt: '2026-10-14T12:05:00.000Z',
+      paymentVerifiedAt: new Date(Date.now() - 60_000).toISOString(),
+      fulfilmentStartedAt: new Date(Date.now() - 60_000).toISOString(),
       provider: 'clubkonnect',
       providerRequestId: 'req-1',
     })

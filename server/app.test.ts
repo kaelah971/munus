@@ -1222,4 +1222,61 @@ describe('Munus production API', () => {
     const listed = await (await fetch(`${baseUrl}/support-requests`, { headers: { cookie } })).json() as { supportRequests: unknown[] }
     expect(listed.supportRequests).toEqual([])
   })
+
+  it('retries failed delivery with the same provider reference, never a new purchase', async () => {
+    const requestedUrls: string[] = []
+    let queryResponse: unknown = { statuscode: '400', status: 'ORDER_FAILED' }
+    const { baseUrl, payment } = await createTestServer({
+      airtimeRequests: requestedUrls,
+      airtimeFetch: async (url: string) => {
+        if (url.includes('/APIQueryV1.asp')) return queryResponse
+        return { orderid: 'ord-retry', statuscode: '100', status: 'ORDER_RECEIVED' }
+      },
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const stranger = await authenticate(baseUrl, KeyPair.generate())
+    const orderId = await createPaidAirtimeOrder(baseUrl, cookie, payment)
+    await fetch(`${baseUrl}/payment-orders/${orderId}/fulfil`, { method: 'POST', headers: { cookie } })
+    await fetch(`${baseUrl}/payment-orders/${orderId}/reconcile`, { method: 'POST', headers: { cookie } })
+    const failed = await payment.orders.get(orderId)
+    expect(failed?.fulfilmentStatus).toBe('FULFILLMENT_FAILED')
+    const requestId = failed?.providerRequestId
+    expect(requestId).toBeTruthy()
+
+    // Still failing upstream: evidence refreshes, nothing is repurchased.
+    const purchasesBefore = requestedUrls.filter((url) => url.includes('/APIAirtimeV1.asp')).length
+    const retried = await fetch(`${baseUrl}/payment-orders/${orderId}/recovery/retry`, { method: 'POST', headers: { cookie } })
+    expect(retried.status).toBe(200)
+    expect(await retried.json()).toMatchObject({ fulfilmentStatus: 'FULFILLMENT_FAILED' })
+    expect(requestedUrls.filter((url) => url.includes('/APIAirtimeV1.asp'))).toHaveLength(purchasesBefore)
+
+    // Provider never saw it: one purchase with the identical RequestID.
+    queryResponse = {}
+    const repurchased = await fetch(`${baseUrl}/payment-orders/${orderId}/recovery/retry`, { method: 'POST', headers: { cookie } })
+    expect(repurchased.status).toBe(200)
+    const repurchasedBody = await repurchased.json() as Record<string, unknown>
+    expect(repurchasedBody).toMatchObject({ fulfilmentStatus: 'FULFILLING', providerRequestId: requestId })
+    const purchaseUrls = requestedUrls.filter((url) => url.includes('/APIAirtimeV1.asp'))
+    expect(purchaseUrls).toHaveLength(purchasesBefore + 1)
+    expect(purchaseUrls[purchaseUrls.length - 1]).toContain(`RequestID=${requestId}`)
+
+    // Ownership and state guards hold.
+    expect((await fetch(`${baseUrl}/payment-orders/${orderId}/recovery/retry`, { method: 'POST', headers: { cookie: stranger } })).status).toBe(404)
+    expect((await fetch(`${baseUrl}/payment-orders/${orderId}/recovery/retry`, { method: 'POST' })).status).toBe(401)
+    expect((await fetch(`${baseUrl}/payment-orders/does-not-exist/recovery/retry`, { method: 'POST', headers: { cookie } })).status).toBe(404)
+  })
+
+  it('refuses retry while delivery is in progress', async () => {
+    const { baseUrl, payment } = await createTestServer({
+      airtimeFetch: async (url: string) => {
+        if (url.includes('/APIQueryV1.asp')) return {}
+        return { orderid: 'ord-live', statuscode: '100', status: 'ORDER_RECEIVED' }
+      },
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const orderId = await createPaidAirtimeOrder(baseUrl, cookie, payment)
+    await fetch(`${baseUrl}/payment-orders/${orderId}/fulfil`, { method: 'POST', headers: { cookie } })
+    const retry = await fetch(`${baseUrl}/payment-orders/${orderId}/recovery/retry`, { method: 'POST', headers: { cookie } })
+    expect(retry.status).toBe(409)
+  })
 })

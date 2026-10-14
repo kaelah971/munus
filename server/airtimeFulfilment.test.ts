@@ -377,4 +377,83 @@ describe('Airtime fulfilment service', () => {
     expect(provider.queryCalls).toBe(0)
     expect(await repository.getOrder('user-a', order.id)).toMatchObject({ fulfilmentStatus: 'NOT_STARTED' })
   })
+
+  it('retries failed delivery only after reconciling, reusing the stable RequestID', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await paidOrder(repository)
+    const stored = repository.orders.get(order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.fulfilmentStatus = 'FULFILLMENT_FAILED'
+    stored.providerRequestId = order.id.replace(/-/g, '')
+    const { provider, fulfilment } = service(repository)
+
+    // Provider still failing: evidence refreshes, no repurchase.
+    provider.queryRecord = { statusCode: '400', status: 'ORDER_FAILED', outcome: 'failed' }
+    const stillFailed = await fulfilment.retryDelivery('user-a', order.id)
+    expect(stillFailed.fulfilmentStatus).toBe('FULFILLMENT_FAILED')
+    expect(provider.purchaseCalls).toBe(0)
+    expect(provider.queryCalls).toBe(1)
+
+    // Provider ambiguous: recovery holds, no repurchase.
+    provider.queryRecord = { statusCode: '300', status: 'ORDER_UNKNOWN', outcome: 'unknown' }
+    const recovery = await fulfilment.retryDelivery('user-a', order.id)
+    expect(recovery.fulfilmentStatus).toBe('RECOVERY_REQUIRED')
+    expect(provider.purchaseCalls).toBe(0)
+
+    // Provider never saw it: purchase once with the same RequestID.
+    provider.queryRecord = { statusCode: '', status: '', outcome: 'not-found' }
+    const retried = await fulfilment.retryDelivery('user-a', order.id)
+    expect(retried.fulfilmentStatus).toBe('FULFILLING')
+    expect(retried.providerRequestId).toBe(order.id.replace(/-/g, ''))
+    expect(provider.purchaseCalls).toBe(1)
+
+    // A plain refresh finds the provider record and never repurchases.
+    provider.queryRecord = { providerOrderId: 'ord-1', statusCode: '100', status: 'ORDER_RECEIVED', outcome: 'pending' }
+    const again = await fulfilment.reconcileOrder('user-a', order.id)
+    expect(again.fulfilmentStatus).toBe('FULFILLING')
+    expect(provider.purchaseCalls).toBe(1)
+  })
+
+  it('blocks unsafe retries while delivery is in progress or resolved', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await paidOrder(repository)
+    const stored = repository.orders.get(order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.fulfilmentStatus = 'FULFILLING'
+    stored.providerRequestId = order.id.replace(/-/g, '')
+    const { provider, fulfilment } = service(repository)
+
+    await expect(fulfilment.retryDelivery('user-a', order.id)).rejects.toMatchObject({ statusCode: 409 })
+    expect(provider.purchaseCalls).toBe(0)
+    expect(provider.queryCalls).toBe(0)
+
+    stored.fulfilmentStatus = 'DELIVERED'
+    const resolved = await fulfilment.retryDelivery('user-a', order.id)
+    expect(resolved.fulfilmentStatus).toBe('DELIVERED')
+    expect(provider.purchaseCalls).toBe(0)
+  })
+
+  it('retries data delivery with the snapshotted plan', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const created = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    const stored = repository.orders.get(created.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    Object.assign(stored, {
+      serviceType: 'DATA',
+      requestedAmount: '350',
+      providerPlanId: 'MTN-15',
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'RECOVERY_REQUIRED',
+      providerRequestId: created.id.replace(/-/g, ''),
+    })
+    const dataProvider = new FixtureDataProvider()
+    const fulfilment = new AirtimeFulfilmentService(repository, { data: dataProvider }, {
+      callbackBaseUrl: 'https://munus.example',
+    })
+    dataProvider.queryRecord = { statusCode: '', status: '', outcome: 'not-found' }
+    const retried = await fulfilment.retryDelivery('user-a', created.id)
+    expect(retried.fulfilmentStatus).toBe('FULFILLING')
+    expect(dataProvider.lastInput).toMatchObject({ providerPlanId: 'MTN-15' })
+    expect(dataProvider.purchaseCalls).toBe(1)
+  })
 })

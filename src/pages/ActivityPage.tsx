@@ -21,9 +21,11 @@ import {
   type MunusReceipt,
 } from '../domain/receipts'
 import type { PaymentOrder } from '../domain/orders'
+import { buildRecoveryState } from '../domain/recovery'
 import type { PaymentApi } from '../persistence/paymentApi'
+import { RecoveryCenter } from '../components/RecoveryCenter'
 
-type ActivityView = { name: 'list' } | { name: 'receipt'; orderId: string }
+type ActivityView = { name: 'list' } | { name: 'receipt'; orderId: string } | { name: 'recovery'; orderId: string }
 
 function serviceIcon(order: PaymentOrder): 'phone' | 'data' | 'wallet' {
   if (order.serviceType === 'DATA') return 'data'
@@ -75,13 +77,40 @@ export function ActivityPage({ api, onNavigate }: {
   const visible = orders.filter((order) =>
     matchesActivityFilter(describeActivityStatus(order), filter),
   )
-  const selected = view.name === 'receipt'
-    ? orders.find((order) => order.id === view.orderId)
-    : undefined
+  const selected = view.name === 'list'
+    ? undefined
+    : orders.find((order) => order.id === view.orderId)
+
+  function updateOrder(next: PaymentOrder) {
+    setOrders((current) => current.map((entry) => entry.id === next.id ? next : entry))
+  }
+
+  async function refreshRecoveryOrder(orderId: string): Promise<PaymentOrder> {
+    const updated = await api.reconcileOrder(orderId)
+    updateOrder(updated)
+    return updated
+  }
+
+  async function retryRecoveryOrder(orderId: string): Promise<PaymentOrder> {
+    const updated = await api.retryDelivery(orderId)
+    updateOrder(updated)
+    return updated
+  }
 
   return (
     <section className="screen-content" aria-labelledby="activity-title">
-      {view.name === 'receipt' && selected ? (
+      {view.name === 'recovery' && selected ? (
+        <RecoveryCenter
+          order={selected}
+          onRefresh={refreshRecoveryOrder}
+          onRetry={retryRecoveryOrder}
+          onBack={() => setView({ name: 'list' })}
+          onResolved={(resolved) => {
+            updateOrder(resolved)
+            setView({ name: 'receipt', orderId: resolved.id })
+          }}
+        />
+      ) : view.name === 'receipt' && selected ? (
         <ReceiptDetail
           receipt={buildReceipt(selected)}
           onBack={() => setView({ name: 'list' })}
@@ -128,13 +157,15 @@ export function ActivityPage({ api, onNavigate }: {
               const receipt = buildReceipt(order)
               const copy = describeActivityStatusCopy(describeActivityStatus(order))
               const context = receipt.dataAllowance ? `${receipt.dataAllowance} · ` : ''
+              const recovery = buildRecoveryState(order)
+              const needsRecovery = recovery !== null && (recovery.kind === 'attention' || recovery.kind === 'failed')
               return (
                 <ListRow
                   description={`${context}${order.recipientNetwork ? `${order.recipientNetwork} · ` : ''}${receipt.recipientMasked} · ${formatActivityDate(order.createdAt)}`}
                   icon={serviceIcon(order)}
                   key={order.id}
-                  meta={<StatusPill label={copy.label} tone={copy.tone} />}
-                  onClick={() => setView({ name: 'receipt', orderId: order.id })}
+                  meta={<StatusPill label={needsRecovery ? 'Needs attention' : copy.label} tone={needsRecovery ? 'attention' : copy.tone} />}
+                  onClick={() => setView(needsRecovery ? { name: 'recovery', orderId: order.id } : { name: 'receipt', orderId: order.id })}
                   title={`₦${order.requestedAmount} ${receipt.serviceLabel.toLowerCase()}`}
                 />
               )

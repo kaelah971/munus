@@ -87,6 +87,7 @@ export interface PaymentOrder {
   providerRemark?: string
   fulfilmentStartedAt?: string
   fulfilledAt?: string
+  lastReconciledAt?: string
   paymentStatus: PaymentStatus
   fulfilmentStatus: FulfilmentStatus
   createdAt: string
@@ -378,7 +379,7 @@ export function describeFulfilmentStage(status: FulfilmentStatus): string {
     case 'FULFILLING': return 'Provider is fulfilling this order.'
     case 'DELIVERED': return 'Provider confirmed delivery.'
     case 'FULFILLMENT_FAILED': return 'Provider could not fulfil this order.'
-    case 'RECOVERY_REQUIRED': return 'Needs recovery · see the Recovery Center when it opens.'
+    case 'RECOVERY_REQUIRED': return 'Needs recovery · open Recovery Center from Activity or Pay.'
     case 'REFUNDED': return 'Refunded.'
     case 'RESOLVED': return 'Resolved.'
   }

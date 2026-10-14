@@ -50,6 +50,16 @@ export class LocalPaymentApi implements PaymentApi {
     throw new Error('NIM payments require the Munus API.')
   }
 
+  async reconcileOrder(id: string): Promise<PaymentOrder> {
+    void id
+    throw new Error('Provider fulfilment requires the Munus API.')
+  }
+
+  async retryDelivery(id: string): Promise<PaymentOrder> {
+    void id
+    throw new Error('Provider fulfilment requires the Munus API.')
+  }
+
   async listDataNetworks(): Promise<DataNetwork[]> {
     throw new Error('Data bundles require the Munus API.')
   }

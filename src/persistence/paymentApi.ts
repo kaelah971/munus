@@ -26,6 +26,8 @@ export interface PaymentApi {
   createPaymentIntent(id: string): Promise<PaymentIntentResponse>
   submitPayment(id: string, transactionHash: string): Promise<PaymentOrder>
   reconcilePayment(id: string): Promise<PaymentOrder>
+  reconcileOrder(id: string): Promise<PaymentOrder>
+  retryDelivery(id: string): Promise<PaymentOrder>
   listDataNetworks(): Promise<DataNetwork[]>
   listDataPlans(network: SupportNetwork): Promise<DataPlan[]>
   createDataOrder(input: DataOrderInput): Promise<PaymentOrder>
@@ -72,6 +74,16 @@ export class RemotePaymentApi implements PaymentApi {
 
   async reconcilePayment(id: string): Promise<PaymentOrder> {
     const response = await this.request(`/payment-orders/${encodeURIComponent(id)}/reconcile-payment`, { method: 'POST' })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async reconcileOrder(id: string): Promise<PaymentOrder> {
+    const response = await this.request(`/payment-orders/${encodeURIComponent(id)}/reconcile`, { method: 'POST' })
+    return (await response.json()) as PaymentOrder
+  }
+
+  async retryDelivery(id: string): Promise<PaymentOrder> {
+    const response = await this.request(`/payment-orders/${encodeURIComponent(id)}/recovery/retry`, { method: 'POST' })
     return (await response.json()) as PaymentOrder
   }
 

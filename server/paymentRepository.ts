@@ -138,7 +138,10 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async recordProviderUpdate(userId: string, orderId: string, evidence: ProviderEvidenceUpdate): Promise<PaymentOrder | null> {
     const order = await this.getOrder(userId, orderId)
     if (!order) return null
-    if (order.fulfilmentStatus !== 'NOT_STARTED' && order.fulfilmentStatus !== 'FULFILLING' && order.fulfilmentStatus !== 'RECOVERY_REQUIRED') return null
+    // Terminal delivery states are never clobbered; FULFILLMENT_FAILED is
+    // recoverable via an explicit user-initiated retry, never silently.
+    if (order.fulfilmentStatus !== 'NOT_STARTED' && order.fulfilmentStatus !== 'FULFILLING' && order.fulfilmentStatus !== 'RECOVERY_REQUIRED' && order.fulfilmentStatus !== 'FULFILLMENT_FAILED') return null
+    const now = new Date().toISOString()
     const updated: PaymentOrder = {
       ...order,
       providerRef: evidence.providerOrderId ?? order.providerRef,
@@ -148,7 +151,8 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       providerRemark: evidence.providerRemark ?? order.providerRemark,
       fulfilmentStatus: evidence.fulfilmentStatus,
       fulfilledAt: evidence.fulfilledAt ?? order.fulfilledAt,
-      updatedAt: new Date().toISOString(),
+      lastReconciledAt: now,
+      updatedAt: now,
     }
     this.orders.set(orderId, updated)
     return updated
@@ -341,10 +345,11 @@ export class PostgresPaymentRepository implements PaymentRepository {
            provider_remark = COALESCE($7, provider_remark),
            fulfilment_status = $8,
            fulfilled_at = COALESCE($9, fulfilled_at),
+           last_reconciled_at = NOW(),
            updated_at = NOW()
        WHERE id = $1
          AND user_id = $2
-         AND fulfilment_status IN ('NOT_STARTED', 'FULFILLING', 'RECOVERY_REQUIRED')
+         AND fulfilment_status IN ('NOT_STARTED', 'FULFILLING', 'RECOVERY_REQUIRED', 'FULFILLMENT_FAILED')
        RETURNING *`,
       [orderId, userId, evidence.providerOrderId ?? null, evidence.providerStatusCode ?? null, evidence.providerStatus ?? null, evidence.providerAmountCharged ?? null, evidence.providerRemark ?? null, evidence.fulfilmentStatus, evidence.fulfilledAt ?? null],
     ))
@@ -486,6 +491,7 @@ function mapPaymentOrder(row: Record<string, unknown>): PaymentOrder {
     providerRemark: row.provider_remark ? String(row.provider_remark) : undefined,
     fulfilmentStartedAt: row.fulfilment_started_at ? timestampString(row.fulfilment_started_at) : undefined,
     fulfilledAt: row.fulfilled_at ? timestampString(row.fulfilled_at) : undefined,
+    lastReconciledAt: row.last_reconciled_at ? timestampString(row.last_reconciled_at) : undefined,
     paymentNetwork: (row.payment_network ?? undefined) as PaymentOrder['paymentNetwork'],
     quoteRateNgnPerNim: row.quote_rate_ngn_per_nim ? String(row.quote_rate_ngn_per_nim) : undefined,
     quoteLunaAmount: row.quote_luna_amount ? String(row.quote_luna_amount) : undefined,

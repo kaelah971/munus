@@ -488,6 +488,18 @@ export async function handleRequest(
       return
     }
 
+    const recoveryRetryPath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/recovery\/retry$/)
+    if (recoveryRetryPath && request.method === 'POST') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!fulfilment) {
+        sendError(response, 503, 'Provider fulfilment is not configured yet.')
+        return
+      }
+      sendJson(response, 200, await fulfilment.retryDelivery(session.userId, decodeURIComponent(recoveryRetryPath[1])))
+      return
+    }
+
     const fulfilPath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/(fulfil|reconcile)$/)
     if (fulfilPath && request.method === 'POST') {
       const session = await requireSession(request, response, dependencies)

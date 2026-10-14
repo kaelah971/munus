@@ -108,6 +108,99 @@ export class AirtimeFulfilmentService {
     })
   }
 
+  /**
+   * User-initiated safe retry for stalled or failed deliveries. Reconciles
+   * first against the stored (or derived, hence stable) RequestID and only
+   * purchases when the provider has no record of this fulfilment — the
+   * same identifier is always reused, so a retry can never double-charge.
+   * Ambiguous provider answers keep the recovery state; they never trigger
+   * a purchase.
+   */
+  async retryDelivery(userId: string, orderId: string): Promise<PaymentOrder> {
+    const order = await this.requireOwnedOrder(userId, orderId)
+    if (order.serviceType !== 'AIRTIME' && order.serviceType !== 'DATA') {
+      throw new FulfilmentError('Only airtime or data orders can use this provider.', 400)
+    }
+    if (order.paymentStatus !== 'PAID') {
+      throw new FulfilmentError('Only PAID orders can enter provider fulfilment.', 409)
+    }
+    if (order.paymentNetwork !== undefined && order.paymentNetwork !== 'mainnet') {
+      throw new FulfilmentError('Only verified mainnet payments can enter provider fulfilment.', 409)
+    }
+    if (isFulfilmentTerminal(order.fulfilmentStatus)) return order
+    if (order.fulfilmentStatus !== 'NOT_STARTED' && order.fulfilmentStatus !== 'FULFILLMENT_FAILED' && order.fulfilmentStatus !== 'RECOVERY_REQUIRED') {
+      throw new FulfilmentError('Delivery is already in progress. Refresh status instead of retrying.', 409)
+    }
+    if (!order.recipientNetwork) {
+      throw new FulfilmentError('Recipient network is required before fulfilment can be sent.', 400)
+    }
+    const callbackUrl = this.requireCallbackUrl()
+    if (order.serviceType === 'DATA') {
+      const provider = this.requireProvider('DATA')
+      if (!order.providerPlanId) {
+        throw new FulfilmentError('Data order is missing its bundle snapshot. It needs manual recovery.', 409)
+      }
+      return this.executeRetry(userId, order, provider, {
+        network: order.recipientNetwork,
+        providerPlanId: order.providerPlanId,
+        mobileNumber: order.recipientPhone,
+        requestId: order.providerRequestId ?? provider.deriveRequestId(order.id),
+        callbackUrl,
+      })
+    }
+    const provider = this.requireProvider('AIRTIME')
+    return this.executeRetry(userId, order, provider, {
+      network: order.recipientNetwork,
+      amountNgn: order.requestedAmount,
+      mobileNumber: order.recipientPhone,
+      requestId: order.providerRequestId ?? provider.deriveRequestId(order.id),
+      callbackUrl,
+    })
+  }
+
+  private async executeRetry<Input extends { requestId: string }>(
+    userId: string,
+    order: PaymentOrder,
+    provider: FulfilmentRunner<Input>,
+    purchaseInput: Input,
+  ): Promise<PaymentOrder> {
+    const orderId = order.id
+    const kind = order.serviceType === 'DATA' ? 'data' : 'airtime'
+    // Pure provider validation (network, amount/plan, phone shape) before
+    // any state change or network contact.
+    provider.buildPurchaseParams(purchaseInput)
+
+    // Reconcile first: only a provider that has never seen this RequestID
+    // may be asked to fulfil it.
+    const record = await provider.query({
+      requestId: purchaseInput.requestId,
+      providerOrderId: order.providerRef,
+    })
+    if (record.outcome !== 'not-found') {
+      return this.applyQueryRecord(userId, order, record)
+    }
+
+    if (order.fulfilmentStatus === 'NOT_STARTED') {
+      const reserved = await this.payment.startFulfilment(userId, orderId, {
+        provider: provider.provider,
+        providerRequestId: purchaseInput.requestId,
+      })
+      if (!reserved) return this.requireOwnedOrder(userId, orderId)
+    }
+    console.info(`Munus ${kind} purchase sent`, { orderId, recipient: maskPhone(order.recipientPhone) })
+    const receipt = await provider.purchase(purchaseInput)
+    const updated = await this.payment.recordProviderUpdate(userId, orderId, {
+      providerOrderId: receipt.providerOrderId,
+      providerStatusCode: receipt.statusCode,
+      providerStatus: receipt.status,
+      providerRemark: cleanRemark(receipt.remark),
+      fulfilmentStatus: 'FULFILLING',
+    })
+    const settled = updated ?? await this.requireOwnedOrder(userId, orderId)
+    await this.notifySettled(settled)
+    return settled
+  }
+
   private async executeFulfilment<Input extends { requestId: string }>(
     userId: string,
     order: PaymentOrder,

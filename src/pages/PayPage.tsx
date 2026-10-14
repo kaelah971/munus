@@ -18,8 +18,10 @@ import {
 } from '../domain/receipts'
 import type { DataPlan } from '../domain/orders'
 import { maskPhone, SUPPORT_NETWORKS } from '../domain/support'
+import { buildRecoveryState } from '../domain/recovery'
 import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState } from '../integration/nimiq'
 import type { PaymentApi } from '../persistence/paymentApi'
+import { RecoveryCenter } from '../components/RecoveryCenter'
 
 const icons: Record<(typeof ESSENTIAL_CATEGORIES)[number]['id'], IconName> = {
   airtime: 'phone',
@@ -126,6 +128,18 @@ export function PayPage({ api, defaultPhone = '', connection }: {
     } finally {
       setRefreshing(false)
     }
+  }
+
+  async function refreshRecoveryOrder(orderId: string): Promise<PaymentOrder> {
+    const updated = await api.reconcileOrder(orderId)
+    updateOrder(updated)
+    return updated
+  }
+
+  async function retryRecoveryOrder(orderId: string): Promise<PaymentOrder> {
+    const updated = await api.retryDelivery(orderId)
+    updateOrder(updated)
+    return updated
   }
 
   function openAirtimeForm() {
@@ -419,20 +433,36 @@ export function PayPage({ api, defaultPhone = '', connection }: {
             <div><dt>Saved</dt><dd>{new Date(reviewed.createdAt).toLocaleString()}</dd></div>
           </dl>
           {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
-          <ReviewActions
-            order={reviewed}
-            quoteLive={quoteLive}
-            nowMs={nowMs}
-            quoting={quoting}
-            payBusy={payBusy}
-            refreshing={refreshing}
-            pendingTxHash={pendingTxHash}
-            onCreateQuote={() => void createQuote(reviewed.id)}
-            onPay={() => void payWithNim()}
-            onRetrySubmission={() => void retryPendingSubmission()}
-            onRefresh={() => void refreshOrder(reviewed.id, 'get')}
-            onRefreshPayment={() => void refreshOrder(reviewed.id, 'reconcile')}
-          />
+          {(() => {
+            const recovery = buildRecoveryState(reviewed)
+            if (recovery && (recovery.kind === 'attention' || recovery.kind === 'failed')) {
+              return (
+                <RecoveryCenter
+                  order={reviewed}
+                  onRefresh={refreshRecoveryOrder}
+                  onRetry={retryRecoveryOrder}
+                  onBack={() => setView({ name: 'categories' })}
+                  onResolved={updateOrder}
+                />
+              )
+            }
+            return (
+              <ReviewActions
+                order={reviewed}
+                quoteLive={quoteLive}
+                nowMs={nowMs}
+                quoting={quoting}
+                payBusy={payBusy}
+                refreshing={refreshing}
+                pendingTxHash={pendingTxHash}
+                onCreateQuote={() => void createQuote(reviewed.id)}
+                onPay={() => void payWithNim()}
+                onRetrySubmission={() => void retryPendingSubmission()}
+                onRefresh={() => void refreshOrder(reviewed.id, 'get')}
+                onRefreshPayment={() => void refreshOrder(reviewed.id, 'reconcile')}
+              />
+            )
+          })()}
           <div className="form-actions">
             <QuietButton onClick={() => setView({ name: 'categories' })}>Back to Pay</QuietButton>
             <QuietButton onClick={openAirtimeForm}>New airtime order</QuietButton>

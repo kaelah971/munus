@@ -95,6 +95,8 @@ function apiStub(initial: PaymentOrder[] = []) {
       paymentStatus: 'ONCHAIN_PENDING' as const,
     })),
     reconcilePayment: vi.fn().mockImplementation(async (id: string) => find(id)),
+    reconcileOrder: vi.fn().mockImplementation(async (id: string) => find(id)),
+    retryDelivery: vi.fn().mockImplementation(async (id: string) => find(id)),
     listDataNetworks: vi.fn().mockResolvedValue([{ network: 'MTN', label: 'MTN' }]),
     listDataPlans: vi.fn().mockImplementation(async () => [dataPlan()]),
     createDataOrder: vi.fn().mockImplementation(async (input: unknown) => {
@@ -297,6 +299,28 @@ describe('Pay essentials order flow', () => {
     fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
     expect(await screen.findByText(/delivery needs attention/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Pay .* NIM/ })).not.toBeInTheDocument()
+  })
+
+  it('opens Recovery Center from order detail needing attention', async () => {
+    const failed = quotedOrder({
+      paymentStatus: 'PAID',
+      fulfilmentStatus: 'FULFILLMENT_FAILED',
+      provider: 'clubkonnect',
+      providerRequestId: 'req-9',
+      providerStatusCode: '400',
+      providerStatus: 'ORDER_FAILED',
+    })
+    const api = apiStub([failed])
+    render(<PayPage api={api} connection={offlineConnection} />)
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    expect(await screen.findByText('Recovery Center')).toBeInTheDocument()
+    expect(screen.getByText('Airtime delivery failed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh status' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry delivery' })).toBeInTheDocument()
+    expect(screen.queryByText('08012345678')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+    await waitFor(() => expect(api.retryDelivery).toHaveBeenCalledWith(failed.id))
   })
 
   it('explains a failed payment without collapsing it into delivery', async () => {
