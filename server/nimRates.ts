@@ -22,26 +22,56 @@ export class NimRateError extends Error {
   }
 }
 
+/** Short instance cache: one upstream call per minute across all callers. */
+export const NIM_RATE_CACHE_TTL_MS = 60_000
+/** Upstream fetch budget: a hung CoinGecko must fail closed, not hang quotes. */
+export const NIM_RATE_FETCH_TIMEOUT_MS = 15_000
+
 /**
  * Live NIM/NGN rate from CoinGecko (`nimiq-2`). Fails closed: any transport,
  * shape, or sanity problem surfaces as an error and the caller must not
- * fall back to a fabricated rate.
+ * fall back to a fabricated rate. No stale fallback: an expired cache
+ * entry is discarded, never served.
  */
 export class CoinGeckoNimRateProvider implements NimRateProvider {
+  private cached: { rate: NimRate; expiresAtMs: number } | null = null
+
   constructor(
     private readonly fetchJson: RateFetchJson = defaultFetchJson,
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly timeoutMs: number = NIM_RATE_FETCH_TIMEOUT_MS,
   ) {}
 
   async getNimNgnRate(): Promise<NimRate> {
+    const nowMs = Date.parse(this.now())
+    if (this.cached && Number.isFinite(nowMs) && nowMs < this.cached.expiresAtMs) {
+      return this.cached.rate
+    }
     let payload: unknown
     try {
-      payload = await this.fetchJson(COIN_GECKO_SIMPLE_PRICE_URL)
+      payload = await withTimeout(this.fetchJson(COIN_GECKO_SIMPLE_PRICE_URL), this.timeoutMs)
     } catch {
       throw new NimRateError('Live NIM rate is unavailable. No quote was created.')
     }
     const rate = normalizeRate(payload)
-    return { rateNgnPerNim: rate, source: NIM_RATE_SOURCE_COIN_GECKO, observedAt: this.now() }
+    const observed = { rateNgnPerNim: rate, source: NIM_RATE_SOURCE_COIN_GECKO, observedAt: this.now() }
+    const observedMs = Date.parse(observed.observedAt)
+    if (Number.isFinite(observedMs)) {
+      this.cached = { rate: observed, expiresAtMs: observedMs + NIM_RATE_CACHE_TTL_MS }
+    }
+    return observed
+  }
+}
+
+async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Rate fetch timed out.')), timeoutMs)
+      work.then(resolve, reject)
+    })
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 

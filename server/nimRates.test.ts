@@ -24,6 +24,28 @@ describe('NIM rate provider', () => {
     })
   })
 
+  it('caches for a minute and never serves stale rates', async () => {
+    const fetchJson = vi.fn(async () => ({ 'nimiq-2': { ngn: 0.415461 } }))
+    let nowMs = Date.parse('2026-10-14T00:00:00.000Z')
+    const provider = new CoinGeckoNimRateProvider(fetchJson, () => new Date(nowMs).toISOString())
+
+    const first = await provider.getNimNgnRate()
+    expect(first.rateNgnPerNim).toBe('0.415461')
+    nowMs += 30_000
+    await expect(provider.getNimNgnRate()).resolves.toEqual(first)
+    expect(fetchJson).toHaveBeenCalledTimes(1)
+    nowMs += 31_000
+    await provider.getNimNgnRate()
+    expect(fetchJson).toHaveBeenCalledTimes(2)
+  })
+
+  it('times out a hung upstream instead of hanging quotes', async () => {
+    const fetchJson = vi.fn(() => new Promise(() => {}))
+    const provider = new CoinGeckoNimRateProvider(fetchJson, () => new Date().toISOString(), 20)
+    await expect(provider.getNimNgnRate()).rejects.toBeInstanceOf(NimRateError)
+    expect(fetchJson).toHaveBeenCalledTimes(1)
+  })
+
   it('fails closed without a fabricated fallback rate', async () => {
     const cases: Array<() => Promise<unknown>> = [
       async () => { throw new Error('network down') },

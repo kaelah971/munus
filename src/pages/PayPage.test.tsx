@@ -725,4 +725,22 @@ describe('Pay essentials order flow', () => {
     // Sender independence: aggregate context never disables payment.
     expect(screen.getByRole('button', { name: 'Pay 0.5 NIM' })).toBeEnabled()
   })
+
+  it('shows the full conversion breakdown on review before approval', async () => {
+    const api = apiStub([quotedOrder()])
+    render(<PayPage
+      api={api}
+      connection={readyConnection}
+      funding={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
+    />)
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    // Requested NGN amount, current conversion, and exact NIM to be paid
+    // all come from the authoritative server quote — never the browser.
+    expect(await screen.findByText('₦1000 airtime')).toBeInTheDocument()
+    expect(screen.getByText('1 NIM ≈ ₦2000')).toBeInTheDocument()
+    expect(screen.getByText('0.5 NIM')).toBeInTheDocument()
+    expect(screen.getByText('221.005 NIM')).toBeInTheDocument()
+    expect(screen.getByText(/Quote expires in/)).toBeInTheDocument()
+    expect(api.createQuote).not.toHaveBeenCalled()
+  })
 })

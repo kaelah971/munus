@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildAggregateFundingView, buildFundingPreview } from './funding'
+import { buildAggregateFundingView, buildFundingPreview, nimBalanceForEstimate } from './funding'
+import type { AssetBalanceResult, NgnQuoteResult } from './accountPresentation'
 
 describe('funding preview math', () => {
   it('computes exact remainders in integer luna', () => {
@@ -44,6 +45,25 @@ describe('funding preview math', () => {
     expect(view.amountText).not.toBe('221.01')
     const withoutEstimate = buildAggregateFundingView({ nim: '221.005', estimateNgn: null, network: 'mainnet' })
     expect(withoutEstimate.estimateText).toBe('NGN estimate unavailable')
+  })
+
+  it('attributes confirmed balances to the resolved network for estimates only', () => {
+    const balance: AssetBalanceResult = {
+      status: 'available', asset: 'NIM', amount: '12.5',
+      network: 'unknown', environment: 'unknown', observedAt: 1,
+    }
+    const quote: NgnQuoteResult = {
+      status: 'available', asset: 'NIM', network: 'mainnet',
+      ngnPerUnit: '10', source: 'Fixture', asOf: 0, expiresAt: 1,
+    }
+    const attributed = nimBalanceForEstimate(balance, quote, 'mainnet')
+    expect(attributed).toMatchObject({ network: 'mainnet', environment: 'mainnet', amount: '12.5' })
+    // Untouched when already matching, unresolved, or not available.
+    const matching = { ...balance, network: 'mainnet' }
+    expect(nimBalanceForEstimate(matching, quote, 'mainnet')).toBe(matching)
+    expect(nimBalanceForEstimate(balance, quote, 'unknown')).toBe(balance)
+    expect(nimBalanceForEstimate(balance, { status: 'unavailable' }, 'mainnet')).toBe(balance)
+    expect(nimBalanceForEstimate({ status: 'unavailable', asset: 'NIM' }, quote, 'mainnet').status).toBe('unavailable')
   })
 
   it('refuses to preview on malformed input', () => {

@@ -104,4 +104,51 @@ describe('account card deck', () => {
     expect(screen.queryByText('221.005 NIM')).not.toBeInTheDocument()
     expect(screen.getByText('•••• NIM')).toBeInTheDocument()
   })
+
+  it('fetches the estimate for an unknown host network via the aggregate network', async () => {
+    const getNgnQuote = vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '0.415461', source: 'Fixture', asOf: 0, expiresAt: Date.now() + 60000 })
+    const sources: AccountDataSources = { readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }), getNgnQuote }
+    // Production shape: host exposes no network, aggregate is confirmed.
+    render(<AccountCardDeck
+      connection={connection}
+      wallet={{ ...wallet, status: 'unavailable', network: 'unknown' }}
+      hideBalances={false}
+      sources={sources}
+      aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
+    />)
+    await waitFor(() => expect(getNgnQuote).toHaveBeenCalledWith('NIM', 'mainnet', expect.anything()))
+    expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
+    // 221.005 × 0.415461 = 91.819… → ₦91.82 indicative.
+    expect(screen.getByText('≈ ₦91.82')).toBeInTheDocument()
+  })
+
+  it('keeps the NIM balance visible when the rate fails', async () => {
+    const sources: AccountDataSources = {
+      readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }),
+      getNgnQuote: vi.fn().mockRejectedValue(new Error('rate down')),
+    }
+    render(<AccountCardDeck
+      connection={connection}
+      wallet={{ ...wallet, status: 'unavailable', network: 'unknown' }}
+      hideBalances={false}
+      sources={sources}
+      aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
+    />)
+    expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
+    expect(screen.getAllByText('NGN estimate unavailable')).toHaveLength(2)
+  })
+
+  it('attributes a confirmed host balance to the session-verified network for estimates', async () => {
+    const getNgnQuote = vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: 0, expiresAt: Date.now() + 60000 })
+    const sources: AccountDataSources = { readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }), getNgnQuote }
+    render(<AccountCardDeck
+      connection={connection}
+      wallet={{ ...wallet, status: 'available', nimBalance: '12.5', network: 'unknown' }}
+      hideBalances={false}
+      sources={sources}
+      fallbackNetwork="mainnet"
+    />)
+    await waitFor(() => expect(getNgnQuote).toHaveBeenCalledWith('NIM', 'mainnet', expect.anything()))
+    expect(await screen.findByText('≈ ₦125.00')).toBeInTheDocument()
+  })
 })

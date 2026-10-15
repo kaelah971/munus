@@ -4,7 +4,7 @@ import {
   type AccountAsset, type AccountDataSources, type AssetBalanceResult,
   type NgnQuoteResult, type UsdtAccountContext,
 } from '../domain/accountPresentation'
-import { buildAggregateFundingView, buildNimFundingView } from '../domain/funding'
+import { buildAggregateFundingView, buildNimFundingView, nimBalanceForEstimate } from '../domain/funding'
 import { NimFundingCard } from './NimFundingCard'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 
@@ -32,7 +32,15 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
   const accountKey = JSON.stringify([connection.status, wallet.address, wallet.network, usdtAccount])
   const nim = currentNimBalance(wallet, connection)
   const usdt = usdtResult?.key === accountKey ? usdtResult.balance : unavailableUsdt
-  const nimQuote = quotes?.key === accountKey ? quotes.NIM : unavailableQuote
+  // The NIM/NGN rate is network-independent market data. Resolve the
+  // lookup network host → aggregate → session fallback so an unknown host
+  // network never suppresses a real estimate; display provenance stays
+  // labeled in the funding view.
+  const quoteNetwork = wallet.network === 'mainnet' || wallet.network === 'testnet'
+    ? wallet.network
+    : aggregate?.network ?? fallbackNetwork ?? wallet.network
+  const nimKey = `${accountKey}|${quoteNetwork}`
+  const nimQuote = quotes?.key === nimKey ? quotes.NIM : unavailableQuote
   const usdtQuote = quotes?.key === accountKey ? quotes.USDT : unavailableQuote
 
   useEffect(() => {
@@ -40,8 +48,8 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
     let active = true
     const readQuote = (asset: AccountAsset, network: string) => sources.getNgnQuote(asset, network, controller.signal).catch((): NgnQuoteResult => ({ status: 'unavailable' }))
     // Currency data sources are independent; a future USDT failure must not suppress NIM's quote.
-    void readQuote('NIM', wallet.network).then((NIM) => {
-      if (active) setQuotes((previous) => ({ key: accountKey, NIM, USDT: previous?.key === accountKey ? previous.USDT : unavailableQuote }))
+    void readQuote('NIM', quoteNetwork).then((NIM) => {
+      if (active) setQuotes((previous) => ({ key: nimKey, NIM, USDT: previous?.key === accountKey ? previous.USDT : unavailableQuote }))
     })
     void sources.readUsdtBalance(usdtAccount, controller.signal).then(async (balance) => {
       const validBalance = balance.asset === 'USDT' ? balance : unavailableUsdt
@@ -52,7 +60,7 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
       if (active) setUsdtResult({ key: accountKey, balance: { status: 'error', asset: 'USDT', error: 'Balance unavailable' } })
     })
     return () => { active = false; controller.abort() }
-  }, [accountKey, sources, usdtAccount, wallet.network])
+  }, [accountKey, nimKey, quoteNetwork, sources, usdtAccount])
 
   useEffect(() => {
     const refresh = () => setNow(Date.now())
@@ -66,7 +74,11 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
       {(['NIM', 'USDT'] as const).map((asset) => {
         const balance = asset === 'NIM' ? nim : usdt
         const quote = asset === 'NIM' ? nimQuote : usdtQuote
-        const estimate = estimateNgn(balance, quote, now)
+        const estimate = estimateNgn(
+          asset === 'NIM' ? nimBalanceForEstimate(balance, quote, quoteNetwork) : balance,
+          quote,
+          now,
+        )
         const selected = selectedAsset === asset
         return (
           <article key={asset} className={`account-card munus-card ${asset === 'NIM' ? 'munus-card-elevated' : ''} account-card--${asset.toLowerCase()} ${selected ? 'account-card--front' : 'account-card--rear'}`}>

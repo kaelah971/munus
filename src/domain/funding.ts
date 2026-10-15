@@ -1,5 +1,5 @@
 import { formatNimFromLunaBigint } from './orders'
-import type { AssetBalanceResult } from './accountPresentation'
+import type { AssetBalanceResult, NgnQuoteResult } from './accountPresentation'
 
 /**
  * Source-of-funds preview math. Everything is computed in integer luna
@@ -160,6 +160,25 @@ export function buildNimFundingView(input: {
     networkProvenance: liveNetwork.provenance,
     accountHint: balance.accountReference ? maskFundingAccount(balance.accountReference) : null,
   }
+}
+
+/**
+ * Attribute a confirmed host balance to the resolved FX network for the
+ * indicative estimate only. Returns the balance untouched unless it is
+ * available, mismatched with an available quote, and the quote network
+ * is the resolved effective network — i.e. the quote was fetched for a
+ * session/aggregate-verified network while the host exposes none.
+ */
+export function nimBalanceForEstimate(
+  balance: AssetBalanceResult,
+  quote: NgnQuoteResult,
+  quoteNetwork: string,
+): AssetBalanceResult {
+  if (balance.status !== 'available' || quote.status !== 'available') return balance
+  if (balance.network === quote.network) return balance
+  const resolved = quoteNetwork === 'mainnet' || quoteNetwork === 'testnet' ? quoteNetwork : null
+  if (!resolved || quote.network !== resolved) return balance
+  return { ...balance, network: resolved, environment: resolved }
 }
 
 function networkLabel(network: string): string {
