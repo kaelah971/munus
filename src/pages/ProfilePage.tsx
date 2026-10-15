@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ProfileForm } from '../components/ProfileForm'
 import { ProfileAvatar } from '../components/ProfileAvatar'
 import { Icon, QuietButton, StatusPill } from '../components/Primitives'
 import { profileToDraft, type MunusProfile, type ProfileDraft } from '../domain/profile'
 import type { MunusSession } from '../domain/auth'
+import type { RailStatus, ReadinessReport } from '../persistence/paymentApi'
 import type { AppDestination } from '../navigation'
 import { shortenNimiqAccount, type NimiqConnectionState, type NimiqWalletState } from '../integration/nimiq'
 import type { PinRecord } from '../security/appLock'
@@ -12,6 +13,7 @@ export function ProfilePage({
   connection, session, profile, pinRecord, authBusy = false, authError,
   onNavigate, onSignIn, onSignOut, onSave, onSavePin, onRemovePin,
   hideBalances = false, onToggleBalances, onOpenContacts, onCopyAddress, wallet,
+  getReadiness,
 }: {
   connection: NimiqConnectionState
   session: MunusSession | null
@@ -29,6 +31,8 @@ export function ProfilePage({
   onToggleBalances?: () => void
   onOpenContacts?: () => void
   onCopyAddress?: () => void
+  /** Authenticated readiness loader. Same session cookie as every other API call. */
+  getReadiness?: () => Promise<ReadinessReport>
   wallet?: NimiqWalletState
 }) {
   const [editing, setEditing] = useState(false)
@@ -119,6 +123,8 @@ export function ProfilePage({
             <p className="section-copy">Your wallet keys stay in Nimiq Pay. You approve every payment there.</p>
           </section>
 
+          {session && getReadiness ? <ReadinessSection load={getReadiness} /> : null}
+
           <section className="profile-settings-group" aria-labelledby="settings-people">
             <h2 className="settings-group-title" id="settings-people">People</h2>
             <QuietButton className="settings-action-row" onClick={onOpenContacts ?? (() => onNavigate('contacts'))}><Icon name="user" size={18} /><span>Saved contacts</span><Icon name="arrow" size={18} /></QuietButton>
@@ -136,4 +142,65 @@ export function ProfilePage({
 
 function SettingRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return <div className="setting-row"><span>{label}</span><strong className={mono ? 'setting-value-mono' : ''}>{value}</strong></div>
+}
+
+function railTone(status: RailStatus): 'quiet' | 'ready' | 'attention' {
+  if (status === 'verified') return 'ready'
+  if (status === 'configured') return 'attention'
+  return 'quiet'
+}
+
+/**
+ * Operator-facing production readiness, loaded with the same session
+ * cookie as every other authenticated call. Renders only fields from the
+ * already-safe readiness DTO — no secrets can appear here because the
+ * server never sends them.
+ */
+function ReadinessSection({ load }: { load: () => Promise<ReadinessReport> }) {
+  const [report, setReport] = useState<ReadinessReport | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let active = true
+    load().then((next) => {
+      if (!active) return
+      setReport(next)
+      setError(null)
+    }).catch((loadError: unknown) => {
+      if (active) setError(loadError instanceof Error ? loadError.message : 'Munus could not load readiness.')
+    }).finally(() => {
+      if (active) setLoading(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [load])
+
+  return (
+    <section className="profile-settings-group" aria-labelledby="settings-readiness">
+      <h2 className="settings-group-title" id="settings-readiness">Production readiness</h2>
+      {loading ? <p className="section-copy" role="status">Checking…</p> : null}
+      {error ? <p className="inline-error" role="alert">{error}</p> : null}
+      {report ? (
+        <div className="settings-list">
+          <SettingRow label="Database" value={report.database === 'ready' ? 'Ready' : 'Unreachable'} />
+          <SettingRow label="Network" value={report.network === 'mainnet' ? 'Mainnet' : 'Testnet'} />
+          <SettingRow label="NIM receiver" value={report.nimReceiver ? 'Configured' : 'Missing'} />
+          <SettingRow label="Nimiq RPC" value={report.nimiqRpc ? 'Configured' : 'Missing'} />
+          <SettingRow
+            label="ClubKonnect"
+            value={report.clubKonnect ? (report.clubKonnectCallback ? 'Configured + callback' : 'Configured, no callback') : 'Missing'}
+          />
+          {(['airtime', 'data', 'cashout'] as const).map((rail) => (
+            <div className="setting-row" key={rail}>
+              <span style={{ textTransform: 'capitalize' }}>{rail === 'cashout' ? 'Cash out' : rail}</span>
+              <strong><StatusPill label={report.rails[rail].status} tone={railTone(report.rails[rail].status)} /></strong>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {report ? <p className="section-copy">Same safe data as the operator endpoint, loaded with your session.</p> : null}
+    </section>
+  )
 }

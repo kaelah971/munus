@@ -38,6 +38,45 @@ describe('mobile profile settings', () => {
     await waitFor(() => expect(screen.queryByLabelText('Display name')).not.toBeInTheDocument())
   })
 
+  it('shows production readiness from the authenticated loader only', async () => {
+    const report = {
+      network: 'mainnet',
+      database: 'ready',
+      nimReceiver: true,
+      nimiqRpc: true,
+      clubKonnect: true,
+      clubKonnectCallback: true,
+      paycrest: false,
+      polygonUsdt: false,
+      rails: {
+        airtime: { status: 'configured', reason: 'Connected — awaiting smoke.' },
+        data: { status: 'configured', reason: 'Connected — awaiting smoke.' },
+        cashout: { status: 'unavailable', reason: 'Cash out is not configured.' },
+      },
+    }
+    const getReadiness = vi.fn().mockResolvedValue(report)
+    render(<ProfilePage {...props()} getReadiness={getReadiness} />)
+    expect(await screen.findByRole('heading', { name: 'Production readiness' })).toBeInTheDocument()
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    expect(screen.getByText('Mainnet')).toBeInTheDocument()
+    expect(screen.getByText('Configured + callback')).toBeInTheDocument()
+    expect(screen.getAllByText('configured')).toHaveLength(2)
+    expect(screen.getByText('unavailable')).toBeInTheDocument()
+    expect(getReadiness).toHaveBeenCalledOnce()
+    expect(document.body.textContent).not.toMatch(/sk-|secret|DATABASE_URL/i)
+  })
+
+  it('hides readiness without a session and reports loader failure truthfully', async () => {
+    const offline = props()
+    render(<ProfilePage {...offline} session={null} getReadiness={vi.fn().mockResolvedValue(null)} />)
+    expect(screen.queryByRole('heading', { name: 'Production readiness' })).not.toBeInTheDocument()
+
+    const failing = props()
+    const getReadiness = vi.fn().mockRejectedValue(new Error('Offline'))
+    render(<ProfilePage {...failing} getReadiness={getReadiness} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Offline')
+  })
+
   it('retains PIN validation and saves through the existing callback', async () => {
     const handlers = props()
     render(<ProfilePage {...handlers} />)

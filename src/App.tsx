@@ -166,6 +166,10 @@ export function App() {
   const sessionUserId = session?.userId
 
   const paymentApi = useMemo(() => (sessionUserId ? createPaymentApi(sessionUserId) : null), [sessionUserId])
+  const getReadiness = useMemo(
+    () => (paymentApi ? () => paymentApi.getReadiness() : undefined),
+    [paymentApi],
+  )
 
   useEffect(() => {
     if (!usesRemotePersistence || readPublicRequestId()) return
@@ -697,6 +701,7 @@ export function App() {
   if (destination === 'profile') {
     content = <ProfilePage
       authBusy={authBusy} authError={authError} connection={connection}
+      getReadiness={getReadiness}
       onNavigate={navigate} onRemovePin={removePin} onSave={(draft) => saveProfile(draft, 'profile')}
       onSavePin={savePin} onSignIn={() => void signIn()} onSignOut={() => void signOut()}
       pinRecord={pinRecord} profile={profile} session={session} wallet={wallet}

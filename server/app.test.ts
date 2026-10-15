@@ -1680,6 +1680,44 @@ describe('Munus Live public proof', () => {
 })
 
 describe('activation preflight readiness', () => {
+  it('uses the identical session gate as every other private endpoint', async () => {
+    const { baseUrl } = await createTestServer()
+    // No cookie: readiness and a known-working endpoint agree on 401.
+    expect((await fetch(`${baseUrl}/readiness`)).status).toBe(401)
+    expect((await fetch(`${baseUrl}/payment-orders`)).status).toBe(401)
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    // Same cookie: both agree on 200. No separate auth path exists.
+    expect((await fetch(`${baseUrl}/readiness`, { headers: { cookie } })).status).toBe(200)
+    expect((await fetch(`${baseUrl}/payment-orders`, { headers: { cookie } })).status).toBe(200)
+  })
+
+  it('keeps session cookie protection attributes intact', async () => {
+    const { baseUrl } = await createTestServer()
+    const pair = KeyPair.generate()
+    const walletAddress = pair.toAddress().toUserFriendlyAddress()
+    const challenge = (await (await fetch(`${baseUrl}/auth/challenge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ walletAddress, network: 'mainnet' }),
+    })).json()) as { id: string; message: string }
+    const verifyResponse = await fetch(`${baseUrl}/auth/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        challengeId: challenge.id,
+        walletAddress,
+        publicKey: pair.publicKey.toHex(),
+        signature: pair.sign(createNimiqSignedMessageDigest(challenge.message)).toHex(),
+      }),
+    })
+    expect(verifyResponse.status).toBe(200)
+    const setCookie = verifyResponse.headers.get('set-cookie') ?? ''
+    expect(setCookie).toContain('Path=/')
+    expect(setCookie).toContain('HttpOnly')
+    expect(setCookie).toContain('SameSite=Lax')
+    expect(setCookie).not.toMatch(/Domain=/i)
+  })
+
   it('requires a session and leaks no secrets', async () => {
     const { baseUrl } = await createTestServer()
     expect((await fetch(`${baseUrl}/readiness`)).status).toBe(401)
