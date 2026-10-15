@@ -603,6 +603,20 @@ export async function handleRequest(
       return
     }
 
+    if (request.method === 'GET' && url.pathname === '/nim/rate') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!nimPayments) {
+        sendError(response, 503, 'NIM payments are not configured yet.')
+        return
+      }
+      // Informational estimate for balance display. Same provider and
+      // source as payment quotes, but binds to no order and authorizes
+      // nothing — never a substitute for a real quote.
+      sendJson(response, 200, await nimPayments.getIndicativeRate())
+      return
+    }
+
     const quotePath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/quote$/)
     if (quotePath && request.method === 'POST') {
       const session = await requireSession(request, response, dependencies)

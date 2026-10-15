@@ -20,9 +20,12 @@ import type { DataPlan } from '../domain/orders'
 import { maskPhone, SUPPORT_NETWORKS } from '../domain/support'
 import { maskBankAccountNumber, type CashoutBank, type CashoutRatePreview } from '../domain/cashout'
 import { buildRecoveryState } from '../domain/recovery'
-import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState } from '../integration/nimiq'
+import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState, type NimiqWalletState } from '../integration/nimiq'
 import { requestUsdtTransfer } from '../integration/ethereum'
 import type { PaymentApi, RailCapability, RailStatus, ReadinessReport } from '../persistence/paymentApi'
+import { estimateNgn, mapNimBalance, type NgnQuoteResult } from '../domain/accountPresentation'
+import { buildFundingPreview, buildNimFundingView } from '../domain/funding'
+import { NimFundingCard, type FundingDeduction } from '../components/NimFundingCard'
 import { RecoveryCenter } from '../components/RecoveryCenter'
 
 const icons: Record<(typeof ESSENTIAL_CATEGORIES)[number]['id'], IconName> = {
@@ -81,11 +84,20 @@ function emptyAirtimeDraft(defaultPhone: string): PaymentOrderDraft {
   }
 }
 
-export function PayPage({ api, defaultPhone = '', connection }: {
+export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp, onRefreshWallet: refreshWalletProp }: {
   api: PaymentApi
   defaultPhone?: string
   connection: NimiqConnectionState
+  wallet?: NimiqWalletState
+  onRefreshWallet?: () => Promise<NimiqWalletState>
 }) {
+  // App always supplies both; the fallback keeps review renderable without
+  // wallet context (unavailable funding state, never invented values).
+  const wallet: NimiqWalletState = walletProp ?? { status: 'unavailable', network: 'unknown' }
+  async function refreshWallet(): Promise<NimiqWalletState> {
+    if (refreshWalletProp) return refreshWalletProp()
+    return wallet
+  }
   const [view, setView] = useState<PayView>({ name: 'categories' })
   const [orders, setOrders] = useState<PaymentOrder[]>([])
   const [loading, setLoading] = useState(true)
@@ -97,6 +109,9 @@ export function PayPage({ api, defaultPhone = '', connection }: {
   const [refreshing, setRefreshing] = useState(false)
   const [pendingTxHash, setPendingTxHash] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [reviewRate, setReviewRate] = useState<NgnQuoteResult | null>(null)
+  const [balanceRefreshFailed, setBalanceRefreshFailed] = useState(false)
+  const balanceRefreshed = useRef<Set<string>>(new Set())
   const [dataNetwork, setDataNetwork] = useState<PaymentOrderDraft['recipientNetwork']>('')
   const [dataPlans, setDataPlans] = useState<DataPlan[]>([])
   const [plansLoading, setPlansLoading] = useState(false)
@@ -182,6 +197,49 @@ export function PayPage({ api, defaultPhone = '', connection }: {
       } else {
         void refreshOrder(reviewed.id, 'reconcile')
       }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, reviewed?.id, reviewed?.paymentStatus])
+
+  const reviewedIsNim = reviewed?.serviceType !== 'CASH_OUT'
+  const reviewedQuoteKey = reviewed && reviewedIsNim && reviewed.quotedCryptoAmount && reviewed.quoteLunaAmount
+    ? `${reviewed.id}:${reviewed.quotedCryptoAmount}:${reviewed.quoteLunaAmount}`
+    : null
+
+  useEffect(() => {
+    // Indicative estimate for the review funding card. Independent from
+    // the authoritative server quote: failures only hide the estimate.
+    if (!reviewedQuoteKey) {
+      setReviewRate(null)
+      return
+    }
+    let active = true
+    api.getNimRate().then((rate) => {
+      if (!active) return
+      const asOf = Date.parse(rate.asOf)
+      const expiresAt = Date.parse(rate.expiresAt)
+      if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
+        setReviewRate({ status: 'unavailable' })
+        return
+      }
+      setReviewRate({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: rate.ngnPerNim, source: rate.source, asOf, expiresAt })
+    }).catch(() => {
+      if (active) setReviewRate({ status: 'unavailable' })
+    })
+    return () => {
+      active = false
+    }
+  }, [api, reviewedQuoteKey])
+
+  useEffect(() => {
+    // After server-verified payment, re-read the real balance. A refresh
+    // failure never touches PAID — it only notes the balance is stale.
+    if (view.name === 'review' && reviewed?.paymentStatus === 'PAID' && reviewedIsNim && !balanceRefreshed.current.has(reviewed.id)) {
+      balanceRefreshed.current.add(reviewed.id)
+      refreshWallet().then(
+        () => setBalanceRefreshFailed(false),
+        () => setBalanceRefreshFailed(true),
+      )
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, reviewed?.id, reviewed?.paymentStatus])
@@ -733,6 +791,41 @@ export function PayPage({ api, defaultPhone = '', connection }: {
             : `₦${reviewed.requestedAmount} ${describeServiceLabel(reviewed.serviceType).toLowerCase()}`}</h1>
           <p className="screen-lede">{describeOrderStage(reviewed)}</p>
           <RailNotice capability={readiness?.rails[railForService(reviewed.serviceType)]} label={railLabel(railForService(reviewed.serviceType))} />
+          {(() => {
+            // Shared source-of-funds card for NIM rails. Amounts deducted
+            // come only from the authoritative server quote; projections
+            // stay conditional because Nimiq Pay chooses the debit account.
+            if (!reviewedIsNim) return null
+            const balanceResult = mapNimBalance(wallet)
+            const estimate = reviewRate?.status === 'available' ? estimateNgn(balanceResult, reviewRate, nowMs) : null
+            const fundingView = buildNimFundingView({
+              balance: balanceResult,
+              estimateNgn: estimate,
+              connectionReady: connection.status === 'ready',
+              walletNetwork: wallet.network,
+              hideAmounts: false,
+            })
+            let deduction: FundingDeduction | null = null
+            const pending = reviewed.paymentStatus === 'ONCHAIN_PENDING' || pendingTxHash !== null
+            const payable = reviewed.paymentStatus === 'READY_FOR_PAYMENT' || reviewed.paymentStatus === 'AWAITING_WALLET_APPROVAL'
+            if ((pending || (payable && quoteLive)) && reviewed.quotedCryptoAmount && reviewed.quoteLunaAmount && wallet.lunaBalance !== undefined && wallet.nimBalance !== undefined) {
+              const preview = buildFundingPreview(String(wallet.lunaBalance), wallet.nimBalance, reviewed.quoteLunaAmount, reviewed.quotedCryptoAmount)
+              if (preview) {
+                deduction = {
+                  preview,
+                  targetLabel: `₦${reviewed.requestedAmount} ${describeServiceLabel(reviewed.serviceType)}`,
+                  mode: pending ? 'pending' : 'preview',
+                }
+              }
+            }
+            return (
+              <NimFundingCard
+                view={fundingView}
+                deduction={deduction}
+                balanceNote={reviewed.paymentStatus === 'PAID' && balanceRefreshFailed ? 'Balance refresh unavailable — payment remains confirmed.' : null}
+              />
+            )
+          })()}
           <dl className="contact-details">
             {reviewed.serviceType === 'CASH_OUT' ? (
               <>

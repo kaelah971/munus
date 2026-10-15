@@ -205,11 +205,15 @@ export async function loadNimiqWallet(
   }
 
   try {
-    const lunaBalance = await connection.provider.getBalance(address)
-
-    if (!Number.isSafeInteger(lunaBalance) || lunaBalance < 0) {
+    const result = await connection.provider.getBalance(address) as unknown
+    // The provider may answer with a legacy error object instead of a
+    // luna integer. Surface its message so failures stay diagnosable
+    // instead of collapsing into a generic unavailable state.
+    if (isNimiqErrorResponse(result)) throw new Error(result.error.message, { cause: result })
+    if (!Number.isSafeInteger(result) || (result as number) < 0) {
       throw new Error('Nimiq Pay returned an invalid balance.')
     }
+    const lunaBalance = result as number
 
     return {
       status: lunaBalance === 0 ? 'zero' : 'available',

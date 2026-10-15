@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, type Mock } from 'vitest'
 import type { DataPlan, PaymentOrder } from '../domain/orders'
 import type { PaymentApi } from '../persistence/paymentApi'
-import type { NimiqConnectionState } from '../integration/nimiq'
+import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 import { requestNimPayment } from '../integration/nimiq'
 import { requestUsdtTransfer } from '../integration/ethereum'
 import { PayPage } from './PayPage'
@@ -84,6 +84,7 @@ function apiStub(initial: PaymentOrder[] = []) {
     reconcileCashoutOrder: Mock
     refreshCashoutQuote: Mock
     getReadiness: Mock
+    getNimRate: Mock
   } = {
     list: vi.fn().mockImplementation(async () => orders),
     get: vi.fn().mockImplementation(async (id: string) => find(id)),
@@ -192,6 +193,12 @@ function apiStub(initial: PaymentOrder[] = []) {
     reconcileCashoutOrder: vi.fn().mockImplementation(async (id: string) => find(id)),
     refreshCashoutQuote: vi.fn().mockImplementation(async (id: string) => find(id)),
     getReadiness: vi.fn().mockImplementation(async () => verifiedReadiness()),
+    getNimRate: vi.fn().mockResolvedValue({
+      ngnPerNim: '2000',
+      source: 'test:rate',
+      asOf: new Date(Date.now() - 1000).toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    }),
   }
   return api
 }
@@ -572,6 +579,91 @@ describe('Pay essentials order flow', () => {
     expect(screen.getByText(/Data: Connected — live behavior not yet verified/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Data/ }))
     expect(screen.getByLabelText('Network')).toBeInTheDocument()
+  })
+
+  it('shows the funding preview from the authoritative quote without mutating balance', async () => {
+    const api = apiStub([quotedOrder()])
+    const wallet: NimiqWalletState = { status: 'available', address: 'NQ12 3456', lunaBalance: 22100000, nimBalance: '221', network: 'mainnet' }
+    const onRefreshWallet = vi.fn().mockResolvedValue(wallet)
+    render(<PayPage api={api} connection={readyConnection} wallet={wallet} onRefreshWallet={onRefreshWallet} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    // Canonical balance untouched; deduction preview uses quote amounts.
+    expect(await screen.findByText('221 NIM')).toBeInTheDocument()
+    expect(screen.getByText(/− 0\.5 NIM/)).toBeInTheDocument()
+    expect(screen.getByText('₦1000 Airtime')).toBeInTheDocument()
+    expect(screen.getByText(/If paid from this connected wallet/)).toBeInTheDocument()
+    expect(screen.getByText(/220\.5 NIM left/)).toBeInTheDocument()
+    expect(screen.getByText('≈ ₦442000.00')).toBeInTheDocument()
+    // Sender-independence: preview never disables payment.
+    expect(screen.getByRole('button', { name: 'Pay 0.5 NIM' })).toBeEnabled()
+    expect(api.getNimRate).toHaveBeenCalled()
+  })
+
+  it('keeps payment available on shortfall instead of blocking', async () => {
+    const api = apiStub([quotedOrder()])
+    const wallet: NimiqWalletState = { status: 'available', address: 'NQ12 3456', lunaBalance: 1000, nimBalance: '0.01', network: 'mainnet' }
+    render(<PayPage api={api} connection={readyConnection} wallet={wallet} onRefreshWallet={vi.fn().mockResolvedValue(wallet)} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    expect(await screen.findByText(/0\.49 short/)).toBeInTheDocument()
+    expect(screen.getByText(/payment stays available/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pay 0.5 NIM' })).toBeEnabled()
+  })
+
+  it('shows pending deduction after submission without subtracting', async () => {
+    const api = apiStub([quotedOrder()])
+    mockedRequestNimPayment.mockReset()
+    mockedRequestNimPayment.mockResolvedValue('ab'.repeat(32))
+    const wallet: NimiqWalletState = { status: 'available', address: 'NQ12 3456', lunaBalance: 22100000, nimBalance: '221', network: 'mainnet' }
+    render(<PayPage api={api} connection={readyConnection} wallet={wallet} onRefreshWallet={vi.fn().mockResolvedValue(wallet)} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Pay 0.5 NIM' }))
+    expect(await screen.findByText(/0\.5 NIM pending/)).toBeInTheDocument()
+    expect(screen.getByText(/unchanged until on-chain verification/)).toBeInTheDocument()
+    expect(screen.getByText('221 NIM')).toBeInTheDocument()
+  })
+
+  it('refreshes the real balance after PAID and survives refresh failure', async () => {
+    const pending = quotedOrder({ paymentStatus: 'ONCHAIN_PENDING', walletTxRef: 'ab'.repeat(32) })
+    const api = apiStub([pending])
+    const paid = { ...pending, paymentStatus: 'PAID' as const }
+    api.reconcilePayment.mockResolvedValue(paid)
+    const wallet: NimiqWalletState = { status: 'available', address: 'NQ12 3456', lunaBalance: 22100000, nimBalance: '221', network: 'mainnet' }
+    const fresh: NimiqWalletState = { ...wallet, lunaBalance: 22049500, nimBalance: '220.495' }
+    const onRefreshWallet = vi.fn().mockResolvedValue(fresh)
+    const { rerender } = render(<PayPage api={api} connection={readyConnection} wallet={wallet} onRefreshWallet={onRefreshWallet} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    await waitFor(() => expect(onRefreshWallet).toHaveBeenCalledOnce())
+    rerender(<PayPage api={api} connection={readyConnection} wallet={fresh} onRefreshWallet={onRefreshWallet} />)
+    expect(await screen.findByText('220.495 NIM')).toBeInTheDocument()
+    expect(screen.getByText('NIM payment confirmed')).toBeInTheDocument()
+  })
+
+  it('keeps PAID intact when the post-payment balance refresh fails', async () => {
+    const pending = quotedOrder({ paymentStatus: 'ONCHAIN_PENDING', walletTxRef: 'ab'.repeat(32) })
+    const api = apiStub([pending])
+    api.reconcilePayment.mockResolvedValue({ ...pending, paymentStatus: 'PAID' as const })
+    const wallet: NimiqWalletState = { status: 'available', address: 'NQ12 3456', lunaBalance: 22100000, nimBalance: '221', network: 'mainnet' }
+    render(<PayPage api={api} connection={readyConnection} wallet={wallet} onRefreshWallet={vi.fn().mockRejectedValue(new Error('rpc down'))} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    expect(await screen.findByText(/Balance refresh unavailable/)).toBeInTheDocument()
+    expect(screen.getByText('NIM payment confirmed')).toBeInTheDocument()
+    expect(screen.getByText('221 NIM')).toBeInTheDocument()
+  })
+
+  it('reuses the shared funding UI on data review', async () => {
+    const api = apiStub([quotedOrder({ serviceType: 'DATA', requestedAmount: '350' })])
+    const wallet: NimiqWalletState = { status: 'available', address: 'NQ12 3456', lunaBalance: 22100000, nimBalance: '221', network: 'mainnet' }
+    render(<PayPage api={api} connection={readyConnection} wallet={wallet} onRefreshWallet={vi.fn().mockResolvedValue(wallet)} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦350 data/ }))
+    expect(await screen.findByText('221 NIM')).toBeInTheDocument()
+    expect(screen.getByText('₦350 Data')).toBeInTheDocument()
+    expect(screen.getByText(/If paid from this connected wallet/)).toBeInTheDocument()
   })
 
   it('renders unavailable rails as non-actionable rows', async () => {

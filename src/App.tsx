@@ -49,6 +49,7 @@ import { LocalPlanningApi } from './persistence/planningStore'
 import { RemotePlanningApi, type PlanningApi } from './persistence/planningApi'
 import { RemoteSupportApi, type SupportApi, type SupportData } from './persistence/supportApi'
 import { RemotePaymentApi, type PaymentApi } from './persistence/paymentApi'
+import { accountDataSources, createServerNgnQuote } from './domain/accountPresentation'
 import { LocalPaymentApi } from './persistence/paymentStore'
 import { LocalSupportApi } from './persistence/supportStore'
 import { RemoteProfileApi } from './persistence/profileApi'
@@ -162,10 +163,18 @@ export function App() {
   const authGeneration = useRef(0)
 
   const { state: connection, retry: retryConnection, requestAccounts } = useNimiq()
-  const wallet = useNimiqWallet(connection, session?.walletAddress)
+  const { state: wallet, refreshWallet } = useNimiqWallet(connection, session?.walletAddress)
   const sessionUserId = session?.userId
 
   const paymentApi = useMemo(() => (sessionUserId ? createPaymentApi(sessionUserId) : null), [sessionUserId])
+  // Home NGN estimates reuse the authenticated server rate endpoint (same
+  // provider as quotes). Falls back to offline-safe stubs without a session.
+  const accountSources = useMemo(
+    () => (paymentApi
+      ? { ...accountDataSources, getNgnQuote: createServerNgnQuote(() => paymentApi.getNimRate()) }
+      : accountDataSources),
+    [paymentApi],
+  )
   const getReadiness = useMemo(
     () => (paymentApi ? () => paymentApi.getReadiness() : undefined),
     [paymentApi],
@@ -709,7 +718,7 @@ export function App() {
       onOpenContacts={() => openContacts('list')} onCopyAddress={copyWalletAddress}
     />
   } else if (destination === 'pay') {
-    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} /> : null
+    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} wallet={wallet} onRefreshWallet={refreshWallet} /> : null
   } else if (destination === 'pockets') {
     content = <PocketsPage
       authenticated connection={connection} error={planningError} loading={planningLoading}
@@ -743,7 +752,7 @@ export function App() {
   } else if (destination === 'activity') {
     content = paymentApi ? <ActivityPage api={paymentApi} onNavigate={navigate} /> : null
   } else {
-    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances}
+    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances} sources={accountSources}
       pockets={planning.pockets} reminders={planning.reminders} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests}
       contacts={support.contacts} contactsLoading={supportLoading} contactsError={supportError}
       onNavigate={navigate} onProfile={() => navigate('profile')}

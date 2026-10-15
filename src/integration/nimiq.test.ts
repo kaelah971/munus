@@ -98,6 +98,20 @@ describe('Nimiq Pay integration boundary', () => {
     expect(state).toMatchObject({ status: 'available', address: walletB, nimBalance: '1.23456' })
   })
 
+  it('surfaces provider error objects with their message instead of a generic failure', async () => {
+    const provider = {
+      getBalance: vi.fn().mockResolvedValue({ error: { type: 'Address', message: 'Invalid address format.' } }),
+    } as unknown as NimiqProvider
+
+    const state = await loadNimiqWallet({
+      accounts: ['NQ01'],
+      provider,
+      status: 'ready',
+    })
+
+    expect(state).toMatchObject({ status: 'error', address: 'NQ01', error: 'Invalid address format.' })
+  })
+
   it('returns an error state when balance retrieval fails', async () => {
     const provider = {
       getBalance: vi.fn().mockRejectedValue(new Error('consensus unavailable')),

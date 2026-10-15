@@ -349,6 +349,20 @@ describe('NIM payment service', () => {
     expect(paidAgain.paymentStatus).toBe('PAID')
   })
 
+  it('serves an indicative rate bound to no order', async () => {
+    const { service, rates } = setup()
+    const rate = await service.getIndicativeRate()
+    expect(rate).toEqual({
+      ngnPerNim: '2000',
+      source: 'fixture',
+      asOf: new Date(NOW).toISOString(),
+      expiresAt: new Date(NOW + 120_000).toISOString(),
+    })
+    expect(rates.calls).toBe(1)
+    rates.error = new NimRateError('Live NIM rate is unavailable.')
+    await expect(service.getIndicativeRate()).rejects.toBeInstanceOf(NimRateError)
+  })
+
   it('requires a configured receiver before quoting', async () => {
     const { repository, rates, chain } = setup({ receiver: '' })
     const service = new NimPaymentService(repository, rates, chain, null, {

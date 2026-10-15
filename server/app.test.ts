@@ -664,6 +664,28 @@ describe('Munus production API', () => {
     expect(await (await fetch(`${off.baseUrl}/payment-orders/${offDraft.id}/quote`, { method: 'POST', headers: { cookie: offCookie } })).status).toBe(503)
   })
 
+  it('serves an indicative NIM rate for balance display without quoting', async () => {
+    const { baseUrl } = await createTestServer()
+    expect((await fetch(`${baseUrl}/nim/rate`)).status).toBe(401)
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const response = await fetch(`${baseUrl}/nim/rate`, { headers: { cookie } })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { ngnPerNim: string; source: string; asOf: string; expiresAt: string }
+    expect(body.ngnPerNim).toBe('2000')
+    expect(body.source).toContain('coingecko')
+    expect(Date.parse(body.asOf)).toBeGreaterThan(0)
+    expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.parse(body.asOf))
+    expect(JSON.stringify(body)).not.toMatch(/receiver|memo|luna|private/i)
+
+    const failing = await createTestServer({ nimRateFetch: async () => { throw new Error('rate down') } })
+    const failingCookie = await authenticate(failing.baseUrl, KeyPair.generate())
+    expect((await fetch(`${failing.baseUrl}/nim/rate`, { headers: { cookie: failingCookie } })).status).toBe(502)
+
+    const off = await createTestServer({ disableNimPayments: true })
+    const offCookie = await authenticate(off.baseUrl, KeyPair.generate())
+    expect((await fetch(`${off.baseUrl}/nim/rate`, { headers: { cookie: offCookie } })).status).toBe(503)
+  })
+
   it('settles verified wallet payments to PAID and hands off fulfilment once', async () => {
     const chainSender = KeyPair.generate().toAddress().toUserFriendlyAddress()
     const txHash = 'ab'.repeat(32)
@@ -1716,6 +1738,27 @@ describe('activation preflight readiness', () => {
     expect(setCookie).toContain('HttpOnly')
     expect(setCookie).toContain('SameSite=Lax')
     expect(setCookie).not.toMatch(/Domain=/i)
+  })
+
+  it('serves an indicative NIM rate with no order or secrets attached', async () => {
+    const { baseUrl } = await createTestServer()
+    expect((await fetch(`${baseUrl}/nim/rate`)).status).toBe(401)
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const response = await fetch(`${baseUrl}/nim/rate`, { headers: { cookie } })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { ngnPerNim: string; source: string; asOf: string; expiresAt: string }
+    expect(body.ngnPerNim).toBe('2000')
+    expect(body.source).toBe('coingecko:nimiq-2/ngn')
+    expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.parse(body.asOf))
+    expect(JSON.stringify(body)).not.toMatch(/receiver|memo|luna|NQ|fixture/i)
+
+    const down = await createTestServer({ nimRateFetch: async () => { throw new Error('rate down') } })
+    const downCookie = await authenticate(down.baseUrl, KeyPair.generate())
+    expect((await fetch(`${down.baseUrl}/nim/rate`, { headers: { cookie: downCookie } })).status).toBe(502)
+
+    const off = await createTestServer({ disableNimPayments: true })
+    const offCookie = await authenticate(off.baseUrl, KeyPair.generate())
+    expect((await fetch(`${off.baseUrl}/nim/rate`, { headers: { cookie: offCookie } })).status).toBe(503)
   })
 
   it('requires a session and leaks no secrets', async () => {

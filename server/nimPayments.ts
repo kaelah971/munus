@@ -13,7 +13,7 @@ import type {
   PaymentRepository,
   VerifiedNimPayment,
 } from './paymentRepository'
-import type { NimRateProvider } from './nimRates'
+import { NimRateError, type NimRateProvider } from './nimRates'
 import {
   isTransactionHash,
   NimiqChainError,
@@ -107,6 +107,23 @@ export class NimPaymentService {
     const quoted = await this.payment.recordQuote(userId, orderId, quote)
     if (!quoted) throw new NimPaymentError('This order cannot be quoted in its current state.', 409)
     return quoted
+  }
+
+  /**
+   * Informational NIM/NGN estimate for balance display. Same provider and
+   * source as payment quotes, same quote lifetime — but never a payment
+   * quote: it binds to no order and authorizes nothing.
+   */
+  async getIndicativeRate(): Promise<{ ngnPerNim: string; source: string; asOf: string; expiresAt: string }> {
+    const rate = await this.rates.getNimNgnRate()
+    const asOfMs = Date.parse(rate.observedAt)
+    if (!Number.isFinite(asOfMs)) throw new NimRateError('Live NIM rate is unavailable.')
+    return {
+      ngnPerNim: rate.rateNgnPerNim,
+      source: rate.source,
+      asOf: rate.observedAt,
+      expiresAt: new Date(asOfMs + this.options.quoteTtlMs).toISOString(),
+    }
   }
 
   async createPaymentIntent(userId: string, orderId: string): Promise<{ order: PaymentOrder; intent: PaymentIntent }> {

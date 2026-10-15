@@ -9,7 +9,7 @@ import {
 import type { DataNetwork, DataPlan } from '../domain/orders'
 import type { SupportNetwork } from '../domain/support'
 import type { CashoutOrderInput } from '../domain/cashout'
-import type { DataOrderInput, PaymentApi, PaymentIntentResponse, ReadinessReport } from './paymentApi'
+import type { DataOrderInput, NimIndicativeRate, PaymentApi, PaymentIntentResponse, ReadinessReport } from './paymentApi'
 
 const PAYMENT_KEY_PREFIX = 'munus:payments:'
 
@@ -104,6 +104,10 @@ export class LocalPaymentApi implements PaymentApi {
   async retryDelivery(id: string): Promise<PaymentOrder> {
     void id
     throw new Error('Provider fulfilment requires the Munus API.')
+  }
+
+  async getNimRate(): Promise<NimIndicativeRate> {
+    throw new Error('NIM rates require the Munus API.')
   }
 
   async getReadiness(): Promise<ReadinessReport> {

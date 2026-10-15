@@ -5,7 +5,7 @@ import { OnboardingPage } from './pages/OnboardingPage'
 import { DEFAULT_PROFILE_DRAFT, createProfile } from './domain/profile'
 
 vi.mock('./hooks/useNimiq', () => ({ useNimiq: () => ({ retry: vi.fn(), requestAccounts: vi.fn(), state: { accounts: [], status: 'unavailable' } }) }))
-vi.mock('./hooks/useNimiqWallet', () => ({ useNimiqWallet: () => ({ network: 'unknown', status: 'unavailable' }) }))
+vi.mock('./hooks/useNimiqWallet', () => ({ useNimiqWallet: () => ({ state: { network: 'unknown', status: 'unavailable' }, refreshWallet: vi.fn() }) }))
 
 beforeEach(() => { window.localStorage.clear(); window.sessionStorage.clear(); window.history.replaceState({}, '', '/') })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.history.replaceState({}, '', '/') })

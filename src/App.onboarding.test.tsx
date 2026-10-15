@@ -14,7 +14,7 @@ vi.mock('./persistence/profileApi', () => ({ RemoteProfileApi: class {
   saveProfile = mocks.saveProfile
 } }))
 vi.mock('./hooks/useNimiq', () => ({ useNimiq: () => ({ state: mocks.connection, retry: vi.fn(), requestAccounts: mocks.requestAccounts }) }))
-vi.mock('./hooks/useNimiqWallet', () => ({ useNimiqWallet: () => ({ status: 'zero', nimBalance: '0', network: 'mainnet' }) }))
+vi.mock('./hooks/useNimiqWallet', () => ({ useNimiqWallet: () => ({ state: { status: 'zero', nimBalance: '0', network: 'mainnet' }, refreshWallet: vi.fn() }) }))
 vi.mock('./persistence/planningApi', () => ({ RemotePlanningApi: class { async load() { return { pockets: [], reminders: [], spendRules: [] } } } }))
 vi.mock('./persistence/supportApi', () => ({ RemoteSupportApi: class { async load() { return { contacts: [], supportRules: [], supportRequests: [], supportDrafts: [] } } } }))
 

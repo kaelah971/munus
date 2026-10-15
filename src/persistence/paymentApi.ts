@@ -76,6 +76,14 @@ export interface PaymentApi {
   reconcileCashoutOrder(id: string): Promise<PaymentOrder>
   refreshCashoutQuote(id: string): Promise<PaymentOrder>
   getReadiness(): Promise<ReadinessReport>
+  getNimRate(): Promise<NimIndicativeRate>
+}
+
+export interface NimIndicativeRate {
+  ngnPerNim: string
+  source: string
+  asOf: string
+  expiresAt: string
 }
 
 export class RemotePaymentApi implements PaymentApi {
@@ -207,6 +215,11 @@ export class RemotePaymentApi implements PaymentApi {
   async getReadiness(): Promise<ReadinessReport> {
     const response = await this.request('/readiness')
     return (await response.json()) as ReadinessReport
+  }
+
+  async getNimRate(): Promise<NimIndicativeRate> {
+    const response = await this.request('/nim/rate')
+    return (await response.json()) as NimIndicativeRate
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {

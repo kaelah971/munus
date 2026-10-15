@@ -1924,6 +1924,16 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus
 .account-card-details .account-card-reference { margin-top: 12px; color: var(--muted); font-size: .75rem; letter-spacing: .07em; }
 .account-card--usdt .account-card-reference { color: #4b4020; }
 
+/* Shared NIM source-of-funds. Preview-only: never implies a completed payment. */
+.funding-card .funding-balance { margin-top: 18px; }
+.funding-card .funding-meta { margin-top: 22px; }
+.funding-preview { margin-top: 14px; padding-top: 12px; border-top: 1px dashed rgba(255,255,255,.16); animation: funding-preview-in .45s ease-out; }
+.funding-preview .funding-deduction { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0; font-size: 1.125rem; font-weight: 700; letter-spacing: -.02em; }
+.funding-preview .funding-arrow { color: var(--gold, #e6c65a); }
+.funding-preview .section-copy { margin-top: 8px; }
+@keyframes funding-preview-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .funding-preview { animation: none; } }
+
 /* Real saved contacts; horizontal scrolling is confined to this rail. */
 .saved-contacts h2 { margin: 0; }
 .saved-contacts .section-heading-row { margin-bottom: 12px; }

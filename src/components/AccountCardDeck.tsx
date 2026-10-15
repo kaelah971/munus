@@ -4,6 +4,8 @@ import {
   type AccountAsset, type AccountDataSources, type AssetBalanceResult,
   type NgnQuoteResult, type UsdtAccountContext,
 } from '../domain/accountPresentation'
+import { buildNimFundingView } from '../domain/funding'
+import { NimFundingCard } from './NimFundingCard'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 
 const unavailableQuote: NgnQuoteResult = { status: 'unavailable' }
@@ -65,13 +67,24 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
               <span>{asset}</span><span aria-hidden="true">{selected ? '●' : '↑'}</span>
             </button>
             <div className="account-card-details" aria-hidden={!selected}>
-              <p className="account-card-balance">{hideBalances ? '••••' : balance.status === 'available' ? balance.amount : '—'} {asset}</p>
-              <p className="account-card-estimate">{hideBalances ? 'NGN estimate hidden' : estimate !== null ? `≈ ₦${estimate}` : 'NGN estimate unavailable'}</p>
-              <div className="account-card-meta">
-                <span>{balance.status === 'loading' ? 'Loading balance' : balance.status === 'available' ? asset === 'NIM' ? connectionLabel(connection) : 'Balance available' : 'Balance unavailable'}</span>
-                <span>{balance.status === 'available' ? networkLabel(balance.network) : asset === 'NIM' ? networkLabel(wallet.network) : 'USDT'}</span>
-              </div>
-              {balance.status === 'available' && balance.accountReference ? <p className="account-card-reference">{maskAccount(balance.accountReference)}</p> : null}
+              {asset === 'NIM' ? (
+                <NimFundingCard view={buildNimFundingView({
+                  balance: nim,
+                  estimateNgn: estimate,
+                  connectionReady: connection.status === 'ready',
+                  walletNetwork: wallet.network,
+                  hideAmounts: hideBalances,
+                })} />
+              ) : (
+                <>
+                  <p className="account-card-balance">{hideBalances ? '••••' : balance.status === 'available' ? balance.amount : '—'} {asset}</p>
+                  <p className="account-card-estimate">{hideBalances ? 'NGN estimate hidden' : estimate !== null ? `≈ ₦${estimate}` : 'NGN estimate unavailable'}</p>
+                  <div className="account-card-meta">
+                    <span>{balance.status === 'loading' ? 'Loading balance' : balance.status === 'available' ? 'Balance available' : 'Balance unavailable'}</span>
+                    <span>USDT</span>
+                  </div>
+                </>
+              )}
             </div>
           </article>
         )
@@ -87,20 +100,4 @@ function currentNimBalance(wallet: NimiqWalletState, connection: NimiqConnection
     ? { status: 'loading', asset: 'NIM' }
     : { status: 'unavailable', asset: 'NIM' }
   return mapNimBalance(wallet)
-}
-
-function connectionLabel(connection: NimiqConnectionState): string {
-  return connection.status === 'ready' ? 'Connected to Nimiq Pay' : 'Wallet unavailable'
-}
-
-function networkLabel(network: string): string {
-  if (network === 'mainnet') return 'Mainnet'
-  if (network === 'testnet') return 'Testnet'
-  if (network === 'unknown') return 'Network unavailable'
-  return network
-}
-
-function maskAccount(address: string): string {
-  const compact = address.replace(/\s+/g, '')
-  return compact.length > 10 ? `${compact.slice(0, 4)} •••• ${compact.slice(-4)}` : '••••'
 }
