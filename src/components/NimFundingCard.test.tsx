@@ -105,6 +105,25 @@ describe('network provenance', () => {
     })
   })
 
+  it('marks RPC-attested networks distinctly from host truth', () => {
+    const rpcBacked = {
+      status: 'available',
+      asset: 'NIM',
+      amount: '221',
+      network: 'mainnet',
+      environment: 'mainnet',
+      observedAt: 1,
+      source: 'rpc',
+    } as const
+    expect(buildNimFundingView({
+      balance: rpcBacked,
+      estimateNgn: null,
+      connectionReady: true,
+      walletNetwork: 'mainnet',
+      hideAmounts: false,
+    })).toMatchObject({ networkText: 'Mainnet', networkProvenance: 'rpc' })
+  })
+
   it('never substitutes fallback for a known host network', () => {
     expect(
       buildNimFundingView({ ...base, walletNetwork: 'testnet', fallbackNetwork: 'mainnet' }).networkText,

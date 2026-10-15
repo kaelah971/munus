@@ -16,6 +16,8 @@ export type AssetBalanceResult =
       environment: AccountEnvironment
       accountReference?: string
       observedAt: number
+      /** Which source attested this balance. Defaults to host. */
+      source?: 'host' | 'rpc'
     }
 
 /** A future USDT integration must supply its own chain account, not a Nimiq address. */
@@ -54,6 +56,7 @@ export function mapNimBalance(wallet: NimiqWalletState): AssetBalanceResult {
   return {
     status: 'available', asset: 'NIM', amount, network: wallet.network,
     environment: wallet.network, accountReference: wallet.address, observedAt: Date.now(),
+    source: wallet.balanceSource ?? 'host',
   }
 }
 

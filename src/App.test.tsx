@@ -51,16 +51,17 @@ describe('compact Munus entry', () => {
     expect(screen.getByRole('button', { name: 'Open Munus' })).toBeEnabled()
   })
 
-  it('does not let an old onboarding flag bypass name or wallet authentication', () => {
+  it('always lands first even with a stale onboarding flag and no session', () => {
     window.localStorage.setItem('munus:onboarding-complete', 'true')
     render(<App />)
-    // The flag skips welcome but never authentication: connect first, and
-    // naming is decided only after a session exists.
-    expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
+    // A local hint never overrides the entry journey: landing first, then
+    // connect on explicit tap. Naming is decided only after a session exists.
+    expect(screen.getByRole('button', { name: 'Open Munus' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Connect your wallet' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Connect with Nimiq Pay' })).toBeDisabled()
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Munus' }))
+    expect(screen.getByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
   })
 
   it('keeps public requests ahead of private onboarding even with a pending name', async () => {

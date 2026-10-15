@@ -59,14 +59,12 @@ describe('authenticated connect-first entry', () => {
     expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
     expect(mocks.requestAccounts).not.toHaveBeenCalled()
     expect(mocks.signIn).not.toHaveBeenCalled()
-    expect(window.localStorage.getItem('munus:onboarding-complete')).toBeNull()
     await connectWallet()
     expect(mocks.requestAccounts).toHaveBeenCalledOnce()
     await typeName()
     expect(await screen.findByRole('heading', { name: /Good (morning|afternoon|evening), Ada/ })).toBeInTheDocument()
     expect(mocks.saveProfile).toHaveBeenCalledWith({ ...DEFAULT_PROFILE_DRAFT, displayName: 'Ada' })
     expect(window.sessionStorage.getItem('munus:pending-name')).toBeNull()
-    expect(window.localStorage.getItem('munus:onboarding-complete')).toBe('true')
   })
 
   it('validates the name after authentication and retries the save without another signature', async () => {
@@ -127,13 +125,25 @@ describe('authenticated connect-first entry', () => {
     expect(screen.queryByLabelText('Your name')).not.toBeInTheDocument()
   })
 
-  it('skips welcome and naming for an expired session with an existing profile', async () => {
+  it('always enters through landing without a session', async () => {
+    render(<App />)
+    expect(await screen.findByRole('button', { name: 'Open Munus' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Connect your wallet' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+    expect(mocks.signIn).not.toHaveBeenCalled()
+    expect(mocks.requestAccounts).not.toHaveBeenCalled()
+  })
+
+  it('lands first for an expired session, then skips naming for an existing profile', async () => {
     window.localStorage.setItem('munus:onboarding-complete', 'true')
     mocks.getProfile.mockResolvedValue(profile)
     render(<App />)
-    // No welcome screen for a returning browser: straight to connect.
+    // Even with a stale local flag, entry starts at landing — never connect.
+    await screen.findByRole('button', { name: 'Open Munus' })
+    expect(screen.queryByRole('heading', { name: 'Connect your wallet' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Munus' }))
     expect(await screen.findByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
     await connectWallet()
     await screen.findByRole('heading', { name: /Good .*Ada/ })
     expect(mocks.signIn).toHaveBeenCalledOnce()

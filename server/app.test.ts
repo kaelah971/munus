@@ -109,7 +109,7 @@ async function createTestServer(options: {
     options.nimRateFetch ?? (async () => ({ 'nimiq-2': { ngn: 2000 } })),
   )
   const chain: NimiqChainReader | null = options.nimChain === undefined
-    ? { getTransaction: async () => null, getHeadBlockNumber: async () => 1000 }
+    ? { getTransaction: async () => null, getHeadBlockNumber: async () => 1000, getAccountBalance: async () => { throw new Error('no account balance in fixture') } }
     : options.nimChain
   const nimPayments = options.disableNimPayments
     ? null
@@ -703,6 +703,48 @@ describe('Munus production API', () => {
     expect(await (await fetch(`${off.baseUrl}/payment-orders/${offDraft.id}/quote`, { method: 'POST', headers: { cookie: offCookie } })).status).toBe(503)
   })
 
+  it('serves the session wallet balance from confirmed RPC with no address parameter', async () => {
+    const queried: string[] = []
+    const pair = KeyPair.generate()
+    const walletAddress = pair.toAddress().toUserFriendlyAddress()
+    const { baseUrl } = await createTestServer({
+      nimChain: {
+        getTransaction: async () => null,
+        getHeadBlockNumber: async () => 1000,
+        getAccountBalance: async (address: string) => {
+          queried.push(address)
+          return '22100000'
+        },
+      },
+    })
+    expect((await fetch(`${baseUrl}/wallet/nim-balance`)).status).toBe(401)
+    const cookie = await authenticate(baseUrl, pair)
+    // A client-supplied address is ignored: only the session wallet is read.
+    const response = await fetch(`${baseUrl}/wallet/nim-balance?address=NQ00OTHER`, { headers: { cookie } })
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      balanceLuna: '22100000',
+      balanceNim: '221',
+      network: 'mainnet',
+      source: 'rpc',
+    })
+    expect(queried).toEqual([walletAddress])
+
+    const failing = await createTestServer({
+      nimChain: {
+        getTransaction: async () => null,
+        getHeadBlockNumber: async () => 1000,
+        getAccountBalance: async () => { throw new Error('rpc down') },
+      },
+    })
+    const failingCookie = await authenticate(failing.baseUrl, KeyPair.generate())
+    expect((await fetch(`${failing.baseUrl}/wallet/nim-balance`, { headers: { cookie: failingCookie } })).status).toBe(503)
+
+    const off = await createTestServer({ disableNimPayments: true })
+    const offCookie = await authenticate(off.baseUrl, KeyPair.generate())
+    expect((await fetch(`${off.baseUrl}/wallet/nim-balance`, { headers: { cookie: offCookie } })).status).toBe(503)
+  })
+
   it('serves an indicative NIM rate for balance display without quoting', async () => {
     const { baseUrl } = await createTestServer()
     expect((await fetch(`${baseUrl}/nim/rate`)).status).toBe(401)
@@ -740,7 +782,7 @@ describe('Munus production API', () => {
       nimChain: {
         getTransaction: async () => chainTx as never,
         getHeadBlockNumber: async () => 1000,
-      },
+        getAccountBalance: async () => { throw new Error('no account balance in fixture') },      },
     })
     const pair = KeyPair.generate()
     const cookie = await authenticate(baseUrl, pair)
@@ -816,7 +858,7 @@ describe('Munus production API', () => {
       nimChain: {
         getTransaction: async () => chainTx as never,
         getHeadBlockNumber: async () => 1000,
-      },
+        getAccountBalance: async () => { throw new Error('no account balance in fixture') },      },
     })
     const cookie = await authenticate(baseUrl, KeyPair.generate())
     const draft = await (await fetch(`${baseUrl}/payment-orders`, {
@@ -850,7 +892,7 @@ describe('Munus production API', () => {
       nimChain: {
         getTransaction: async () => testTx as never,
         getHeadBlockNumber: async () => 100,
-      },
+        getAccountBalance: async () => { throw new Error('no account balance in fixture') },      },
     })
     const testCookie = await authenticate(testnet.baseUrl, KeyPair.generate())
     const testDraft = await (await fetch(`${testnet.baseUrl}/payment-orders`, {
@@ -969,7 +1011,7 @@ describe('Munus production API', () => {
       nimChain: {
         getTransaction: async () => chainTx as never,
         getHeadBlockNumber: async () => 1000,
-      },
+        getAccountBalance: async () => { throw new Error('no account balance in fixture') },      },
     })
     const cookie = await authenticate(baseUrl, KeyPair.generate())
     const draft = await (await fetch(`${baseUrl}/payment-orders`, {
@@ -1039,7 +1081,7 @@ describe('Munus production API', () => {
       nimChain: {
         getTransaction: async () => chainTx as never,
         getHeadBlockNumber: async () => 100,
-      },
+        getAccountBalance: async () => { throw new Error('no account balance in fixture') },      },
     })
     const cookie = await authenticate(baseUrl, KeyPair.generate())
     const draft = await (await fetch(`${baseUrl}/payment-orders`, {
@@ -1279,7 +1321,7 @@ describe('Munus production API', () => {
       nimChain: {
         getTransaction: async () => chainTx as never,
         getHeadBlockNumber: async () => 1000,
-      },
+        getAccountBalance: async () => { throw new Error('no account balance in fixture') },      },
     })
     const requesterPair = KeyPair.generate()
     const payerPair = KeyPair.generate()

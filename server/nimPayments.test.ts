@@ -41,6 +41,9 @@ class FixtureChain implements NimiqChainReader {
   error: Error | null = null
   head: number | null = 1000
   headError: Error | null = null
+  accountBalance: string | null = null
+  accountError: Error | null = null
+  accountQueries: string[] = []
 
   async getTransaction(): Promise<ChainTransaction | null> {
     if (this.error) throw this.error
@@ -51,6 +54,13 @@ class FixtureChain implements NimiqChainReader {
     if (this.headError) throw this.headError
     if (this.head === null) throw new Error('no head')
     return this.head
+  }
+
+  async getAccountBalance(address: string): Promise<string> {
+    this.accountQueries.push(address)
+    if (this.accountError) throw this.accountError
+    if (this.accountBalance === null) throw new Error('no account balance in fixture')
+    return this.accountBalance
   }
 }
 
@@ -361,6 +371,44 @@ describe('NIM payment service', () => {
     expect(rates.calls).toBe(1)
     rates.error = new NimRateError('Live NIM rate is unavailable.')
     await expect(service.getIndicativeRate()).rejects.toBeInstanceOf(NimRateError)
+  })
+
+  it('reads the session wallet balance without accepting client addresses', async () => {
+    const { service, chain } = setup()
+    chain.accountBalance = '22100000'
+    const balance = await service.getSessionWalletBalance(RECEIVER)
+    expect(balance).toEqual({
+      balanceLuna: '22100000',
+      balanceNim: '221',
+      network: 'mainnet',
+      source: 'rpc',
+    })
+    // Normalized canonical address, never a client-supplied alternative.
+    expect(chain.accountQueries).toEqual([RECEIVER])
+    chain.accountBalance = '0'
+    await expect(service.getSessionWalletBalance(RECEIVER)).resolves.toMatchObject({
+      balanceLuna: '0',
+      balanceNim: '0',
+    })
+  })
+
+  it('fails closed on unconfigured chain, bad identity, and RPC failure', async () => {
+    const { repository, rates } = setup()
+    const noChain = new NimPaymentService(repository, rates, null, null, {
+      receiverAddress: RECEIVER,
+      network: 'mainnet',
+      quoteTtlMs: 120_000,
+      now: () => NOW,
+    })
+    await expect(noChain.getSessionWalletBalance(RECEIVER)).rejects.toMatchObject({ statusCode: 503 })
+    const { service } = setup()
+    await expect(service.getSessionWalletBalance('not-an-address')).rejects.toMatchObject({ statusCode: 400 })
+    const failing = setup()
+    failing.chain.accountError = new Error('rpc down')
+    await expect(failing.service.getSessionWalletBalance(RECEIVER)).rejects.toMatchObject({
+      name: 'NimiqChainError',
+      statusCode: 503,
+    })
   })
 
   it('requires a configured receiver before quoting', async () => {

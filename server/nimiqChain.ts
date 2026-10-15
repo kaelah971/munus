@@ -17,6 +17,11 @@ export interface ChainTransaction {
 export interface NimiqChainReader {
   getTransaction(hash: string): Promise<ChainTransaction | null>
   getHeadBlockNumber(): Promise<number>
+  /**
+   * Confirmed account balance in integer luna (canonical decimal string).
+   * Read-only; used for display fallback, never for payment proof.
+   */
+  getAccountBalance(address: string): Promise<string>
 }
 
 export type ChainReaderFetch = (url: string, body: string) => Promise<unknown>
@@ -56,6 +61,26 @@ export class RpcNimiqChainReader implements NimiqChainReader {
       throw new NimiqChainError('Nimiq chain returned an unreadable block number.')
     }
     return result
+  }
+
+  async getAccountBalance(address: string): Promise<string> {
+    const result = await this.call('getAccountByAddress', [address])
+    // call() already unwraps the observed { data, metadata } envelope for
+    // payloads without a transaction hash; account objects carry none.
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      throw new NimiqChainError('Nimiq chain returned an unreadable account.')
+    }
+    const balance = (result as Record<string, unknown>).balance
+    if (typeof balance === 'number') {
+      if (!Number.isSafeInteger(balance) || balance < 0) {
+        throw new NimiqChainError('Nimiq chain returned an unreadable account.')
+      }
+      return String(balance)
+    }
+    if (typeof balance === 'string' && /^\d{1,24}$/.test(balance.trim())) {
+      return balance.trim().replace(/^0+(?=\d)/, '')
+    }
+    throw new NimiqChainError('Nimiq chain returned an unreadable account.')
   }
 
   private async call(method: string, params: unknown[]): Promise<unknown> {

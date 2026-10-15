@@ -64,7 +64,6 @@ import { WalletConnectionPage } from './pages/WalletConnectionPage'
 import { ContactsPage } from './pages/ContactsPage'
 import { isValidDisplayName, readPendingName, storePendingName } from './persistence/pendingName'
 
-const ONBOARDING_STORAGE_KEY = 'munus:onboarding-complete'
 const usesRemotePersistence = munusConfig.productionAuth || Boolean(munusConfig.apiBaseUrl)
 const remoteProfileApi = new RemoteProfileApi(munusConfig.apiBaseUrl)
 
@@ -105,26 +104,6 @@ function readLiveRoute(): boolean {
   return window.location.pathname === '/live'
 }
 
-function saveOnboardingState() {
-  try {
-    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true')
-  } catch {
-    // The current session can still continue if local storage is unavailable.
-  }
-}
-
-/**
- * Routing hint only: a completed onboarding on this browser skips the
- * welcome screen straight to connect. It never identifies the user —
- * only the server session and server profile do that.
- */
-function readOnboardingComplete(): boolean {
-  try {
-    return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true'
-  } catch {
-    return false
-  }
-}
 
 export function App() {
   const [pendingName, setPendingName] = useState(() => {
@@ -136,9 +115,11 @@ export function App() {
     }
     return readPendingName()
   })
-  const [entryStep, setEntryStep] = useState<'welcome' | 'name' | 'connect'>(() =>
-    readOnboardingComplete() || readPendingName() ? 'connect' : 'welcome',
-  )
+  // Entry always starts at the landing page when authentication is needed.
+  // A local "onboarding complete" hint must never skip it: only a valid
+  // server session (silent restore) or a fresh explicit authentication
+  // decides the journey from here.
+  const [entryStep, setEntryStep] = useState<'welcome' | 'name' | 'connect'>('welcome')
   const [session, setSession] = useState<MunusSession | null>(() =>
     usesRemotePersistence ? null : sessionStore.get(),
   )
@@ -179,10 +160,31 @@ export function App() {
   const authGeneration = useRef(0)
 
   const { state: connection, retry: retryConnection, requestAccounts } = useNimiq()
-  const { state: wallet, refreshWallet } = useNimiqWallet(connection, session?.walletAddress)
   const sessionUserId = session?.userId
 
   const paymentApi = useMemo(() => (sessionUserId ? createPaymentApi(sessionUserId) : null), [sessionUserId])
+  // Silent read-only RPC fallback for the session wallet balance. Used
+  // only when the host getBalance read fails; never prompts, never signs.
+  // Keyed on session so its identity never retriggers the silent load.
+  const fetchRpcBalance = useMemo(
+    () =>
+      paymentApi
+        ? async () => {
+          const dto = await paymentApi.getWalletNimBalance()
+          const luna = Number(dto.balanceLuna)
+          if (!Number.isSafeInteger(luna) || luna < 0) {
+            throw new Error('Server returned an unreadable balance.')
+          }
+          if (dto.network !== 'mainnet' && dto.network !== 'testnet') {
+            throw new Error('Server returned an unreadable balance.')
+          }
+          return { lunaBalance: luna, nimBalance: dto.balanceNim, network: dto.network }
+        }
+        : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionUserId],
+  )
+  const { state: wallet, refreshWallet } = useNimiqWallet(connection, session?.walletAddress, fetchRpcBalance)
   // Home NGN estimates reuse the authenticated server rate endpoint (same
   // provider as quotes). Falls back to offline-safe stubs without a session.
   const accountSources = useMemo(
@@ -227,7 +229,6 @@ export function App() {
         if (restoredProfile && isValidDisplayName(restoredProfile.displayName)) {
           storePendingName('')
           setPendingName('')
-          saveOnboardingState()
         }
         setProfileLoadError(null)
       } catch (error) {
@@ -347,7 +348,6 @@ export function App() {
   function clearSetupDraft() {
     storePendingName('')
     setPendingName('')
-    saveOnboardingState()
   }
 
   async function persistSetupProfile(currentSession: MunusSession, currentProfile: MunusProfile | null, generation = authGeneration.current, displayName = pendingName) {

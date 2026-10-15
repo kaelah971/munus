@@ -40,6 +40,11 @@ export interface NimiqWalletState {
   network: NimiqNetwork
   error?: string
   /**
+   * Which source attested the displayed balance: live host read, or
+   * confirmed server RPC fallback. Absent while loading/unavailable.
+   */
+  balanceSource?: 'host' | 'rpc'
+  /**
    * Safe read diagnostics: which address spelling was used, what the
    * provider returned or threw, and whether the host network was present.
    * Contains an address suffix at most — never secrets or full identity.
@@ -55,8 +60,12 @@ export interface NimiqWalletDebug {
   /** Which address spelling the successful attempt used, if any. */
   addressVariant: 'verbatim' | 'compact' | 'none'
   ok: boolean
-  /** typeof the provider result ('number' on success). */
+  /** typeof the provider result ('number' on success, 'rpc' on RPC fallback). */
   balanceType: string
+  /** Which source produced the final balance, once known. */
+  balanceSource?: 'host' | 'rpc'
+  /** True when the RPC fallback succeeded. */
+  rpcOk?: boolean
   errorName?: string
   errorMessage?: string
   errorCode?: string | number
@@ -209,9 +218,16 @@ export async function requestNimPayment(
   return result.trim()
 }
 
+export interface RpcBalanceResult {
+  lunaBalance: number
+  nimBalance: string
+  network: 'mainnet' | 'testnet'
+}
+
 export async function loadNimiqWallet(
   connection: NimiqConnectionState,
   walletAddress = connection.accounts[0],
+  fetchRpcBalance?: () => Promise<RpcBalanceResult>,
 ): Promise<NimiqWalletState> {
   const hostNetwork = getHostNetwork()
   const network = hostNetwork ?? 'unknown'
@@ -266,10 +282,48 @@ export async function loadNimiqWallet(
         lunaBalance,
         nimBalance: formatNimFromLuna(lunaBalance),
         network,
-        debug: { ...baseDebug, addressVariant: attempt.variant, ok: true, balanceType: 'number' },
+        balanceSource: 'host',
+        debug: { ...baseDebug, addressVariant: attempt.variant, ok: true, balanceType: 'number', balanceSource: 'host' },
       }
     } catch (error) {
       lastFailure = { balanceType: 'thrown', ...describeWalletError(error) }
+    }
+  }
+  // Host read failed: fall back to confirmed server RPC for the same
+  // session wallet. Silent and read-only — no prompt, no signing — and
+  // only ever the canonical address. Both failing stays unavailable;
+  // failure is never rendered as zero.
+  if (fetchRpcBalance) {
+    try {
+      const rpc = await fetchRpcBalance()
+      if (!Number.isSafeInteger(rpc.lunaBalance) || rpc.lunaBalance < 0) {
+        throw new Error('Server returned an unreadable balance.')
+      }
+      if (!/^\d+(\.\d{1,5})?$/.test(rpc.nimBalance)) {
+        throw new Error('Server returned an unreadable balance.')
+      }
+      if (rpc.network !== 'mainnet' && rpc.network !== 'testnet') {
+        throw new Error('Server returned an unreadable balance.')
+      }
+      const rpcNetwork = hostNetwork ?? rpc.network
+      return {
+        status: rpc.lunaBalance === 0 ? 'zero' : 'available',
+        address,
+        lunaBalance: rpc.lunaBalance,
+        nimBalance: rpc.nimBalance,
+        network: rpcNetwork,
+        balanceSource: 'rpc',
+        debug: {
+          ...baseDebug,
+          addressVariant: 'none',
+          ok: true,
+          balanceType: 'rpc',
+          balanceSource: 'rpc',
+          rpcOk: true,
+        },
+      }
+    } catch (rpcError) {
+      lastFailure = { balanceType: 'rpc-thrown', ...describeWalletError(rpcError) }
     }
   }
   const failure = lastFailure ?? { balanceType: 'unknown', name: 'Unknown', message: getErrorMessage(null) }

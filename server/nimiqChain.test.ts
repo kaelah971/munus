@@ -181,6 +181,37 @@ describe('Nimiq chain verification', () => {
     await expect(malformed.getTransaction(HASH)).rejects.toBeInstanceOf(NimiqChainError)
   })
 
+  it('reads account balances through the observed RPC envelope', async () => {
+    // Observed live: getAccountByAddress answers
+    // { result: { data: { address, balance, type }, metadata } }.
+    const reader = new RpcNimiqChainReader('https://rpc.example', async () => ({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { data: { address: 'NQ12 3456', balance: 22100000, type: 'basic' }, metadata: { source: 'node' } },
+    }))
+    expect(await reader.getAccountBalance('NQ12 3456')).toBe('22100000')
+    const zeroed = new RpcNimiqChainReader('https://rpc.example', async () => ({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { data: { address: 'NQ12 3456', balance: 0, type: 'basic' }, metadata: {} },
+    }))
+    expect(await zeroed.getAccountBalance('NQ12 3456')).toBe('0')
+  })
+
+  it('rejects unreadable account payloads without inventing zero', async () => {
+    const cases: unknown[] = [
+      { jsonrpc: '2.0', id: 1, result: null },
+      { jsonrpc: '2.0', id: 1, result: { data: { address: 'NQ12', type: 'basic' }, metadata: {} } },
+      { jsonrpc: '2.0', id: 1, result: { data: { address: 'NQ12', balance: -5, type: 'basic' }, metadata: {} } },
+      { jsonrpc: '2.0', id: 1, result: { data: { address: 'NQ12', balance: 'many', type: 'basic' }, metadata: {} } },
+      { jsonrpc: '2.0', id: 1, error: { code: -32602, message: 'invalid' } },
+    ]
+    for (const payload of cases) {
+      const reader = new RpcNimiqChainReader('https://rpc.example', async () => payload)
+      await expect(reader.getAccountBalance('NQ12')).rejects.toBeInstanceOf(NimiqChainError)
+    }
+  })
+
   it('validates transaction hash shape', () => {
     expect(isTransactionHash(HASH)).toBe(true)
     expect(isTransactionHash(`0x${HASH}`)).toBe(true)

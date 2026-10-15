@@ -77,6 +77,7 @@ export interface PaymentApi {
   refreshCashoutQuote(id: string): Promise<PaymentOrder>
   getReadiness(): Promise<ReadinessReport>
   getNimRate(): Promise<NimIndicativeRate>
+  getWalletNimBalance(): Promise<RpcNimBalance>
 }
 
 export interface NimIndicativeRate {
@@ -84,6 +85,13 @@ export interface NimIndicativeRate {
   source: string
   asOf: string
   expiresAt: string
+}
+
+export interface RpcNimBalance {
+  balanceLuna: string
+  balanceNim: string
+  network: 'mainnet' | 'testnet'
+  source: 'rpc'
 }
 
 export class RemotePaymentApi implements PaymentApi {
@@ -220,6 +228,11 @@ export class RemotePaymentApi implements PaymentApi {
   async getNimRate(): Promise<NimIndicativeRate> {
     const response = await this.request('/nim/rate')
     return (await response.json()) as NimIndicativeRate
+  }
+
+  async getWalletNimBalance(): Promise<RpcNimBalance> {
+    const response = await this.request('/wallet/nim-balance')
+    return (await response.json()) as RpcNimBalance
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {

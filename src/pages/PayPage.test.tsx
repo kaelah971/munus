@@ -85,6 +85,7 @@ function apiStub(initial: PaymentOrder[] = []) {
     refreshCashoutQuote: Mock
     getReadiness: Mock
     getNimRate: Mock
+    getWalletNimBalance: Mock
   } = {
     list: vi.fn().mockImplementation(async () => orders),
     get: vi.fn().mockImplementation(async (id: string) => find(id)),
@@ -198,6 +199,12 @@ function apiStub(initial: PaymentOrder[] = []) {
       source: 'test:rate',
       asOf: new Date(Date.now() - 1000).toISOString(),
       expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    }),
+    getWalletNimBalance: vi.fn().mockResolvedValue({
+      balanceLuna: '22100000',
+      balanceNim: '221',
+      network: 'mainnet',
+      source: 'rpc',
     }),
   }
   return api

@@ -36,6 +36,41 @@ describe('useNimiqWallet refresh', () => {
     expect(result.current.state).toMatchObject({ nimBalance: '220.495' })
   })
 
+  it('falls back to confirmed RPC balance when the host read fails', async () => {
+    const listAccounts = vi.fn()
+    const getBalance = vi.fn().mockRejectedValue(new Error('Unknown request.'))
+    const fetchRpcBalance = vi.fn().mockResolvedValue({ lunaBalance: 22100000, nimBalance: '221', network: 'mainnet' as const })
+    const conn = connectionFor(getBalance, listAccounts)
+    const { result } = renderHook(({ c }) => useNimiqWallet(c, address, fetchRpcBalance), { initialProps: { c: conn } })
+
+    await waitFor(() => expect(result.current.state.status).toBe('available'))
+    expect(result.current.state).toMatchObject({ nimBalance: '221', lunaBalance: 22100000, network: 'mainnet', balanceSource: 'rpc' })
+    expect(fetchRpcBalance).toHaveBeenCalledOnce()
+    expect(listAccounts).not.toHaveBeenCalled()
+  })
+
+  it('never renders zero for a failed host read plus failed RPC', async () => {
+    const getBalance = vi.fn().mockRejectedValue(new Error('Unknown request.'))
+    const fetchRpcBalance = vi.fn().mockRejectedValue(new Error('RPC down'))
+    const conn = connectionFor(getBalance)
+    const { result } = renderHook(({ c }) => useNimiqWallet(c, address, fetchRpcBalance), { initialProps: { c: conn } })
+
+    await waitFor(() => expect(result.current.state.status).toBe('error'))
+    expect(result.current.state).not.toHaveProperty('lunaBalance')
+    expect(result.current.state.nimBalance).toBeUndefined()
+  })
+
+  it('prefers the host balance and skips RPC when the host succeeds', async () => {
+    const getBalance = vi.fn().mockResolvedValue(22100000)
+    const fetchRpcBalance = vi.fn()
+    const conn = connectionFor(getBalance)
+    const { result } = renderHook(({ c }) => useNimiqWallet(c, address, fetchRpcBalance), { initialProps: { c: conn } })
+
+    await waitFor(() => expect(result.current.state.status).toBe('available'))
+    expect(result.current.state).toMatchObject({ balanceSource: 'host' })
+    expect(fetchRpcBalance).not.toHaveBeenCalled()
+  })
+
   it('surfaces refresh failure as error state without throwing', async () => {
     const getBalance = vi.fn()
       .mockResolvedValueOnce(22100000)

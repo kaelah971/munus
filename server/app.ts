@@ -603,6 +603,20 @@ export async function handleRequest(
       return
     }
 
+    if (request.method === 'GET' && url.pathname === '/wallet/nim-balance') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!nimPayments) {
+        sendError(response, 503, 'NIM payments are not configured yet.')
+        return
+      }
+      // Session wallet only: no address parameter exists, so one user can
+      // never query another's balance. Read-only confirmed chain balance
+      // for display fallback; never payment proof.
+      sendJson(response, 200, await nimPayments.getSessionWalletBalance(session.walletAddress))
+      return
+    }
+
     if (request.method === 'GET' && url.pathname === '/nim/rate') {
       const session = await requireSession(request, response, dependencies)
       if (!session) return

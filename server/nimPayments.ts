@@ -23,6 +23,7 @@ import {
   type NimPaymentExpectation,
 } from './nimiqChain'
 import { toProviderAmount } from './clubKonnect'
+import { normalizeNimiqAddress } from './nimiqSignature'
 import type { AirtimeFulfilmentService } from './airtimeFulfilment'
 
 export class NimPaymentError extends Error {
@@ -123,6 +124,43 @@ export class NimPaymentService {
       source: rate.source,
       asOf: rate.observedAt,
       expiresAt: new Date(asOfMs + this.options.quoteTtlMs).toISOString(),
+    }
+  }
+
+  /**
+   * Read-only confirmed balance for the caller's own session wallet.
+   * The address always comes from the server session — never from client
+   * input — so one user can never query another's balance through this
+   * path. Display fallback only; payment proof still requires a
+   * transaction-specific verification.
+   */
+  async getSessionWalletBalance(sessionWalletAddress: string): Promise<{
+    balanceLuna: string
+    balanceNim: string
+    network: 'mainnet' | 'testnet'
+    source: 'rpc'
+  }> {
+    if (!this.chain) {
+      throw new NimPaymentError('NIM chain lookup is not configured yet.', 503)
+    }
+    let address: string
+    try {
+      address = normalizeNimiqAddress(sessionWalletAddress)
+    } catch {
+      throw new NimPaymentError('Session wallet address is not usable.', 400)
+    }
+    let balanceLuna: string
+    try {
+      balanceLuna = await this.chain.getAccountBalance(address)
+    } catch (error) {
+      if (error instanceof NimiqChainError) throw error
+      throw new NimiqChainError('NIM chain lookup failed. Balance will retry.')
+    }
+    return {
+      balanceLuna,
+      balanceNim: formatNimFromLunaBigint(BigInt(balanceLuna)),
+      network: this.options.network,
+      source: 'rpc',
     }
   }
 

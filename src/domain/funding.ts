@@ -80,7 +80,7 @@ export function maskFundingAccount(address: string): string {
   return compact.length > 10 ? `${compact.slice(0, 4)} •••• ${compact.slice(-4)}` : '••••'
 }
 
-export type NetworkProvenance = 'host' | 'session' | 'none'
+export type NetworkProvenance = 'host' | 'rpc' | 'session' | 'none'
 
 export interface NimFundingView {
   amountText: string
@@ -111,7 +111,8 @@ export function buildNimFundingView(input: {
   fallbackNetwork?: 'mainnet' | 'testnet'
 }): NimFundingView {
   const { balance, estimateNgn, connectionReady, walletNetwork, hideAmounts, fallbackNetwork } = input
-  const network: { text: string; provenance: NetworkProvenance } = networkDisplay(walletNetwork, fallbackNetwork)
+  const rpcAttested = balance.status === 'available' && balance.source === 'rpc'
+  const network: { text: string; provenance: NetworkProvenance } = networkDisplay(walletNetwork, fallbackNetwork, rpcAttested)
   const statusText = balance.status === 'loading'
     ? 'Loading balance'
     : balance.status === 'available'
@@ -119,7 +120,7 @@ export function buildNimFundingView(input: {
       : 'Balance unavailable'
   if (hideAmounts) {
     const hiddenNetwork = balance.status === 'available'
-      ? networkDisplay(balance.network, fallbackNetwork)
+      ? networkDisplay(balance.network, fallbackNetwork, rpcAttested)
       : network
     return {
       amountText: '••••',
@@ -150,7 +151,7 @@ export function buildNimFundingView(input: {
       accountHint: null,
     }
   }
-  const liveNetwork = networkDisplay(balance.network, fallbackNetwork)
+  const liveNetwork = networkDisplay(balance.network, fallbackNetwork, rpcAttested)
   return {
     amountText: balance.amount,
     estimateText: estimateNgn !== null ? `≈ ₦${estimateNgn}` : 'NGN estimate unavailable',
@@ -171,9 +172,12 @@ function networkLabel(network: string): string {
 function networkDisplay(
   walletNetwork: string,
   fallbackNetwork: 'mainnet' | 'testnet' | undefined,
+  rpcAttested: boolean,
 ): { text: string; provenance: NetworkProvenance } {
   if (walletNetwork === 'mainnet' || walletNetwork === 'testnet') {
-    return { text: networkLabel(walletNetwork), provenance: 'host' }
+    // A live RPC balance attests its own network via server config;
+    // host truth still wins for the word whenever the host is known.
+    return { text: networkLabel(walletNetwork), provenance: rpcAttested ? 'rpc' : 'host' }
   }
   if (fallbackNetwork === 'mainnet' || fallbackNetwork === 'testnet') {
     return { text: `${networkLabel(fallbackNetwork)} (session)`, provenance: 'session' }
