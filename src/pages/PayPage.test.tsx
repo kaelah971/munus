@@ -678,4 +678,14 @@ describe('Pay essentials order flow', () => {
     expect(screen.queryByRole('button', { name: /Cash out/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Data/ })).toBeInTheDocument()
   })
+
+  it('labels the session network fallback on review without inventing host truth', async () => {
+    const api = apiStub([quotedOrder()])
+    const wallet = { status: 'unavailable' as const, network: 'unknown' as const }
+    render(<PayPage api={api} connection={readyConnection} wallet={wallet} fallbackNetwork="mainnet" onRefreshWallet={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    expect(await screen.findByText('Mainnet (session)')).toBeInTheDocument()
+    expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
+  })
 })

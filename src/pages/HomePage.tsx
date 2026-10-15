@@ -10,13 +10,15 @@ import type { AppDestination } from '../navigation'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 import { accountDataSources, type AccountDataSources } from '../domain/accountPresentation'
 
-export function HomePage({ connection, wallet, profile, hideBalances, sources, pockets, reminders, supportRequests, supportDrafts, contacts, contactsLoading, contactsError, onNavigate, onProfile, onOpenContacts }: {
+export function HomePage({ connection, wallet, profile, hideBalances, sources, fallbackNetwork, pockets, reminders, supportRequests, supportDrafts, contacts, contactsLoading, contactsError, onNavigate, onProfile, onOpenContacts }: {
   connection: NimiqConnectionState
   wallet: NimiqWalletState
   profile: MunusProfile
   hideBalances: boolean
   /** Optional quote/balance sources; defaults keep the deck fully offline-safe. */
   sources?: AccountDataSources
+  /** Session-verified network shown labeled when the host exposes none. */
+  fallbackNetwork?: 'mainnet' | 'testnet'
   pockets: Pocket[]
   reminders: Reminder[]
   supportRequests: { id: string; requestedProduct: string; status: string }[]
@@ -53,7 +55,7 @@ export function HomePage({ connection, wallet, profile, hideBalances, sources, p
 
   return <section className="finance-home" aria-labelledby="home-title">
     <div className="finance-greeting"><h1 id="home-title">Good {period},<br />{' '}<span>{profile.displayName}</span></h1><ProfileAvatar name={profile.displayName} onClick={onProfile} /></div>
-    <AccountCardDeck wallet={wallet} connection={connection} hideBalances={hideBalances} sources={sources ?? accountDataSources} />
+    <AccountCardDeck wallet={wallet} connection={connection} hideBalances={hideBalances} sources={sources ?? accountDataSources} fallbackNetwork={fallbackNetwork} />
     <section className="finance-actions" aria-label="Quick actions">{actions.map((action) => <button type="button" key={action.destination} onClick={() => onNavigate(action.destination)}><span><Icon name={action.icon} size={21} /></span>{action.label}</button>)}</section>
     <SavedContactsRail contacts={contacts} loading={contactsLoading} onAdd={() => onOpenContacts('add')} onSeeAll={() => onOpenContacts('list')} onContact={(id) => onOpenContacts('detail', id)} />
     {contactsError && <p className="inline-error" role="alert">{contactsError}</p>}

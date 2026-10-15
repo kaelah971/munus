@@ -80,11 +80,14 @@ export function maskFundingAccount(address: string): string {
   return compact.length > 10 ? `${compact.slice(0, 4)} •••• ${compact.slice(-4)}` : '••••'
 }
 
+export type NetworkProvenance = 'host' | 'session' | 'none'
+
 export interface NimFundingView {
   amountText: string
   estimateText: string | null
   statusText: string
   networkText: string
+  networkProvenance: NetworkProvenance
   accountHint: string | null
 }
 
@@ -100,19 +103,30 @@ export function buildNimFundingView(input: {
   connectionReady: boolean
   walletNetwork: string
   hideAmounts: boolean
+  /**
+   * Server/session-verified network, used ONLY when the host exposes
+   * none. Rendered labeled (e.g. "Mainnet (session)") — never silently
+   * substituted for host truth.
+   */
+  fallbackNetwork?: 'mainnet' | 'testnet'
 }): NimFundingView {
-  const { balance, estimateNgn, connectionReady, walletNetwork, hideAmounts } = input
+  const { balance, estimateNgn, connectionReady, walletNetwork, hideAmounts, fallbackNetwork } = input
+  const network: { text: string; provenance: NetworkProvenance } = networkDisplay(walletNetwork, fallbackNetwork)
   const statusText = balance.status === 'loading'
     ? 'Loading balance'
     : balance.status === 'available'
       ? connectionReady ? 'Connected to Nimiq Pay' : 'Wallet unavailable'
       : 'Balance unavailable'
   if (hideAmounts) {
+    const hiddenNetwork = balance.status === 'available'
+      ? networkDisplay(balance.network, fallbackNetwork)
+      : network
     return {
       amountText: '••••',
       estimateText: 'NGN estimate hidden',
       statusText,
-      networkText: networkLabel(balance.status === 'available' ? balance.network : walletNetwork),
+      networkText: hiddenNetwork.text,
+      networkProvenance: hiddenNetwork.provenance,
       accountHint: balance.status === 'available' && balance.accountReference ? maskFundingAccount(balance.accountReference) : null,
     }
   }
@@ -121,7 +135,8 @@ export function buildNimFundingView(input: {
       amountText: '—',
       estimateText: 'NGN estimate unavailable',
       statusText: 'Loading balance',
-      networkText: networkLabel(walletNetwork),
+      networkText: network.text,
+      networkProvenance: network.provenance,
       accountHint: null,
     }
   }
@@ -130,15 +145,18 @@ export function buildNimFundingView(input: {
       amountText: '—',
       estimateText: 'NGN estimate unavailable',
       statusText,
-      networkText: networkLabel(walletNetwork),
+      networkText: network.text,
+      networkProvenance: network.provenance,
       accountHint: null,
     }
   }
+  const liveNetwork = networkDisplay(balance.network, fallbackNetwork)
   return {
     amountText: balance.amount,
     estimateText: estimateNgn !== null ? `≈ ₦${estimateNgn}` : 'NGN estimate unavailable',
     statusText,
-    networkText: networkLabel(balance.network),
+    networkText: liveNetwork.text,
+    networkProvenance: liveNetwork.provenance,
     accountHint: balance.accountReference ? maskFundingAccount(balance.accountReference) : null,
   }
 }
@@ -148,4 +166,17 @@ function networkLabel(network: string): string {
   if (network === 'testnet') return 'Testnet'
   if (network === 'unknown') return 'Network unavailable'
   return network
+}
+
+function networkDisplay(
+  walletNetwork: string,
+  fallbackNetwork: 'mainnet' | 'testnet' | undefined,
+): { text: string; provenance: NetworkProvenance } {
+  if (walletNetwork === 'mainnet' || walletNetwork === 'testnet') {
+    return { text: networkLabel(walletNetwork), provenance: 'host' }
+  }
+  if (fallbackNetwork === 'mainnet' || fallbackNetwork === 'testnet') {
+    return { text: `${networkLabel(fallbackNetwork)} (session)`, provenance: 'session' }
+  }
+  return { text: networkLabel(walletNetwork), provenance: 'none' }
 }

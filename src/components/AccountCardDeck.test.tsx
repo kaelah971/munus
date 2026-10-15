@@ -69,4 +69,10 @@ describe('account card deck', () => {
     expect(screen.queryByText('≈ ₦50.00')).not.toBeInTheDocument()
     expect(screen.getAllByText('NGN estimate unavailable')).toHaveLength(2)
   })
+
+  it('labels the session-network fallback instead of hiding it', () => {
+    render(<AccountCardDeck connection={connection} wallet={{ ...wallet, network: 'unknown' }} hideBalances={false} fallbackNetwork="mainnet" />)
+    expect(screen.getByText('Mainnet (session)')).toBeInTheDocument()
+    expect(screen.queryByText('Network unavailable')).not.toBeInTheDocument()
+  })
 })

@@ -84,12 +84,14 @@ function emptyAirtimeDraft(defaultPhone: string): PaymentOrderDraft {
   }
 }
 
-export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp, onRefreshWallet: refreshWalletProp }: {
+export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp, onRefreshWallet: refreshWalletProp, fallbackNetwork }: {
   api: PaymentApi
   defaultPhone?: string
   connection: NimiqConnectionState
   wallet?: NimiqWalletState
   onRefreshWallet?: () => Promise<NimiqWalletState>
+  /** Session-verified network shown labeled when the host exposes none. */
+  fallbackNetwork?: 'mainnet' | 'testnet'
 }) {
   // App always supplies both; the fallback keeps review renderable without
   // wallet context (unavailable funding state, never invented values).
@@ -804,6 +806,7 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
               connectionReady: connection.status === 'ready',
               walletNetwork: wallet.network,
               hideAmounts: false,
+              fallbackNetwork,
             })
             let deduction: FundingDeduction | null = null
             const pending = reviewed.paymentStatus === 'ONCHAIN_PENDING' || pendingTxHash !== null

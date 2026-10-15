@@ -77,6 +77,36 @@ describe('mobile profile settings', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Offline')
   })
 
+  it('shows wallet diagnostics for the authenticated session only', async () => {
+    const handlers = props()
+    const { rerender } = render(<ProfilePage {...handlers} />)
+    expect(screen.queryByRole('heading', { name: 'Wallet diagnostics' })).not.toBeInTheDocument()
+    rerender(<ProfilePage
+      {...handlers}
+      wallet={{
+        status: 'error',
+        address: 'NQ00 1234',
+        network: 'unknown',
+        error: 'Unknown request.',
+        debug: {
+          method: 'getBalance',
+          addressSource: 'session',
+          addressSuffix: '1234',
+          addressVariant: 'none',
+          ok: false,
+          balanceType: 'thrown',
+          errorName: 'UNKNOWN_REQUEST',
+          errorMessage: 'Unknown request.',
+          hostNetworkPresent: false,
+        },
+      }}
+    />)
+    expect(await screen.findByRole('heading', { name: 'Wallet diagnostics' })).toBeInTheDocument()
+    expect(screen.getByText('…9012')).toBeInTheDocument()
+    expect(screen.getByText(/UNKNOWN_REQUEST/)).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('NQ00 1234 5678 9012')
+  })
+
   it('retains PIN validation and saves through the existing callback', async () => {
     const handlers = props()
     render(<ProfilePage {...handlers} />)

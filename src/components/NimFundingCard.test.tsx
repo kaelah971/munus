@@ -78,6 +78,40 @@ describe('NimFundingCard', () => {
   })
 })
 
+describe('network provenance', () => {
+  const base = {
+    balance: { status: 'unavailable', asset: 'NIM' } as const,
+    estimateNgn: null,
+    connectionReady: true,
+    walletNetwork: 'unknown',
+    hideAmounts: false,
+  }
+  it('prefers host truth and labels session fallback explicitly', () => {
+    expect(buildNimFundingView({ ...base, walletNetwork: 'mainnet' })).toMatchObject({
+      networkText: 'Mainnet',
+      networkProvenance: 'host',
+    })
+    expect(buildNimFundingView({ ...base, fallbackNetwork: 'mainnet' })).toMatchObject({
+      networkText: 'Mainnet (session)',
+      networkProvenance: 'session',
+    })
+    expect(buildNimFundingView({ ...base, fallbackNetwork: 'testnet' })).toMatchObject({
+      networkText: 'Testnet (session)',
+      networkProvenance: 'session',
+    })
+    expect(buildNimFundingView(base)).toMatchObject({
+      networkText: 'Network unavailable',
+      networkProvenance: 'none',
+    })
+  })
+
+  it('never substitutes fallback for a known host network', () => {
+    expect(
+      buildNimFundingView({ ...base, walletNetwork: 'testnet', fallbackNetwork: 'mainnet' }).networkText,
+    ).toBe('Testnet')
+  })
+})
+
 describe('buildNimFundingView', () => {
   it('maps every balance state without inventing values', () => {
     expect(view({ status: 'loading', asset: 'NIM' }).statusText).toBe('Loading balance')

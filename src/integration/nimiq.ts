@@ -39,6 +39,29 @@ export interface NimiqWalletState {
   nimBalance?: string
   network: NimiqNetwork
   error?: string
+  /**
+   * Safe read diagnostics: which address spelling was used, what the
+   * provider returned or threw, and whether the host network was present.
+   * Contains an address suffix at most — never secrets or full identity.
+   */
+  debug?: NimiqWalletDebug
+}
+
+export interface NimiqWalletDebug {
+  method: 'getBalance'
+  addressSource: 'session' | 'connected' | 'none'
+  /** Last 4 characters of the compact address, or '' when absent. */
+  addressSuffix: string
+  /** Which address spelling the successful attempt used, if any. */
+  addressVariant: 'verbatim' | 'compact' | 'none'
+  ok: boolean
+  /** typeof the provider result ('number' on success). */
+  balanceType: string
+  errorName?: string
+  errorMessage?: string
+  errorCode?: string | number
+  hostNetworkPresent: boolean
+  hostNetwork?: string
 }
 
 export const NIMIQ_INIT_TIMEOUT_MS = 1_500
@@ -190,8 +213,17 @@ export async function loadNimiqWallet(
   connection: NimiqConnectionState,
   walletAddress = connection.accounts[0],
 ): Promise<NimiqWalletState> {
-  const network = readHostNetwork()
+  const hostNetwork = getHostNetwork()
+  const network = hostNetwork ?? 'unknown'
   const address = walletAddress
+  const addressSource: NimiqWalletDebug['addressSource'] = !address ? 'none' : address === connection.accounts[0] ? 'connected' : 'session'
+  const baseDebug: Pick<NimiqWalletDebug, 'method' | 'addressSource' | 'addressSuffix' | 'hostNetworkPresent' | 'hostNetwork'> = {
+    method: 'getBalance' as const,
+    addressSource,
+    addressSuffix: address ? address.replace(/\s+/g, '').slice(-4) : '',
+    hostNetworkPresent: hostNetwork !== undefined,
+    ...(hostNetwork !== undefined ? { hostNetwork } : {}),
+  }
 
   if (connection.status === 'initializing') {
     return { status: 'loading', network }
@@ -201,35 +233,71 @@ export async function loadNimiqWallet(
     return {
       status: 'unavailable',
       network,
+      debug: { ...baseDebug, addressVariant: 'none' as const, ok: false, balanceType: 'none' },
     }
   }
 
-  try {
-    const result = await connection.provider.getBalance(address) as unknown
-    // The provider may answer with a legacy error object instead of a
-    // luna integer. Surface its message so failures stay diagnosable
-    // instead of collapsing into a generic unavailable state.
-    if (isNimiqErrorResponse(result)) throw new Error(result.error.message, { cause: result })
-    if (!Number.isSafeInteger(result) || (result as number) < 0) {
-      throw new Error('Nimiq Pay returned an invalid balance.')
-    }
-    const lunaBalance = result as number
-
-    return {
-      status: lunaBalance === 0 ? 'zero' : 'available',
-      address,
-      lunaBalance,
-      nimBalance: formatNimFromLuna(lunaBalance),
-      network,
-    }
-  } catch (error) {
-    return {
-      status: 'error',
-      address,
-      network,
-      error: getErrorMessage(error),
+  // Some hosts only accept the compact (spaceless) address spelling.
+  // The verbatim session spelling goes first so identity never shifts;
+  // the compact retry only fires after a failure and is recorded.
+  const compact = address.replace(/\s+/g, '')
+  const attempts: Array<{ variant: 'verbatim' | 'compact'; value: string }> = [{ variant: 'verbatim', value: address }]
+  if (compact !== address) attempts.push({ variant: 'compact', value: compact })
+  let lastFailure: { balanceType: string; name: string; message: string; code?: string | number } | null = null
+  for (const attempt of attempts) {
+    try {
+      const result = await connection.provider.getBalance(attempt.value) as unknown
+      // The provider may answer with a legacy error object instead of a
+      // luna integer. Surface its message so failures stay diagnosable
+      // instead of collapsing into a generic unavailable state.
+      if (isNimiqErrorResponse(result)) throw new Error(result.error.message, { cause: result })
+      if (typeof result !== 'number' || !Number.isSafeInteger(result) || result < 0) {
+        lastFailure = {
+          balanceType: Array.isArray(result) ? 'array' : typeof result,
+          name: 'UnreadableBalance',
+          message: 'Nimiq Pay returned an unreadable balance.',
+        }
+        continue
+      }
+      const lunaBalance = result
+      return {
+        status: lunaBalance === 0 ? 'zero' : 'available',
+        address,
+        lunaBalance,
+        nimBalance: formatNimFromLuna(lunaBalance),
+        network,
+        debug: { ...baseDebug, addressVariant: attempt.variant, ok: true, balanceType: 'number' },
+      }
+    } catch (error) {
+      lastFailure = { balanceType: 'thrown', ...describeWalletError(error) }
     }
   }
+  const failure = lastFailure ?? { balanceType: 'unknown', name: 'Unknown', message: getErrorMessage(null) }
+  return {
+    status: 'error',
+    address,
+    network,
+    error: failure.message,
+    debug: {
+      ...baseDebug,
+      addressVariant: 'none',
+      ok: false,
+      balanceType: failure.balanceType,
+      errorName: failure.name,
+      errorMessage: failure.message,
+      ...(failure.code !== undefined ? { errorCode: failure.code } : {}),
+    },
+  }
+}
+
+/** Extracts name/message/code from thrown provider errors (including NimiqProviderError with .type/.code). */
+function describeWalletError(error: unknown): { name: string; message: string; code?: string | number } {
+  const message = getErrorMessage(error)
+  const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : null
+  const providerType = record && typeof record.type === 'string' ? record.type : undefined
+  const name = providerType ?? (error instanceof Error ? error.name : typeof error)
+  const code = record && (typeof record.code === 'string' || typeof record.code === 'number') ? record.code : undefined
+  return { name, message, ...(code !== undefined ? { code } : {}) }
 }
 
 export function formatNimFromLuna(luna: number): string {

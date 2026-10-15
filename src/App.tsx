@@ -747,7 +747,7 @@ export function App() {
       onOpenContacts={() => openContacts('list')} onCopyAddress={copyWalletAddress}
     />
   } else if (destination === 'pay') {
-    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} wallet={wallet} onRefreshWallet={refreshWallet} /> : null
+    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} wallet={wallet} onRefreshWallet={refreshWallet} fallbackNetwork={session?.network} /> : null
   } else if (destination === 'pockets') {
     content = <PocketsPage
       authenticated connection={connection} error={planningError} loading={planningLoading}
@@ -781,7 +781,7 @@ export function App() {
   } else if (destination === 'activity') {
     content = paymentApi ? <ActivityPage api={paymentApi} onNavigate={navigate} /> : null
   } else {
-    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances} sources={accountSources}
+    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances} sources={accountSources} fallbackNetwork={session?.network}
       pockets={planning.pockets} reminders={planning.reminders} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests}
       contacts={support.contacts} contactsLoading={supportLoading} contactsError={supportError}
       onNavigate={navigate} onProfile={() => navigate('profile')}

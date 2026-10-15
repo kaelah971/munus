@@ -7,6 +7,7 @@ import type { MunusSession } from '../domain/auth'
 import type { RailStatus, ReadinessReport } from '../persistence/paymentApi'
 import type { AppDestination } from '../navigation'
 import { shortenNimiqAccount, type NimiqConnectionState, type NimiqWalletState } from '../integration/nimiq'
+import { WalletDiagnostics } from '../components/WalletDiagnostics'
 import type { PinRecord } from '../security/appLock'
 
 export function ProfilePage({
@@ -124,6 +125,7 @@ export function ProfilePage({
           </section>
 
           {session && getReadiness ? <ReadinessSection load={getReadiness} /> : null}
+          {session && wallet ? <WalletDiagnostics connection={connection} wallet={wallet} sessionWallet={session.walletAddress} /> : null}
 
           <section className="profile-settings-group" aria-labelledby="settings-people">
             <h2 className="settings-group-title" id="settings-people">People</h2>

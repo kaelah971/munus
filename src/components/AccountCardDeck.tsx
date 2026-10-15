@@ -11,12 +11,14 @@ import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimi
 const unavailableQuote: NgnQuoteResult = { status: 'unavailable' }
 const unavailableUsdt: AssetBalanceResult = { status: 'unavailable', asset: 'USDT' }
 
-export function AccountCardDeck({ wallet, connection, hideBalances, sources = accountDataSources, usdtAccount }: {
+export function AccountCardDeck({ wallet, connection, hideBalances, sources = accountDataSources, usdtAccount, fallbackNetwork }: {
   wallet: NimiqWalletState
   connection: NimiqConnectionState
   hideBalances: boolean
   sources?: AccountDataSources
   usdtAccount?: UsdtAccountContext
+  /** Session-verified network shown labeled when the host exposes none. */
+  fallbackNetwork?: 'mainnet' | 'testnet'
 }) {
   const [selectedAsset, setSelectedAsset] = useState<AccountAsset>('NIM')
   const [quotes, setQuotes] = useState<{ key: string; NIM: NgnQuoteResult; USDT: NgnQuoteResult } | null>(null)
@@ -74,6 +76,7 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
                   connectionReady: connection.status === 'ready',
                   walletNetwork: wallet.network,
                   hideAmounts: hideBalances,
+                  fallbackNetwork,
                 })} />
               ) : (
                 <>

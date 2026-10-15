@@ -112,6 +112,60 @@ describe('Nimiq Pay integration boundary', () => {
     expect(state).toMatchObject({ status: 'error', address: 'NQ01', error: 'Invalid address format.' })
   })
 
+  it('retries the compact address spelling after a verbatim failure and records it', async () => {
+    const getBalance = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Invalid address format.'), { type: 'Address' }))
+      .mockResolvedValueOnce(22100000)
+    const provider = { getBalance } as unknown as NimiqProvider
+
+    const state = await loadNimiqWallet({
+      accounts: ['NQ00 other account'],
+      provider,
+      status: 'ready',
+    }, 'NQ47 1234 5678')
+
+    expect(getBalance).toHaveBeenCalledTimes(2)
+    expect(getBalance).toHaveBeenNthCalledWith(1, 'NQ47 1234 5678')
+    expect(getBalance).toHaveBeenNthCalledWith(2, 'NQ4712345678')
+    expect(state).toMatchObject({ status: 'available', nimBalance: '221', address: 'NQ47 1234 5678' })
+    expect(state.debug).toMatchObject({ ok: true, addressVariant: 'compact', addressSource: 'session', addressSuffix: '5678', balanceType: 'number' })
+  })
+
+  it('captures thrown provider error type, message, and code for diagnostics', async () => {
+    const thrown = Object.assign(new Error('Unknown request.'), { name: 'NimiqProviderError', type: 'UNKNOWN_REQUEST', code: 4200 })
+    const provider = { getBalance: vi.fn().mockRejectedValue(thrown) } as unknown as NimiqProvider
+
+    const state = await loadNimiqWallet({
+      accounts: ['NQ47 1234'],
+      provider,
+      status: 'ready',
+    }, 'NQ471234')
+
+    expect(state).toMatchObject({ status: 'error', error: 'Unknown request.' })
+    expect(state.debug).toMatchObject({
+      ok: false,
+      addressVariant: 'none',
+      errorName: 'UNKNOWN_REQUEST',
+      errorMessage: 'Unknown request.',
+      errorCode: 4200,
+      hostNetworkPresent: false,
+    })
+  })
+
+  it('rejects unreadable balance envelopes without inventing a value', async () => {
+    const provider = { getBalance: vi.fn().mockResolvedValue({ data: 22100000 }) } as unknown as NimiqProvider
+
+    const state = await loadNimiqWallet({
+      accounts: ['NQ47 1234'],
+      provider,
+      status: 'ready',
+    }, 'NQ471234')
+
+    expect(state.status).toBe('error')
+    expect(state).not.toHaveProperty('lunaBalance')
+    expect(state.debug).toMatchObject({ ok: false, balanceType: 'object' })
+  })
+
   it('returns an error state when balance retrieval fails', async () => {
     const provider = {
       getBalance: vi.fn().mockRejectedValue(new Error('consensus unavailable')),
