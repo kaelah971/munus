@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 import { DEFAULT_PROFILE_DRAFT, createProfile } from './domain/profile'
@@ -273,5 +273,20 @@ describe('authenticated connect-first entry', () => {
     expect(screen.getByRole('button', { name: 'Connect with Nimiq Pay' })).toBeDisabled()
     await waitFor(() => expect(mocks.signIn).not.toHaveBeenCalled())
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+  })
+
+  it('persists host accounts at Connect and clears them on sign-out', async () => {
+    render(<App />)
+    await openConnect()
+    await connectWallet()
+    await typeName()
+    await screen.findByRole('heading', { name: /Good .*Ada/ })
+    const stored = JSON.parse(window.localStorage.getItem('munus:host-accounts') ?? '{}')
+    expect(stored['user-1'].addresses).toEqual(['NQ-test-account'])
+    const nav = within(screen.getByRole('navigation', { name: 'Primary navigation' }))
+    fireEvent.click(nav.getByRole('button', { name: 'Profile' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }))
+    expect(await screen.findByRole('button', { name: 'Open Munus' })).toBeInTheDocument()
+    expect(window.localStorage.getItem('munus:host-accounts') ?? '').not.toContain('user-1')
   })
 })

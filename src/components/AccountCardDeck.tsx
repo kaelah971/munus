@@ -4,14 +4,14 @@ import {
   type AccountAsset, type AccountDataSources, type AssetBalanceResult,
   type NgnQuoteResult, type UsdtAccountContext,
 } from '../domain/accountPresentation'
-import { buildNimFundingView } from '../domain/funding'
+import { buildAggregateFundingView, buildNimFundingView } from '../domain/funding'
 import { NimFundingCard } from './NimFundingCard'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 
 const unavailableQuote: NgnQuoteResult = { status: 'unavailable' }
 const unavailableUsdt: AssetBalanceResult = { status: 'unavailable', asset: 'USDT' }
 
-export function AccountCardDeck({ wallet, connection, hideBalances, sources = accountDataSources, usdtAccount, fallbackNetwork }: {
+export function AccountCardDeck({ wallet, connection, hideBalances, sources = accountDataSources, usdtAccount, fallbackNetwork, aggregate }: {
   wallet: NimiqWalletState
   connection: NimiqConnectionState
   hideBalances: boolean
@@ -19,6 +19,11 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
   usdtAccount?: UsdtAccountContext
   /** Session-verified network shown labeled when the host exposes none. */
   fallbackNetwork?: 'mainnet' | 'testnet'
+  /**
+   * Confirmed aggregate across host-exposed accounts. Takes precedence
+   * over the single-wallet view when ready; hideAmounts still masks it.
+   */
+  aggregate?: { luna: string; nim: string; network: 'mainnet' | 'testnet' } | null
 }) {
   const [selectedAsset, setSelectedAsset] = useState<AccountAsset>('NIM')
   const [quotes, setQuotes] = useState<{ key: string; NIM: NgnQuoteResult; USDT: NgnQuoteResult } | null>(null)
@@ -70,14 +75,32 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
             </button>
             <div className="account-card-details" aria-hidden={!selected}>
               {asset === 'NIM' ? (
-                <NimFundingCard view={buildNimFundingView({
-                  balance: nim,
-                  estimateNgn: estimate,
-                  connectionReady: connection.status === 'ready',
-                  walletNetwork: wallet.network,
-                  hideAmounts: hideBalances,
-                  fallbackNetwork,
-                })} />
+                <NimFundingCard view={(() => {
+                  if (aggregate && !hideBalances) {
+                    const aggregateBalance: AssetBalanceResult = {
+                      status: 'available',
+                      asset: 'NIM',
+                      amount: aggregate.nim,
+                      network: aggregate.network,
+                      environment: aggregate.network,
+                      observedAt: Date.now(),
+                      source: 'rpc',
+                    }
+                    return buildAggregateFundingView({
+                      nim: aggregate.nim,
+                      estimateNgn: estimateNgn(aggregateBalance, nimQuote, now),
+                      network: aggregate.network,
+                    })
+                  }
+                  return buildNimFundingView({
+                    balance: nim,
+                    estimateNgn: estimate,
+                    connectionReady: connection.status === 'ready',
+                    walletNetwork: wallet.network,
+                    hideAmounts: hideBalances,
+                    fallbackNetwork,
+                  })
+                })()} />
               ) : (
                 <>
                   <p className="account-card-balance">{hideBalances ? '••••' : balance.status === 'available' ? balance.amount : '—'} {asset}</p>

@@ -10,7 +10,7 @@ import type { AppDestination } from '../navigation'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 import { accountDataSources, type AccountDataSources } from '../domain/accountPresentation'
 
-export function HomePage({ connection, wallet, profile, hideBalances, sources, fallbackNetwork, pockets, reminders, supportRequests, supportDrafts, contacts, contactsLoading, contactsError, onNavigate, onProfile, onOpenContacts }: {
+export function HomePage({ connection, wallet, profile, hideBalances, sources, fallbackNetwork, funding, pockets, reminders, supportRequests, supportDrafts, contacts, contactsLoading, contactsError, onNavigate, onProfile, onOpenContacts }: {
   connection: NimiqConnectionState
   wallet: NimiqWalletState
   profile: MunusProfile
@@ -19,6 +19,8 @@ export function HomePage({ connection, wallet, profile, hideBalances, sources, f
   sources?: AccountDataSources
   /** Session-verified network shown labeled when the host exposes none. */
   fallbackNetwork?: 'mainnet' | 'testnet'
+  /** Confirmed aggregate funding context; deck prefers it when ready. */
+  funding?: { luna: string; nim: string; network: 'mainnet' | 'testnet' } | null
   pockets: Pocket[]
   reminders: Reminder[]
   supportRequests: { id: string; requestedProduct: string; status: string }[]
@@ -55,7 +57,7 @@ export function HomePage({ connection, wallet, profile, hideBalances, sources, f
 
   return <section className="finance-home" aria-labelledby="home-title">
     <div className="finance-greeting"><h1 id="home-title">Good {period},<br />{' '}<span>{profile.displayName}</span></h1><ProfileAvatar name={profile.displayName} onClick={onProfile} /></div>
-    <AccountCardDeck wallet={wallet} connection={connection} hideBalances={hideBalances} sources={sources ?? accountDataSources} fallbackNetwork={fallbackNetwork} />
+    <AccountCardDeck wallet={wallet} connection={connection} hideBalances={hideBalances} sources={sources ?? accountDataSources} fallbackNetwork={fallbackNetwork} aggregate={funding ?? null} />
     <section className="finance-actions" aria-label="Quick actions">{actions.map((action) => <button type="button" key={action.destination} onClick={() => onNavigate(action.destination)}><span><Icon name={action.icon} size={21} /></span>{action.label}</button>)}</section>
     <SavedContactsRail contacts={contacts} loading={contactsLoading} onAdd={() => onOpenContacts('add')} onSeeAll={() => onOpenContacts('list')} onContact={(id) => onOpenContacts('detail', id)} />
     {contactsError && <p className="inline-error" role="alert">{contactsError}</p>}

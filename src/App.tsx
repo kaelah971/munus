@@ -50,6 +50,8 @@ import { LocalPlanningApi } from './persistence/planningStore'
 import { RemotePlanningApi, type PlanningApi } from './persistence/planningApi'
 import { RemoteSupportApi, type SupportApi, type SupportData } from './persistence/supportApi'
 import { RemotePaymentApi, type PaymentApi } from './persistence/paymentApi'
+import { clearHostAccounts, readHostAccounts, saveHostAccounts } from './persistence/hostAccounts'
+import { useNimiqFunding } from './hooks/useNimiqFunding'
 import { accountDataSources, createServerNgnQuote } from './domain/accountPresentation'
 import { LocalPaymentApi } from './persistence/paymentStore'
 import { LocalSupportApi } from './persistence/supportStore'
@@ -185,6 +187,18 @@ export function App() {
     [sessionUserId],
   )
   const { state: wallet, refreshWallet } = useNimiqWallet(connection, session?.walletAddress, fetchRpcBalance)
+  // Aggregate funding across host-exposed accounts, resolved once per
+  // session from the Connect-time set. Silent server reads only.
+  const storedHostAddresses = sessionUserId ? readHostAccounts(sessionUserId)?.addresses ?? [] : []
+  const listBalances = useMemo(
+    () => (paymentApi ? (addresses: string[]) => paymentApi.listAccountBalances(addresses) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionUserId],
+  )
+  const funding = useNimiqFunding({ sessionUserId, addresses: storedHostAddresses, listAccountBalances: listBalances })
+  const fundingContext = funding.status === 'ready' && funding.nim && funding.luna
+    ? { luna: funding.luna, nim: funding.nim, network: funding.network }
+    : null
   // Home NGN estimates reuse the authenticated server rate endpoint (same
   // provider as quotes). Falls back to offline-safe stubs without a session.
   const accountSources = useMemo(
@@ -315,6 +329,9 @@ export function App() {
       const nextPin = pinStore.get(nextSession.userId)
 
       if (!usesRemotePersistence) sessionStore.save(nextSession)
+      // Remember the host-exposed account set from this explicit Connect
+      // so silent restores never need a wallet prompt to show funding.
+      saveHostAccounts(nextSession.userId, accounts)
       setPlanningLoading(true)
       setSupportLoading(true)
       setSession(nextSession)
@@ -428,6 +445,7 @@ export function App() {
 
     authGeneration.current += 1
     sessionStore.clear()
+    if (session) clearHostAccounts(session.userId)
     setAuthBusy(false)
     setProfileSaving(false)
     setSession(null)
@@ -741,7 +759,11 @@ export function App() {
       authBusy={authBusy} authError={authError} connection={connection}
       getReadiness={getReadiness}
       onListAccounts={requestAccounts}
-      onCheckBalances={paymentApi ? (addresses) => paymentApi.listAccountBalances(addresses) : undefined}
+      onCheckBalances={paymentApi && sessionUserId ? (addresses) => paymentApi.listAccountBalances(addresses).then((report) => {
+        // Keep the stored set fresh after an explicit diagnostics refresh.
+        saveHostAccounts(sessionUserId, addresses)
+        return report
+      }) : undefined}
       onNavigate={navigate} onRemovePin={removePin} onSave={(draft) => saveProfile(draft, 'profile')}
       onSavePin={savePin} onSignIn={() => void signIn()} onSignOut={() => void signOut()}
       pinRecord={pinRecord} profile={profile} session={session} wallet={wallet}
@@ -749,7 +771,7 @@ export function App() {
       onOpenContacts={() => openContacts('list')} onCopyAddress={copyWalletAddress}
     />
   } else if (destination === 'pay') {
-    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} wallet={wallet} onRefreshWallet={refreshWallet} fallbackNetwork={session?.network} /> : null
+    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} wallet={wallet} onRefreshWallet={refreshWallet} fallbackNetwork={session?.network} funding={fundingContext} /> : null
   } else if (destination === 'pockets') {
     content = <PocketsPage
       authenticated connection={connection} error={planningError} loading={planningLoading}
@@ -783,7 +805,7 @@ export function App() {
   } else if (destination === 'activity') {
     content = paymentApi ? <ActivityPage api={paymentApi} onNavigate={navigate} /> : null
   } else {
-    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances} sources={accountSources} fallbackNetwork={session?.network}
+    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances} sources={accountSources} fallbackNetwork={session?.network} funding={fundingContext}
       pockets={planning.pockets} reminders={planning.reminders} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests}
       contacts={support.contacts} contactsLoading={supportLoading} contactsError={supportError}
       onNavigate={navigate} onProfile={() => navigate('profile')}

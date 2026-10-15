@@ -80,7 +80,7 @@ export function maskFundingAccount(address: string): string {
   return compact.length > 10 ? `${compact.slice(0, 4)} •••• ${compact.slice(-4)}` : '••••'
 }
 
-export type NetworkProvenance = 'host' | 'rpc' | 'session' | 'none'
+export type NetworkProvenance = 'host' | 'rpc' | 'aggregate' | 'session' | 'none'
 
 export interface NimFundingView {
   amountText: string
@@ -167,6 +167,27 @@ function networkLabel(network: string): string {
   if (network === 'testnet') return 'Testnet'
   if (network === 'unknown') return 'Network unavailable'
   return network
+}
+
+/**
+ * Aggregate funding view across host-exposed accounts. Same NimFundingView
+ * shape so Home and review reuse one card; the amount is the exact
+ * server-computed aggregate, the status names the funding context instead
+ * of implying one auth address, and no account suffix ever renders here.
+ */
+export function buildAggregateFundingView(input: {
+  nim: string
+  estimateNgn: string | null
+  network: 'mainnet' | 'testnet'
+}): NimFundingView {
+  return {
+    amountText: input.nim,
+    estimateText: input.estimateNgn !== null ? `≈ ₦${input.estimateNgn}` : 'NGN estimate unavailable',
+    statusText: 'Available in Nimiq Pay',
+    networkText: networkLabel(input.network),
+    networkProvenance: 'aggregate',
+    accountHint: null,
+  }
 }
 
 function networkDisplay(

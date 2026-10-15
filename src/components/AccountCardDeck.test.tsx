@@ -75,4 +75,33 @@ describe('account card deck', () => {
     expect(screen.getByText('Mainnet (session)')).toBeInTheDocument()
     expect(screen.queryByText('Network unavailable')).not.toBeInTheDocument()
   })
+
+  it('prefers the confirmed aggregate over the single signer balance', async () => {
+    const sources: AccountDataSources = {
+      readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }),
+      getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '2000', source: 'Fixture', asOf: 0, expiresAt: Date.now() + 60000 }),
+    }
+    render(<AccountCardDeck
+      connection={connection}
+      wallet={{ ...wallet, status: 'error', nimBalance: undefined, network: 'unknown' }}
+      hideBalances={false}
+      sources={sources}
+      aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
+    />)
+    expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
+    expect(screen.getByText('Available in Nimiq Pay')).toBeInTheDocument()
+    expect(screen.getByText('≈ ₦442010.00')).toBeInTheDocument()
+    expect(screen.queryByText(/BCKQ|J28D/)).not.toBeInTheDocument()
+  })
+
+  it('still masks an aggregate balance when requested', () => {
+    render(<AccountCardDeck
+      connection={connection}
+      wallet={wallet}
+      hideBalances
+      aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
+    />)
+    expect(screen.queryByText('221.005 NIM')).not.toBeInTheDocument()
+    expect(screen.getByText('•••• NIM')).toBeInTheDocument()
+  })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildFundingPreview } from './funding'
+import { buildAggregateFundingView, buildFundingPreview } from './funding'
 
 describe('funding preview math', () => {
   it('computes exact remainders in integer luna', () => {
@@ -28,6 +28,22 @@ describe('funding preview math', () => {
     const exact = buildFundingPreview('50500', '0.505', '50500', '0.505')
     expect(exact).toMatchObject({ sufficient: true, remainingNim: '0' })
     expect(buildFundingPreview('50500', '0.505', '0', '0')).toBeNull()
+  })
+
+  it('renders the production aggregate with full precision and no suffixes', () => {
+    const view = buildAggregateFundingView({ nim: '221.005', estimateNgn: '442010.00', network: 'mainnet' })
+    expect(view).toMatchObject({
+      amountText: '221.005',
+      estimateText: '≈ ₦442010.00',
+      statusText: 'Available in Nimiq Pay',
+      networkText: 'Mainnet',
+      networkProvenance: 'aggregate',
+      accountHint: null,
+    })
+    expect(view.amountText).not.toBe('221.00')
+    expect(view.amountText).not.toBe('221.01')
+    const withoutEstimate = buildAggregateFundingView({ nim: '221.005', estimateNgn: null, network: 'mainnet' })
+    expect(withoutEstimate.estimateText).toBe('NGN estimate unavailable')
   })
 
   it('refuses to preview on malformed input', () => {

@@ -24,7 +24,7 @@ import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState, type
 import { requestUsdtTransfer } from '../integration/ethereum'
 import type { PaymentApi, RailCapability, RailStatus, ReadinessReport } from '../persistence/paymentApi'
 import { estimateNgn, mapNimBalance, type NgnQuoteResult } from '../domain/accountPresentation'
-import { buildFundingPreview, buildNimFundingView } from '../domain/funding'
+import { buildAggregateFundingView, buildFundingPreview, buildNimFundingView } from '../domain/funding'
 import { NimFundingCard, type FundingDeduction } from '../components/NimFundingCard'
 import { RecoveryCenter } from '../components/RecoveryCenter'
 
@@ -84,7 +84,7 @@ function emptyAirtimeDraft(defaultPhone: string): PaymentOrderDraft {
   }
 }
 
-export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp, onRefreshWallet: refreshWalletProp, fallbackNetwork }: {
+export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp, onRefreshWallet: refreshWalletProp, fallbackNetwork, funding }: {
   api: PaymentApi
   defaultPhone?: string
   connection: NimiqConnectionState
@@ -92,6 +92,8 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
   onRefreshWallet?: () => Promise<NimiqWalletState>
   /** Session-verified network shown labeled when the host exposes none. */
   fallbackNetwork?: 'mainnet' | 'testnet'
+  /** Confirmed aggregate funding context; review prefers it when ready. */
+  funding?: { luna: string; nim: string; network: 'mainnet' | 'testnet' } | null
 }) {
   // App always supplies both; the fallback keeps review renderable without
   // wallet context (unavailable funding state, never invented values).
@@ -797,27 +799,49 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
             // Shared source-of-funds card for NIM rails. Amounts deducted
             // come only from the authoritative server quote; projections
             // stay conditional because Nimiq Pay chooses the debit account.
+            // The confirmed aggregate across exposed accounts takes
+            // precedence when ready; otherwise the single-wallet view.
             if (!reviewedIsNim) return null
+            const aggregateBasis = funding?.nim ? { luna: funding.luna, nim: funding.nim, network: funding.network } : null
             const balanceResult = mapNimBalance(wallet)
             const estimate = reviewRate?.status === 'available' ? estimateNgn(balanceResult, reviewRate, nowMs) : null
-            const fundingView = buildNimFundingView({
-              balance: balanceResult,
-              estimateNgn: estimate,
-              connectionReady: connection.status === 'ready',
-              walletNetwork: wallet.network,
-              hideAmounts: false,
-              fallbackNetwork,
-            })
+            const fundingView = aggregateBasis
+              ? buildAggregateFundingView({
+                nim: aggregateBasis.nim,
+                estimateNgn: reviewRate?.status === 'available'
+                  ? estimateNgn({
+                    status: 'available',
+                    asset: 'NIM',
+                    amount: aggregateBasis.nim,
+                    network: aggregateBasis.network,
+                    environment: aggregateBasis.network,
+                    observedAt: Date.now(),
+                    source: 'rpc',
+                  }, reviewRate, nowMs)
+                  : null,
+                network: aggregateBasis.network,
+              })
+              : buildNimFundingView({
+                balance: balanceResult,
+                estimateNgn: estimate,
+                connectionReady: connection.status === 'ready',
+                walletNetwork: wallet.network,
+                hideAmounts: false,
+                fallbackNetwork,
+              })
             let deduction: FundingDeduction | null = null
             const pending = reviewed.paymentStatus === 'ONCHAIN_PENDING' || pendingTxHash !== null
             const payable = reviewed.paymentStatus === 'READY_FOR_PAYMENT' || reviewed.paymentStatus === 'AWAITING_WALLET_APPROVAL'
-            if ((pending || (payable && quoteLive)) && reviewed.quotedCryptoAmount && reviewed.quoteLunaAmount && wallet.lunaBalance !== undefined && wallet.nimBalance !== undefined) {
-              const preview = buildFundingPreview(String(wallet.lunaBalance), wallet.nimBalance, reviewed.quoteLunaAmount, reviewed.quotedCryptoAmount)
+            const basisLuna = aggregateBasis?.luna ?? (wallet.lunaBalance !== undefined ? String(wallet.lunaBalance) : undefined)
+            const basisNim = aggregateBasis?.nim ?? wallet.nimBalance
+            if ((pending || (payable && quoteLive)) && reviewed.quotedCryptoAmount && reviewed.quoteLunaAmount && basisLuna !== undefined && basisNim !== undefined) {
+              const preview = buildFundingPreview(basisLuna, basisNim, reviewed.quoteLunaAmount, reviewed.quotedCryptoAmount)
               if (preview) {
                 deduction = {
                   preview,
                   targetLabel: `₦${reviewed.requestedAmount} ${describeServiceLabel(reviewed.serviceType)}`,
                   mode: pending ? 'pending' : 'preview',
+                  context: aggregateBasis ? 'aggregate' : 'wallet',
                 }
               }
             }

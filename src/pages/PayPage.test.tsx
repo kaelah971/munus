@@ -708,4 +708,21 @@ describe('Pay essentials order flow', () => {
     expect(await screen.findByText('Mainnet (session)')).toBeInTheDocument()
     expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
   })
+
+  it('reviews against the aggregate funding context with informational wording', async () => {
+    const api = apiStub([quotedOrder()])
+    render(<PayPage
+      api={api}
+      connection={readyConnection}
+      funding={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
+    />)
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
+    expect(screen.getByText('Available in Nimiq Pay')).toBeInTheDocument()
+    expect(screen.getByText('≈ ₦442010.00')).toBeInTheDocument()
+    expect(screen.getByText(/Potential remaining/)).toBeInTheDocument()
+    expect(screen.getByText(/220\.505 NIM/)).toBeInTheDocument()
+    // Sender independence: aggregate context never disables payment.
+    expect(screen.getByRole('button', { name: 'Pay 0.5 NIM' })).toBeEnabled()
+  })
 })

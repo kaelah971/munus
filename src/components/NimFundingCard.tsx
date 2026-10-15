@@ -9,6 +9,12 @@ export interface FundingDeduction {
   /** e.g. "₦100 Airtime". */
   targetLabel: string
   mode: FundingDeductionMode
+  /**
+   * Aggregate funding context names the Nimiq Pay funding pool instead of
+   * one connected wallet. Either way the figures stay informational:
+   * Nimiq Pay chooses the paying account at approval.
+   */
+  context?: 'wallet' | 'aggregate'
 }
 
 /**
@@ -45,7 +51,7 @@ export function NimFundingCard({ view, estimateHidden, deduction, balanceNote }:
 }
 
 function FundingDeductionBlock({ deduction }: { deduction: FundingDeduction }) {
-  const { preview, targetLabel, mode } = deduction
+  const { preview, targetLabel, mode, context = 'wallet' } = deduction
   return (
     <div className="funding-preview" aria-live="polite">
       <p className="funding-deduction">
@@ -56,11 +62,14 @@ function FundingDeductionBlock({ deduction }: { deduction: FundingDeduction }) {
       {mode === 'pending' ? (
         <p className="section-copy">Confirming payment… Shown balance is unchanged until on-chain verification.</p>
       ) : preview.sufficient && preview.remainingNim !== null ? (
-        <p className="section-copy">If paid from this connected wallet, ≈ {preview.remainingNim} NIM left.</p>
+        <p className="section-copy">{context === 'aggregate'
+          ? <>Potential remaining ≈ {preview.remainingNim} NIM. Nimiq Pay chooses the paying account at approval.</>
+          : <>If paid from this connected wallet, ≈ {preview.remainingNim} NIM left.</>}</p>
       ) : preview.shortfallNim !== null ? (
         <p className="section-copy">
-          This wallet holds {preview.balanceNim} NIM — {preview.shortfallNim} short of the quote.
-          Nimiq Pay may use a different account; payment stays available.
+          {context === 'aggregate'
+            ? <>These accounts hold {preview.balanceNim} NIM — {preview.shortfallNim} short of the quote. Nimiq Pay may use a different account; payment stays available.</>
+            : <>This wallet holds {preview.balanceNim} NIM — {preview.shortfallNim} short of the quote. Nimiq Pay may use a different account; payment stays available.</>}
         </p>
       ) : null}
     </div>
