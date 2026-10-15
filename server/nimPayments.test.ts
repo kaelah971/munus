@@ -411,6 +411,63 @@ describe('NIM payment service', () => {
     })
   })
 
+  it('balances host-exposed addresses with exact aggregate math', async () => {
+    const addrA = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const addrB = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const balances: Record<string, string> = { [addrA]: '22100000', [addrB]: '500' }
+    const seen: string[] = []
+    const chain = {
+      getTransaction: async () => null,
+      getHeadBlockNumber: async () => 1000,
+      getAccountBalance: async (address: string) => {
+        seen.push(address)
+        return balances[address] ?? '0'
+      },
+    }
+    const { repository, rates } = setup()
+    const svc = new NimPaymentService(repository, rates, chain as never, null, {
+      receiverAddress: RECEIVER,
+      network: 'mainnet',
+      quoteTtlMs: 120_000,
+      now: () => NOW,
+    })
+    const report = await svc.getAccountBalances([addrA, addrB])
+    expect(seen).toEqual([addrA, addrB])
+    expect(report.accounts).toHaveLength(2)
+    expect(report.accounts[0]).toMatchObject({ ok: true, balanceLuna: '22100000', balanceNim: '221' })
+    expect(report.accounts[1]).toMatchObject({ ok: true, balanceLuna: '500', balanceNim: '0.005' })
+    expect(report).toMatchObject({ aggregateLuna: '22100500', aggregateNim: '221.005', okCount: 2, network: 'mainnet' })
+    expect(JSON.stringify(report)).not.toContain(addrA)
+    expect(JSON.stringify(report)).not.toContain(addrB)
+  })
+
+  it('keeps per-address failures out of the aggregate without zeroing them', async () => {
+    const addrA = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const addrB = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const { repository, rates } = setup()
+    const chain = {
+      getTransaction: async () => null,
+      getHeadBlockNumber: async () => 1000,
+      getAccountBalance: async (address: string) => {
+        if (address === addrA) throw new Error('rpc down')
+        return '500'
+      },
+    }
+    const svc = new NimPaymentService(repository, rates, chain as never, null, {
+      receiverAddress: RECEIVER,
+      network: 'mainnet',
+      quoteTtlMs: 120_000,
+      now: () => NOW,
+    })
+    const report = await svc.getAccountBalances([addrA, addrB, 'junk'])
+    expect(report.accounts[0]).toMatchObject({ ok: false })
+    expect(report.accounts[1]).toMatchObject({ ok: true, balanceLuna: '500' })
+    expect(report.accounts[2]).toMatchObject({ ok: false })
+    expect(report).toMatchObject({ aggregateLuna: '500', aggregateNim: '0.005', okCount: 1 })
+    await expect(svc.getAccountBalances([])).rejects.toMatchObject({ statusCode: 400 })
+    await expect(svc.getAccountBalances(new Array(11).fill(addrB))).rejects.toMatchObject({ statusCode: 400 })
+  })
+
   it('requires a configured receiver before quoting', async () => {
     const { repository, rates, chain } = setup({ receiver: '' })
     const service = new NimPaymentService(repository, rates, chain, null, {

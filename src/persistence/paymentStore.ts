@@ -9,7 +9,7 @@ import {
 import type { DataNetwork, DataPlan } from '../domain/orders'
 import type { SupportNetwork } from '../domain/support'
 import type { CashoutOrderInput } from '../domain/cashout'
-import type { DataOrderInput, NimIndicativeRate, PaymentApi, PaymentIntentResponse, ReadinessReport, RpcNimBalance } from './paymentApi'
+import type { DataOrderInput, HostAccountBalances, NimIndicativeRate, PaymentApi, PaymentIntentResponse, ReadinessReport, RpcNimBalance } from './paymentApi'
 
 const PAYMENT_KEY_PREFIX = 'munus:payments:'
 
@@ -111,6 +111,11 @@ export class LocalPaymentApi implements PaymentApi {
   }
 
   async getWalletNimBalance(): Promise<RpcNimBalance> {
+    throw new Error('NIM balances require the Munus API.')
+  }
+
+  async listAccountBalances(addresses: string[]): Promise<HostAccountBalances> {
+    void addresses
     throw new Error('NIM balances require the Munus API.')
   }
 

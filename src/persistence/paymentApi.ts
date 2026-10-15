@@ -78,6 +78,7 @@ export interface PaymentApi {
   getReadiness(): Promise<ReadinessReport>
   getNimRate(): Promise<NimIndicativeRate>
   getWalletNimBalance(): Promise<RpcNimBalance>
+  listAccountBalances(addresses: string[]): Promise<HostAccountBalances>
 }
 
 export interface NimIndicativeRate {
@@ -92,6 +93,22 @@ export interface RpcNimBalance {
   balanceNim: string
   network: 'mainnet' | 'testnet'
   source: 'rpc'
+}
+
+export interface HostAccountBalance {
+  suffix: string
+  ok: boolean
+  balanceLuna?: string
+  balanceNim?: string
+  error?: string
+}
+
+export interface HostAccountBalances {
+  accounts: HostAccountBalance[]
+  aggregateLuna: string
+  aggregateNim: string
+  okCount: number
+  network: 'mainnet' | 'testnet'
 }
 
 export class RemotePaymentApi implements PaymentApi {
@@ -233,6 +250,14 @@ export class RemotePaymentApi implements PaymentApi {
   async getWalletNimBalance(): Promise<RpcNimBalance> {
     const response = await this.request('/wallet/nim-balance')
     return (await response.json()) as RpcNimBalance
+  }
+
+  async listAccountBalances(addresses: string[]): Promise<HostAccountBalances> {
+    const response = await this.request('/wallet/account-balances', {
+      method: 'POST',
+      body: JSON.stringify({ addresses }),
+    })
+    return (await response.json()) as HostAccountBalances
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {

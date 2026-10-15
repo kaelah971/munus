@@ -164,6 +164,72 @@ export class NimPaymentService {
     }
   }
 
+  /**
+   * Confirmed balances for host-exposed addresses (operator-triggered
+   * diagnostics only). Each entry is normalized and queried independently;
+   * failures stay per-entry and never become zero. On-chain balances are
+   * public data — the bound (10) and session gate prevent abuse, not
+   * secrecy. Auth identity is untouched: this never influences sessions.
+   */
+  async getAccountBalances(addresses: unknown): Promise<{
+    accounts: Array<{
+      suffix: string
+      ok: boolean
+      balanceLuna?: string
+      balanceNim?: string
+      error?: string
+    }>
+    aggregateLuna: string
+    aggregateNim: string
+    okCount: number
+    network: 'mainnet' | 'testnet'
+  }> {
+    if (!this.chain) {
+      throw new NimPaymentError('NIM chain lookup is not configured yet.', 503)
+    }
+    if (!Array.isArray(addresses) || addresses.length < 1 || addresses.length > 10) {
+      throw new NimPaymentError('Provide between 1 and 10 wallet addresses.', 400)
+    }
+    const chain = this.chain
+    const accounts = await Promise.all(addresses.map(async (entry) => {
+      const raw = typeof entry === 'string' ? entry : ''
+      const suffix = raw.replace(/\s+/g, '').slice(-4) || '••••'
+      let address: string
+      try {
+        if (!raw.trim()) throw new Error('empty')
+        address = normalizeNimiqAddress(raw)
+      } catch {
+        return { suffix, ok: false as const, error: 'Unreadable wallet address.' }
+      }
+      try {
+        const balanceLuna = await chain.getAccountBalance(address)
+        return {
+          suffix,
+          ok: true as const,
+          balanceLuna,
+          balanceNim: formatNimFromLunaBigint(BigInt(balanceLuna)),
+        }
+      } catch {
+        return { suffix, ok: false as const, error: 'Chain lookup failed.' }
+      }
+    }))
+    let aggregate = 0n
+    let okCount = 0
+    for (const account of accounts) {
+      if (account.ok && account.balanceLuna !== undefined) {
+        aggregate += BigInt(account.balanceLuna)
+        okCount += 1
+      }
+    }
+    return {
+      accounts,
+      aggregateLuna: aggregate.toString(),
+      aggregateNim: formatNimFromLunaBigint(aggregate),
+      okCount,
+      network: this.options.network,
+    }
+  }
+
   async createPaymentIntent(userId: string, orderId: string): Promise<{ order: PaymentOrder; intent: PaymentIntent }> {
     const order = await this.requireOwnedOrder(userId, orderId)
     this.requireFreshQuote(order)

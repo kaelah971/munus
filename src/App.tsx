@@ -740,6 +740,8 @@ export function App() {
     content = <ProfilePage
       authBusy={authBusy} authError={authError} connection={connection}
       getReadiness={getReadiness}
+      onListAccounts={requestAccounts}
+      onCheckBalances={paymentApi ? (addresses) => paymentApi.listAccountBalances(addresses) : undefined}
       onNavigate={navigate} onRemovePin={removePin} onSave={(draft) => saveProfile(draft, 'profile')}
       onSavePin={savePin} onSignIn={() => void signIn()} onSignOut={() => void signOut()}
       pinRecord={pinRecord} profile={profile} session={session} wallet={wallet}

@@ -617,6 +617,22 @@ export async function handleRequest(
       return
     }
 
+    if (request.method === 'POST' && url.pathname === '/wallet/account-balances') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      if (!nimPayments) {
+        sendError(response, 503, 'NIM payments are not configured yet.')
+        return
+      }
+      // Operator-triggered diagnostics: balances for wallet-host-exposed
+      // addresses only. On-chain balances are public data; the session
+      // gate plus the 10-address bound prevent abuse. Auth identity is
+      // untouched and no full address is ever returned.
+      const body = asRecord(await readJson(request))
+      sendJson(response, 200, await nimPayments.getAccountBalances(body.addresses))
+      return
+    }
+
     if (request.method === 'GET' && url.pathname === '/nim/rate') {
       const session = await requireSession(request, response, dependencies)
       if (!session) return

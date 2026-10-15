@@ -745,6 +745,43 @@ describe('Munus production API', () => {
     expect((await fetch(`${off.baseUrl}/wallet/nim-balance`, { headers: { cookie: offCookie } })).status).toBe(503)
   })
 
+  it('balances host-exposed addresses without echoing full addresses', async () => {
+    const addrA = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const addrB = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const { baseUrl } = await createTestServer({
+      nimChain: {
+        getTransaction: async () => null,
+        getHeadBlockNumber: async () => 1000,
+        getAccountBalance: async (address: string) => (address === addrA ? '22100000' : '500'),
+      },
+    })
+    expect((await fetch(`${baseUrl}/wallet/account-balances`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ addresses: [addrA] }),
+    })).status).toBe(401)
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const post = (body: unknown) => fetch(`${baseUrl}/wallet/account-balances`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const response = await post({ addresses: [addrA, addrB] })
+    expect(response.status).toBe(200)
+    const report = (await response.json()) as {
+      accounts: Array<{ suffix: string; ok: boolean; balanceLuna?: string; balanceNim?: string }>
+      aggregateLuna: string
+      aggregateNim: string
+      okCount: number
+    }
+    expect(report.accounts).toHaveLength(2)
+    expect(report).toMatchObject({ aggregateLuna: '22100500', aggregateNim: '221.005', okCount: 2 })
+    expect(JSON.stringify(report)).not.toContain(addrA)
+    expect(JSON.stringify(report)).not.toContain(addrB)
+    expect((await post({ addresses: [] })).status).toBe(400)
+    expect((await post({ addresses: 'nope' })).status).toBe(400)
+  })
+
   it('serves an indicative NIM rate for balance display without quoting', async () => {
     const { baseUrl } = await createTestServer()
     expect((await fetch(`${baseUrl}/nim/rate`)).status).toBe(401)

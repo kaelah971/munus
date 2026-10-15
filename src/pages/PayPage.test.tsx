@@ -86,6 +86,7 @@ function apiStub(initial: PaymentOrder[] = []) {
     getReadiness: Mock
     getNimRate: Mock
     getWalletNimBalance: Mock
+    listAccountBalances: Mock
   } = {
     list: vi.fn().mockImplementation(async () => orders),
     get: vi.fn().mockImplementation(async (id: string) => find(id)),
@@ -206,6 +207,18 @@ function apiStub(initial: PaymentOrder[] = []) {
       network: 'mainnet',
       source: 'rpc',
     }),
+    listAccountBalances: vi.fn().mockImplementation(async (addresses: string[]) => ({
+      accounts: addresses.map((address) => ({
+        suffix: `…${address.replace(/\s+/g, '').slice(-4)}`,
+        ok: true,
+        balanceLuna: '22100000',
+        balanceNim: '221',
+      })),
+      aggregateLuna: '22100000',
+      aggregateNim: '221',
+      okCount: addresses.length,
+      network: 'mainnet',
+    })),
   }
   return api
 }
