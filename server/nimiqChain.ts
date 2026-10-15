@@ -75,8 +75,22 @@ export class RpcNimiqChainReader implements NimiqChainReader {
     if (body.error !== undefined && body.error !== null) {
       throw new NimiqChainError('Nimiq chain rejected the lookup. Verification will retry.')
     }
-    return body.result ?? null
+    return unwrapResultEnvelope(body.result) ?? null
   }
+}
+
+/**
+ * Accepts the observed production envelope `{ data, metadata }` (e.g.
+ * getBlockNumber answers `result.data`) while preserving bare scalars and
+ * bare transaction objects. A bare transaction carries its memo in `data`
+ * alongside `hash`, so anything with a string `hash` is never unwrapped.
+ */
+function unwrapResultEnvelope(result: unknown): unknown {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+  const record = result as Record<string, unknown>
+  if (!Object.hasOwn(record, 'data')) return result
+  if (typeof record.hash === 'string') return result
+  return record.data
 }
 
 function parseChainTransaction(record: Record<string, unknown>): ChainTransaction {

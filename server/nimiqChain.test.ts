@@ -137,6 +137,39 @@ describe('Nimiq chain verification', () => {
     expect(calls).toHaveLength(2)
   })
 
+  it('accepts the production { data, metadata } result envelope', async () => {
+    // Observed live (getBlockNumber): result is an object whose payload
+    // sits under `data`, not a bare scalar.
+    const blockReader = new RpcNimiqChainReader('https://rpc.example', async () => ({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { data: 64262141, metadata: { source: 'node' } },
+    }))
+    expect(await blockReader.getHeadBlockNumber()).toBe(64262141)
+    // Same envelope around a transaction: unwrapped, memo `data` intact.
+    const txReader = new RpcNimiqChainReader('https://rpc.example', async () => ({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        data: {
+          hash: HASH,
+          from: SENDER,
+          to: RECEIVER,
+          value: 250000000,
+          blockNumber: 100,
+          confirmations: 3,
+          data: 'MNS:9a6b18d778a6',
+        },
+        metadata: { source: 'node' },
+      },
+    }))
+    expect(await txReader.getTransaction(HASH)).toMatchObject({
+      hash: HASH,
+      valueLuna: '250000000',
+      dataFields: ['MNS:9a6b18d778a6'],
+    })
+  })
+
   it('treats missing, error, and transport RPC results as retryable', async () => {
     const missing = new RpcNimiqChainReader('https://rpc.example', async () => ({ jsonrpc: '2.0', id: 1, result: null }))
     expect(await missing.getTransaction(HASH)).toBeNull()
