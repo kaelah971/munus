@@ -21,14 +21,22 @@ vi.mock('./persistence/supportApi', () => ({ RemoteSupportApi: class { async loa
 const session = { id: 'verified-session', userId: 'user-1', walletAddress: 'NQ-test-account', network: 'mainnet', issuedAt: Date.now(), expiresAt: Date.now() + 3_600_000, trust: 'server-verified' }
 const profile = createProfile('user-1', { ...DEFAULT_PROFILE_DRAFT, displayName: 'Ada', defaultPhone: '08012345678', defaultNetwork: 'MTN' })
 
-async function enterName(name = 'Ada') {
+async function openConnect() {
   await screen.findByRole('button', { name: 'Open Munus' })
   fireEvent.click(screen.getByRole('button', { name: 'Open Munus' }))
-  fireEvent.change(screen.getByLabelText('Your name'), { target: { value: name } })
+  expect(await screen.findByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
+}
+
+async function connectWallet() {
+  fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+}
+
+async function typeName(name = 'Ada') {
+  fireEvent.change(await screen.findByLabelText('Your name'), { target: { value: name } })
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 }
 
-describe('authenticated name-first entry', () => {
+describe('authenticated connect-first entry', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
@@ -44,43 +52,49 @@ describe('authenticated name-first entry', () => {
     mocks.connection.accounts = ['NQ-test-account']
   })
 
-  it('advances entry to name and connect without authenticating, then saves before exposing Home', async () => {
+  it('connects before naming, then saves once before exposing Home', async () => {
     render(<App />)
-    await enterName()
-    expect(screen.getByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
+    await openConnect()
+    // No username screen before authentication: nothing to name yet.
+    expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
     expect(mocks.requestAccounts).not.toHaveBeenCalled()
     expect(mocks.signIn).not.toHaveBeenCalled()
     expect(window.localStorage.getItem('munus:onboarding-complete')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await connectWallet()
     expect(mocks.requestAccounts).toHaveBeenCalledOnce()
+    await typeName()
     expect(await screen.findByRole('heading', { name: /Good (morning|afternoon|evening), Ada/ })).toBeInTheDocument()
     expect(mocks.saveProfile).toHaveBeenCalledWith({ ...DEFAULT_PROFILE_DRAFT, displayName: 'Ada' })
     expect(window.sessionStorage.getItem('munus:pending-name')).toBeNull()
     expect(window.localStorage.getItem('munus:onboarding-complete')).toBe('true')
   })
 
-  it('validates the name and preserves the pending name across reload without a permanent profile', async () => {
-    const first = render(<App />)
-    await enterName('A')
-    expect(screen.getByRole('alert')).toHaveTextContent('at least two characters')
-    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Ada' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
-    first.unmount()
+  it('validates the name after authentication and retries the save without another signature', async () => {
+    mocks.saveProfile.mockRejectedValueOnce(new Error('Could not save your profile'))
     render(<App />)
-    expect(await screen.findByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
-    expect(mocks.signIn).not.toHaveBeenCalled()
-    expect(window.localStorage.getItem('munus:profile:user-1')).toBeNull()
+    await openConnect()
+    await connectWallet()
+    await typeName('A')
+    expect(screen.getByRole('alert')).toHaveTextContent('at least two characters')
+    expect(mocks.saveProfile).not.toHaveBeenCalled()
+    await typeName()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save your profile')
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+    expect(mocks.signIn).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await screen.findByRole('heading', { name: /Good .*Ada/ })
+    expect(mocks.saveProfile).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps the name after cancellation and retries only on another explicit action', async () => {
+  it('keeps the connect screen after cancellation and retries only on another explicit action', async () => {
     mocks.signIn.mockRejectedValueOnce(new Error('Signature cancelled'))
     render(<App />)
-    await enterName()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await openConnect()
+    await connectWallet()
     expect(await screen.findByRole('alert')).toHaveTextContent('Signature cancelled')
     expect(mocks.saveProfile).not.toHaveBeenCalled()
-    expect(window.sessionStorage.getItem('munus:pending-name')).toBe('Ada')
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await connectWallet()
+    await typeName()
     await screen.findByRole('heading', { name: /Good .*Ada/ })
     expect(mocks.signIn).toHaveBeenCalledTimes(2)
   })
@@ -88,48 +102,53 @@ describe('authenticated name-first entry', () => {
   it('keeps the connect screen after permission rejection and retries only on another explicit action', async () => {
     mocks.requestAccounts.mockRejectedValueOnce(new Error('Nimiq Pay permission was cancelled.'))
     render(<App />)
-    await enterName()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await openConnect()
+    await connectWallet()
     expect(await screen.findByRole('alert')).toHaveTextContent('Nimiq Pay permission was cancelled.')
     expect(screen.getByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
     expect(mocks.requestAccounts).toHaveBeenCalledOnce()
     expect(mocks.signIn).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await connectWallet()
+    await typeName()
     await screen.findByRole('heading', { name: /Good .*Ada/ })
     expect(mocks.requestAccounts).toHaveBeenCalledTimes(2)
     expect(mocks.signIn).toHaveBeenCalledOnce()
   })
 
-  it('preserves an existing authenticated name and optional fields over a pending name', async () => {
+  it('never shows the username screen when the server already has the profile', async () => {
     mocks.getProfile.mockResolvedValue(profile)
     render(<App />)
-    await enterName('Replacement')
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await openConnect()
+    await connectWallet()
     await screen.findByRole('heading', { name: /Good .*Ada/ })
     expect(mocks.saveProfile).not.toHaveBeenCalled()
     expect(window.sessionStorage.getItem('munus:pending-name')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Your name')).not.toBeInTheDocument()
   })
 
-  it('holds the dashboard until profile save succeeds and retries without another signature', async () => {
-    mocks.saveProfile.mockRejectedValueOnce(new Error('Could not save your profile'))
+  it('skips welcome and naming for an expired session with an existing profile', async () => {
+    window.localStorage.setItem('munus:onboarding-complete', 'true')
+    mocks.getProfile.mockResolvedValue(profile)
     render(<App />)
-    await enterName()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save your profile')
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Save and open Munus' }))
+    // No welcome screen for a returning browser: straight to connect.
+    expect(await screen.findByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
+    await connectWallet()
     await screen.findByRole('heading', { name: /Good .*Ada/ })
-    expect(mocks.signIn).toHaveBeenCalledTimes(1)
-    expect(mocks.saveProfile).toHaveBeenCalledTimes(2)
+    expect(mocks.signIn).toHaveBeenCalledOnce()
+    expect(mocks.saveProfile).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
   })
 
   it('does not replace an existing profile when fetching it fails', async () => {
     mocks.getProfile.mockRejectedValueOnce(new Error('Profile service unavailable'))
     render(<App />)
-    await enterName()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await openConnect()
+    await connectWallet()
     await screen.findByRole('heading', { name: 'We could not load your profile' })
     expect(mocks.saveProfile).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
     mocks.getProfile.mockResolvedValue(profile)
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     await screen.findByRole('heading', { name: /Good .*Ada/ })
@@ -144,6 +163,35 @@ describe('authenticated name-first entry', () => {
     expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
     expect(mocks.requestAccounts).not.toHaveBeenCalled()
     expect(mocks.signIn).not.toHaveBeenCalled()
+  })
+
+  it('never flashes onboarding while the session restore is still loading', async () => {
+    let resolveSession!: (value: typeof session | null) => void
+    mocks.restoreSession.mockReturnValue(new Promise((resolve) => { resolveSession = resolve }))
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Restoring your account' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Connect your wallet' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
+    expect(mocks.signIn).not.toHaveBeenCalled()
+    mocks.getProfile.mockResolvedValue(profile)
+    await act(async () => { resolveSession(session) })
+    await screen.findByRole('heading', { name: /Good .*Ada/ })
+  })
+
+  it('recognizes a valid session across reload without onboarding', async () => {
+    mocks.restoreSession.mockResolvedValue(session)
+    mocks.getProfile.mockResolvedValue(profile)
+    const first = render(<App />)
+    await screen.findByRole('heading', { name: /Good .*Ada/ })
+    expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
+    first.unmount()
+    render(<App />)
+    await screen.findByRole('heading', { name: /Good .*Ada/ })
+    expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
+    expect(mocks.signIn).not.toHaveBeenCalled()
+    expect(mocks.requestAccounts).not.toHaveBeenCalled()
   })
 
   it('keeps the existing PIN security gate ahead of returning-user bypass', async () => {
@@ -163,8 +211,8 @@ describe('authenticated name-first entry', () => {
     mocks.getProfile.mockReturnValue(new Promise((resolve) => { resolveProfile = resolve }))
     window.localStorage.setItem('munus:pin:user-1', JSON.stringify({ salt: 'test-salt', hash: 'test-hash' }))
     render(<App />)
-    await enterName()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await openConnect()
+    await connectWallet()
     await screen.findByRole('button', { name: 'Unlock Munus' })
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     await screen.findByRole('button', { name: 'Open Munus' })
@@ -179,15 +227,15 @@ describe('authenticated name-first entry', () => {
     mocks.getProfile.mockReturnValueOnce(new Promise((resolve) => { resolveOldProfile = resolve })).mockResolvedValue(profile)
     window.localStorage.setItem('munus:pin:user-1', JSON.stringify({ salt: 'test-salt', hash: 'test-hash' }))
     render(<App />)
-    await enterName()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await openConnect()
+    await connectWallet()
     await screen.findByRole('button', { name: 'Unlock Munus' })
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     await screen.findByRole('button', { name: 'Open Munus' })
     window.localStorage.removeItem('munus:pin:user-1')
     mocks.signIn.mockReturnValueOnce(new Promise((resolve) => { resolveNewSession = resolve }))
-    await enterName()
-    fireEvent.click(screen.getByRole('button', { name: 'Connect with Nimiq Pay' }))
+    await openConnect()
+    await connectWallet()
     expect(screen.getByRole('button', { name: 'Connecting…' })).toBeDisabled()
     await act(async () => { resolveOldProfile(profile) })
     expect(screen.getByRole('button', { name: 'Connecting…' })).toBeDisabled()
@@ -200,9 +248,7 @@ describe('authenticated name-first entry', () => {
     mocks.getProfile.mockResolvedValue({ ...profile, displayName: '' })
     render(<App />)
     await screen.findByRole('heading', { name: 'What should we call you?' })
-    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Ada' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Save and open Munus' }))
+    await typeName()
     await screen.findByRole('heading', { name: /Good .*Ada/ })
     expect(mocks.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ displayName: 'Ada', defaultPhone: '08012345678', defaultNetwork: 'MTN' }))
     expect(mocks.signIn).not.toHaveBeenCalled()
@@ -212,7 +258,7 @@ describe('authenticated name-first entry', () => {
     mocks.connection.status = 'unavailable'
     mocks.connection.accounts = []
     render(<App />)
-    await enterName()
+    await openConnect()
     expect(screen.getByText('Open inside Nimiq Pay to connect your wallet')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Connect with Nimiq Pay' })).toBeDisabled()
     await waitFor(() => expect(mocks.signIn).not.toHaveBeenCalled())

@@ -21,6 +21,7 @@ import {
   createProfile,
   updateProfile,
   DEFAULT_PROFILE_DRAFT,
+  isProfileComplete,
   profileToDraft,
   type MunusProfile,
   type ProfileDraft,
@@ -112,6 +113,19 @@ function saveOnboardingState() {
   }
 }
 
+/**
+ * Routing hint only: a completed onboarding on this browser skips the
+ * welcome screen straight to connect. It never identifies the user —
+ * only the server session and server profile do that.
+ */
+function readOnboardingComplete(): boolean {
+  try {
+    return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
 export function App() {
   const [pendingName, setPendingName] = useState(() => {
     const savedSession = usesRemotePersistence ? null : sessionStore.get()
@@ -122,7 +136,9 @@ export function App() {
     }
     return readPendingName()
   })
-  const [entryStep, setEntryStep] = useState<'welcome' | 'name' | 'connect'>(() => readPendingName() ? 'connect' : 'welcome')
+  const [entryStep, setEntryStep] = useState<'welcome' | 'name' | 'connect'>(() =>
+    readOnboardingComplete() || readPendingName() ? 'connect' : 'welcome',
+  )
   const [session, setSession] = useState<MunusSession | null>(() =>
     usesRemotePersistence ? null : sessionStore.get(),
   )
@@ -334,17 +350,18 @@ export function App() {
     saveOnboardingState()
   }
 
-  async function persistSetupProfile(currentSession: MunusSession, currentProfile: MunusProfile | null, generation = authGeneration.current) {
+  async function persistSetupProfile(currentSession: MunusSession, currentProfile: MunusProfile | null, generation = authGeneration.current, displayName = pendingName) {
     if (generation !== authGeneration.current) return
     if (currentProfile && isValidDisplayName(currentProfile.displayName)) {
       setProfile(currentProfile)
     } else {
-      if (!isValidDisplayName(pendingName)) {
+      const cleanName = displayName.trim()
+      if (!isValidDisplayName(cleanName)) {
         setEntryStep('name')
         return
       }
       setProfileSaving(true)
-      const draft = { ...(currentProfile ? profileToDraft(currentProfile) : DEFAULT_PROFILE_DRAFT), displayName: pendingName }
+      const draft = { ...(currentProfile ? profileToDraft(currentProfile) : DEFAULT_PROFILE_DRAFT), displayName: cleanName }
       const savedProfile = usesRemotePersistence
         ? await remoteProfileApi.saveProfile(draft)
         : currentProfile ? { ...updateProfile(currentProfile, draft), avatarReference: currentProfile.avatarReference } : createProfile(currentSession.userId, draft)
@@ -357,12 +374,12 @@ export function App() {
     setDestination('home')
   }
 
-  async function finishNameSetup(currentSession: MunusSession, currentProfile: MunusProfile | null) {
+  async function finishNameSetup(currentSession: MunusSession, currentProfile: MunusProfile | null, displayName?: string) {
     setAuthBusy(true)
     setAuthError(null)
     const generation = authGeneration.current
     try {
-      await persistSetupProfile(currentSession, currentProfile, generation)
+      await persistSetupProfile(currentSession, currentProfile, generation, displayName ?? pendingName)
     } catch (error) {
       if (generation !== authGeneration.current) return
       setAuthError(error instanceof Error ? error.message : 'Munus could not save your profile.')
@@ -690,10 +707,18 @@ export function App() {
     </main>
   }
 
-  if (!session || !profile || !isValidDisplayName(profile.displayName)) {
-    const step = session && entryStep === 'welcome' ? (pendingName ? 'connect' : 'name') : entryStep
-    if (step === 'welcome') return <OnboardingPage onComplete={() => setEntryStep('name')} />
-    if (step === 'name') return <NameSetupPage initialName={pendingName} onBack={() => {
+  if (!session || !isProfileComplete(profile)) {
+    // Connect-first entry. Only the server profile — resolved after signer
+    // authentication — can decide whether naming is needed. A username
+    // screen before auth would force returning users to retype a name
+    // that already exists.
+    if (!session && entryStep === 'welcome') {
+      return <OnboardingPage onComplete={() => setEntryStep('connect')} />
+    }
+    if (!session) {
+      return <WalletConnectionPage connection={connection} authenticated={Boolean(session)} busy={authBusy} saving={profileSaving} error={authError} onConnect={() => void signIn()} onRetryConnection={retryConnection} onBack={() => { setAuthError(null); setEntryStep('welcome') }} />
+    }
+    return <NameSetupPage initialName={pendingName} serverError={authError} onBack={() => {
       setAuthError(null)
       if (session) void signOut()
       else setEntryStep('welcome')
@@ -701,9 +726,13 @@ export function App() {
       setPendingName(name)
       storePendingName(name)
       setAuthError(null)
-      setEntryStep('connect')
+      if (session) {
+        // Post-auth naming saves immediately against the canonical session.
+        void finishNameSetup(session, profile, name)
+      } else {
+        setEntryStep('connect')
+      }
     }} />
-    return <WalletConnectionPage connection={connection} authenticated={Boolean(session)} busy={authBusy} saving={profileSaving} error={authError} onConnect={() => void signIn()} onRetryConnection={retryConnection} onBack={() => { setAuthError(null); setEntryStep('name') }} />
   }
 
   let content: ReactNode

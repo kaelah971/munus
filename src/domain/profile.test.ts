@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   createProfile,
   DEFAULT_PROFILE_DRAFT,
+  isProfileComplete,
   updateProfile,
   validateProfileDraft,
 } from './profile'
@@ -43,5 +44,13 @@ describe('Munus profile foundation', () => {
     expect(updated.displayName).toBe('Ada N.')
     expect(updated.createdAt).toBe(profile.createdAt)
     expect(updated.updatedAt).not.toBe(profile.updatedAt)
+  })
+
+  it('treats only a valid display name as a complete profile', () => {
+    const complete = createProfile('user-1', { ...DEFAULT_PROFILE_DRAFT, displayName: 'Ada' })
+    expect(isProfileComplete(complete)).toBe(true)
+    expect(isProfileComplete(null)).toBe(false)
+    expect(isProfileComplete({ ...complete, displayName: '' })).toBe(false)
+    expect(isProfileComplete({ ...complete, displayName: 'A' })).toBe(false)
   })
 })

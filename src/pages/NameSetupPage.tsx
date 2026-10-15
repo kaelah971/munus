@@ -2,8 +2,9 @@ import { useState, type FormEvent } from 'react'
 import { Icon, PrimaryButton } from '../components/Primitives'
 import { DEFAULT_PROFILE_DRAFT, validateProfileDraft } from '../domain/profile'
 
-export function NameSetupPage({ initialName, onContinue, onBack }: {
+export function NameSetupPage({ initialName, serverError, onContinue, onBack }: {
   initialName: string
+  serverError?: string | null
   onContinue: (name: string) => void
   onBack: () => void
 }) {
@@ -26,6 +27,7 @@ export function NameSetupPage({ initialName, onContinue, onBack }: {
         <label htmlFor="personal-name">Your name</label>
         <input id="personal-name" autoComplete="given-name" value={name} onChange={(event) => setName(event.target.value)} aria-describedby={error ? 'name-error' : undefined} aria-invalid={Boolean(error)} />
         {error && <p className="inline-error" id="name-error" role="alert">{error}</p>}
+        {serverError && <p className="inline-error" role="alert">{serverError}</p>}
         <PrimaryButton type="submit">Continue <Icon name="arrow" size={18} /></PrimaryButton>
       </form>
     </div>

@@ -106,6 +106,29 @@ describe('Munus production wallet authentication', () => {
     ).rejects.toMatchObject({ statusCode: 409 })
   })
 
+  it('resolves re-authentication to the existing canonical user across address formats', async () => {
+    const fixture = createFixture()
+    const canonical = fixture.walletAddress
+    const first = await fixture.auth.createChallenge({ walletAddress: canonical, network: 'mainnet' })
+    const firstSession = await fixture.auth.verifyChallenge({
+      challengeId: first.id,
+      walletAddress: canonical,
+      ...fixture.sign(first.message),
+    })
+    // Same wallet, spacing variant: must find — never duplicate — the user.
+    const spaceless = canonical.replace(/ /g, '')
+    const second = await fixture.auth.createChallenge({ walletAddress: spaceless, network: 'mainnet' })
+    expect(second.walletAddress).toBe(canonical)
+    const secondSession = await fixture.auth.verifyChallenge({
+      challengeId: second.id,
+      walletAddress: spaceless,
+      ...fixture.sign(second.message),
+    })
+    expect(secondSession.session.userId).toBe(firstSession.session.userId)
+    expect(secondSession.session.walletAddress).toBe(canonical)
+    expect([...fixture.repository.users.values()]).toHaveLength(1)
+  })
+
   it('rejects a verify request whose supplied account no longer matches the challenge', async () => {
     const fixture = createFixture()
     const otherAccount = KeyPair.generate().toAddress().toUserFriendlyAddress()

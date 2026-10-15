@@ -54,6 +54,15 @@ export function profileToDraft(profile: MunusProfile): ProfileDraft {
   }
 }
 
+/**
+ * Canonical profile-completion rule: a profile counts as complete only
+ * when a valid display name exists. Loading, error, and missing states
+ * are never complete — callers must distinguish them before this check.
+ */
+export function isProfileComplete(profile: MunusProfile | null): profile is MunusProfile {
+  return profile !== null && !validateProfileDraft({ ...DEFAULT_PROFILE_DRAFT, displayName: profile.displayName })
+}
+
 export function validateProfileDraft(draft: ProfileDraft): string | null {
   if (draft.displayName.trim().length < 2) {
     return 'Add at least two characters for your display name.'

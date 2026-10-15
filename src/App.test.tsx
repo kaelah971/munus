@@ -54,11 +54,11 @@ describe('compact Munus entry', () => {
   it('does not let an old onboarding flag bypass name or wallet authentication', () => {
     window.localStorage.setItem('munus:onboarding-complete', 'true')
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: 'Open Munus' }))
-    expect(screen.getByRole('heading', { name: 'What should we call you?' })).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Ada' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    // The flag skips welcome but never authentication: connect first, and
+    // naming is decided only after a session exists.
+    expect(screen.queryByRole('button', { name: 'Open Munus' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Connect your wallet' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'What should we call you?' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Connect with Nimiq Pay' })).toBeDisabled()
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
   })

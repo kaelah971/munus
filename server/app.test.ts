@@ -450,6 +450,45 @@ describe('Munus production API', () => {
     expect(profiles[0].userId).not.toBe(profiles[1].userId)
   })
 
+  it('resolves re-authentication to the existing user and returns the saved profile', async () => {
+    const { baseUrl, repository } = await createTestServer()
+    const pair = KeyPair.generate()
+    const firstCookie = await authenticate(baseUrl, pair)
+    const firstSession = (await (await fetch(`${baseUrl}/auth/session`, { headers: { cookie: firstCookie } })).json()) as { session: { userId: string } }
+    await fetch(`${baseUrl}/profile`, {
+      method: 'PUT',
+      headers: { cookie: firstCookie, 'content-type': 'application/json' },
+      body: JSON.stringify(profileDraft),
+    })
+    // Same signer authenticates again (new session, same canonical wallet).
+    const secondCookie = await authenticate(baseUrl, pair)
+    const secondSession = (await (await fetch(`${baseUrl}/auth/session`, { headers: { cookie: secondCookie } })).json()) as { session: { userId: string } }
+    expect(secondSession.session.userId).toBe(firstSession.session.userId)
+    const loaded = await fetch(`${baseUrl}/profile`, { headers: { cookie: secondCookie } })
+    expect(loaded.status).toBe(200)
+    await expect(loaded.json()).resolves.toMatchObject({ displayName: 'Amina' })
+    expect([...repository.users.values()]).toHaveLength(1)
+    expect([...repository.profiles.values()]).toHaveLength(1)
+  })
+
+  it('keeps profile saves idempotent and isolated per session user', async () => {
+    const { baseUrl } = await createTestServer()
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const stranger = await authenticate(baseUrl, KeyPair.generate())
+    for (const displayName of ['Amina', 'Amina', 'Amina J']) {
+      const saved = await fetch(`${baseUrl}/profile`, {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ ...profileDraft, displayName }),
+      })
+      expect(saved.status).toBe(200)
+    }
+    const loaded = (await (await fetch(`${baseUrl}/profile`, { headers: { cookie } })).json()) as { displayName: string }
+    expect(loaded.displayName).toBe('Amina J')
+    // An unrelated session sees no profile of its own and cannot read another's.
+    expect((await fetch(`${baseUrl}/profile`, { headers: { cookie: stranger } })).status).toBe(404)
+  })
+
   it('creates private airtime payment orders without quoting or paying', async () => {
     const { baseUrl } = await createTestServer()
     const firstCookie = await authenticate(baseUrl, KeyPair.generate())
