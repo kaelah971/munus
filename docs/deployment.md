@@ -82,6 +82,7 @@ The runner creates `public.schema_migrations`, takes a PostgreSQL advisory lock,
 5. Save a profile, pocket allocation, reminder, contact, support draft, Request Help record, and airtime payment order; refresh and confirm each persists.
 6. Open a public request link in a signed-out browser. Confirm it shows only the requester label, need, amount, optional masked phone/network, and message—never a wallet address or internal ID.
 7. Confirm logout revokes the session and private API routes return `401` afterward.
+8. While signed in, open `GET /readiness`: rails without configuration report `unavailable` (Pay entries render disabled), configured-but-unattested rails report `configured` with an explanatory notice, and nothing in the response contains keys, secrets, URLs, or addresses.
 
 Payment quotes, NIM movement, Activity, provider fulfilment, receipts, refunds, automatic payments, and USDT remain intentionally unavailable. Saved payment orders are drafts only. Munus must be tested inside Nimiq Pay for wallet behavior; a normal browser must not be treated as a wallet host.
 

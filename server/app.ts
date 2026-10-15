@@ -22,6 +22,7 @@ import {
   type CashoutService,
 } from './cashout'
 import { LiveStatsService } from './liveStats'
+import { buildReadiness } from './readiness'
 import {
   PaymentValidationError,
   parseCashoutOrderDraft,
@@ -97,7 +98,7 @@ export interface MunusServerDependencies {
   staticDir?: string
   config: Pick<
     MunusServerConfig,
-    'cookieName' | 'cookieSecure' | 'defaultNetwork' | 'corsOrigin'
+    'cookieName' | 'cookieSecure' | 'defaultNetwork' | 'corsOrigin' | 'nimPayments' | 'clubKonnect' | 'paycrest' | 'live'
   >
 }
 
@@ -134,6 +135,34 @@ export async function handleRequest(
     // Public proof surface: aggregate evidence only, no session, no
     // private fields. Redaction happens server-side in the live source.
     sendJson(response, 200, await live.getSnapshot())
+    return
+  }
+
+  if (request.method === 'GET' && url.pathname === '/readiness') {
+    const session = await requireSession(request, response, dependencies)
+    if (!session) return
+    // Operator diagnostic + UI capability source. Safe booleans and
+    // human reasons only — never keys, secrets, URLs, or addresses.
+    // The database probe is one indexed lookup with an impossible owner;
+    // it warms nothing and returns nothing.
+    const databaseReady = await payment.listOrders('00000000-0000-0000-0000-000000000000')
+      .then(() => true)
+      .catch(() => false)
+    sendJson(response, 200, buildReadiness({
+      network: config.defaultNetwork,
+      database: databaseReady ? 'ready' : 'unreachable',
+      nimReceiver: Boolean(config.nimPayments.receiverAddress),
+      nimiqRpc: Boolean(config.nimPayments.rpcUrl),
+      clubKonnect: Boolean(config.clubKonnect),
+      clubKonnectCallback: Boolean(config.clubKonnect?.callbackBaseUrl),
+      paycrest: Boolean(config.paycrest),
+      polygonUsdt: Boolean(config.paycrest?.usdtContractAddress),
+      fulfilment: fulfilment !== null,
+      nimPayments: nimPayments !== null,
+      dataCatalog: dataCatalog !== null,
+      cashout: cashout !== null,
+      live: config.live,
+    }))
     return
   }
 

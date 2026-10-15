@@ -31,6 +31,16 @@ describe('Munus server configuration', () => {
     expect(loadServerConfig({ ...validEnv }).clubKonnect).toBeUndefined()
   })
 
+  it('defaults live attestation to unattested and accepts only exact true', () => {
+    expect(loadServerConfig({ ...validEnv }).live).toEqual({ airtime: false, data: false, cashout: false })
+    expect(loadServerConfig({
+      ...validEnv,
+      MUNUS_AIRTIME_LIVE: 'true',
+      MUNUS_DATA_LIVE: 'yes',
+      MUNUS_CASHOUT_LIVE: 'TRUE',
+    }).live).toEqual({ airtime: true, data: false, cashout: false })
+  })
+
   it('defaults NIM payment settings and validates the receiver address', () => {
     const defaults = loadServerConfig({ ...validEnv }).nimPayments
     expect(defaults).toMatchObject({ receiverAddress: undefined, rpcUrl: undefined, quoteTtlMs: 120_000 })

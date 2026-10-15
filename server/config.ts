@@ -27,6 +27,19 @@ export interface PaycrestServerConfig {
   baseUrl?: string
 }
 
+/**
+ * Operator live attestation per rail. Each flag may only be set after the
+ * operator has completed a successful real-money smoke test for that rail
+ * (see docs/live-smoke-runbook.md). Configured-but-unflagged rails stay
+ * usable-by-explicit-choice but are presented as unverified; nothing here
+ * enables spending by itself — all money-movement guards still apply.
+ */
+export interface LiveAttestationConfig {
+  airtime: boolean
+  data: boolean
+  cashout: boolean
+}
+
 export interface MunusServerConfig {
   port: number
   databaseUrl: string
@@ -39,6 +52,7 @@ export interface MunusServerConfig {
   clubKonnect?: ClubKonnectServerConfig
   nimPayments: NimPaymentServerConfig
   paycrest?: PaycrestServerConfig
+  live: LiveAttestationConfig
 }
 
 export interface ServerEnv {
@@ -63,6 +77,9 @@ export interface ServerEnv {
   PAYCREST_REFUND_ADDRESS?: string
   PAYCREST_BASE_URL?: string
   POLYGON_USDT_CONTRACT?: string
+  MUNUS_AIRTIME_LIVE?: string
+  MUNUS_DATA_LIVE?: string
+  MUNUS_CASHOUT_LIVE?: string
 }
 
 export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfig {
@@ -97,6 +114,11 @@ export function loadServerConfig(env: ServerEnv = process.env): MunusServerConfi
     corsOrigin: env.MUNUS_CORS_ORIGIN?.trim() || undefined,
     clubKonnect: loadClubKonnectConfig(env),
     paycrest: loadPaycrestConfig(env),
+    live: {
+      airtime: env.MUNUS_AIRTIME_LIVE === 'true',
+      data: env.MUNUS_DATA_LIVE === 'true',
+      cashout: env.MUNUS_CASHOUT_LIVE === 'true',
+    },
     nimPayments: {
       receiverAddress: loadReceiverAddress(env),
       rpcUrl: env.NIMIQ_RPC_URL?.trim() || undefined,

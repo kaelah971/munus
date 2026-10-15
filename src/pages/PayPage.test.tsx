@@ -83,6 +83,7 @@ function apiStub(initial: PaymentOrder[] = []) {
     submitCashoutPayment: Mock
     reconcileCashoutOrder: Mock
     refreshCashoutQuote: Mock
+    getReadiness: Mock
   } = {
     list: vi.fn().mockImplementation(async () => orders),
     get: vi.fn().mockImplementation(async (id: string) => find(id)),
@@ -190,8 +191,40 @@ function apiStub(initial: PaymentOrder[] = []) {
     }),
     reconcileCashoutOrder: vi.fn().mockImplementation(async (id: string) => find(id)),
     refreshCashoutQuote: vi.fn().mockImplementation(async (id: string) => find(id)),
+    getReadiness: vi.fn().mockImplementation(async () => verifiedReadiness()),
   }
   return api
+}
+
+function verifiedReadiness() {
+  const verified = (reason: string) => ({ status: 'verified' as const, reason })
+  return {
+    network: 'mainnet' as const,
+    database: 'ready' as const,
+    nimReceiver: true,
+    nimiqRpc: true,
+    clubKonnect: true,
+    clubKonnectCallback: true,
+    paycrest: true,
+    polygonUsdt: true,
+    rails: {
+      airtime: verified('Live behavior verified by an operator smoke test.'),
+      data: verified('Live behavior verified by an operator smoke test.'),
+      cashout: verified('Live behavior verified by an operator smoke test.'),
+    },
+  }
+}
+
+function unavailableReadiness() {
+  const report = verifiedReadiness()
+  return {
+    ...report,
+    rails: {
+      airtime: { status: 'unavailable' as const, reason: 'Airtime provider is not configured.' },
+      data: { status: 'configured' as const, reason: 'Connected — live behavior not yet verified by an operator smoke test.' },
+      cashout: { status: 'unavailable' as const, reason: 'Cash out is not configured.' },
+    },
+  }
 }
 
 function dataPlan(): DataPlan {
@@ -524,5 +557,33 @@ describe('Pay essentials order flow', () => {
     fireEvent.change(screen.getByLabelText('Network'), { target: { value: 'MTN' } })
     expect(await screen.findByRole('alert')).toHaveTextContent('Data bundles are temporarily unavailable.')
     expect(screen.queryByRole('button', { name: 'Review data order' })).toBeDisabled()
+  })
+
+  it('disables unavailable rails before any form can lead to a dead flow', async () => {
+    const api = apiStub()
+    api.getReadiness.mockResolvedValue(unavailableReadiness())
+    render(<PayPage api={api} connection={offlineConnection} />)
+    await waitFor(() => expect(api.getReadiness).toHaveBeenCalled())
+
+    // Unavailable entries render disabled with honest reasons.
+    expect(screen.getByText('Airtime provider is not configured.')).toBeInTheDocument()
+    expect(screen.getByText('Cash out is not configured.')).toBeInTheDocument()
+    // Configured-but-unverified data stays usable with an upfront notice.
+    expect(screen.getByText(/Data: Connected — live behavior not yet verified/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Data/ }))
+    expect(screen.getByLabelText('Network')).toBeInTheDocument()
+  })
+
+  it('renders unavailable rails as non-actionable rows', async () => {
+    const api = apiStub()
+    api.getReadiness.mockResolvedValue(unavailableReadiness())
+    render(<PayPage api={api} connection={offlineConnection} />)
+    await waitFor(() => expect(api.getReadiness).toHaveBeenCalled())
+
+    // Disabled ListRows render as articles, never as buttons: no tap can
+    // lead into the airtime or cash-out forms while unconfigured.
+    expect(screen.queryByRole('button', { name: /Airtime/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Cash out/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Data/ })).toBeInTheDocument()
   })
 })

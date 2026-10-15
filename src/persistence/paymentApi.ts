@@ -7,6 +7,30 @@ export interface CashoutIntentResponse {
   intent: CashoutIntent
 }
 
+/** Server-decided rail capability. Mirrors server/readiness.ts shapes. */
+export type RailStatus = 'unavailable' | 'configured' | 'verified'
+
+export interface RailCapability {
+  status: RailStatus
+  reason: string
+}
+
+export interface ReadinessReport {
+  network: 'mainnet' | 'testnet'
+  database: 'ready' | 'unreachable'
+  nimReceiver: boolean
+  nimiqRpc: boolean
+  clubKonnect: boolean
+  clubKonnectCallback: boolean
+  paycrest: boolean
+  polygonUsdt: boolean
+  rails: {
+    airtime: RailCapability
+    data: RailCapability
+    cashout: RailCapability
+  }
+}
+
 export interface PaymentIntentResponse {
   order: PaymentOrder
   intent: {
@@ -51,6 +75,7 @@ export interface PaymentApi {
   submitCashoutPayment(id: string, transactionHash: string): Promise<PaymentOrder>
   reconcileCashoutOrder(id: string): Promise<PaymentOrder>
   refreshCashoutQuote(id: string): Promise<PaymentOrder>
+  getReadiness(): Promise<ReadinessReport>
 }
 
 export class RemotePaymentApi implements PaymentApi {
@@ -177,6 +202,11 @@ export class RemotePaymentApi implements PaymentApi {
   async refreshCashoutQuote(id: string): Promise<PaymentOrder> {
     const response = await this.request(`/cashout/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
     return (await response.json()) as PaymentOrder
+  }
+
+  async getReadiness(): Promise<ReadinessReport> {
+    const response = await this.request('/readiness')
+    return (await response.json()) as ReadinessReport
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {

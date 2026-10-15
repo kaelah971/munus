@@ -9,7 +9,7 @@ import {
 import type { DataNetwork, DataPlan } from '../domain/orders'
 import type { SupportNetwork } from '../domain/support'
 import type { CashoutOrderInput } from '../domain/cashout'
-import type { DataOrderInput, PaymentApi, PaymentIntentResponse } from './paymentApi'
+import type { DataOrderInput, PaymentApi, PaymentIntentResponse, ReadinessReport } from './paymentApi'
 
 const PAYMENT_KEY_PREFIX = 'munus:payments:'
 
@@ -104,6 +104,28 @@ export class LocalPaymentApi implements PaymentApi {
   async retryDelivery(id: string): Promise<PaymentOrder> {
     void id
     throw new Error('Provider fulfilment requires the Munus API.')
+  }
+
+  async getReadiness(): Promise<ReadinessReport> {
+    // Development/test adapter: everything the local flow needs is present
+    // by construction, so rails report verified. Production truth always
+    // comes from the authenticated /readiness endpoint instead.
+    const verified = (reason: string) => ({ status: 'verified' as const, reason })
+    return {
+      network: 'mainnet',
+      database: 'ready',
+      nimReceiver: true,
+      nimiqRpc: true,
+      clubKonnect: true,
+      clubKonnectCallback: true,
+      paycrest: true,
+      polygonUsdt: true,
+      rails: {
+        airtime: verified('Local development adapter.'),
+        data: verified('Local development adapter.'),
+        cashout: verified('Local development adapter.'),
+      },
+    }
   }
 
   async listDataNetworks(): Promise<DataNetwork[]> {

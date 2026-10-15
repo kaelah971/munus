@@ -22,7 +22,7 @@ import { maskBankAccountNumber, type CashoutBank, type CashoutRatePreview } from
 import { buildRecoveryState } from '../domain/recovery'
 import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState } from '../integration/nimiq'
 import { requestUsdtTransfer } from '../integration/ethereum'
-import type { PaymentApi } from '../persistence/paymentApi'
+import type { PaymentApi, RailCapability, RailStatus, ReadinessReport } from '../persistence/paymentApi'
 import { RecoveryCenter } from '../components/RecoveryCenter'
 
 const icons: Record<(typeof ESSENTIAL_CATEGORIES)[number]['id'], IconName> = {
@@ -38,6 +38,32 @@ type PayView =
   | { name: 'data-form' }
   | { name: 'cashout-form' }
   | { name: 'review'; orderId: string }
+
+type RailKey = 'airtime' | 'data' | 'cashout'
+
+function railForService(serviceType: PaymentOrder['serviceType']): RailKey {
+  if (serviceType === 'DATA') return 'data'
+  if (serviceType === 'CASH_OUT') return 'cashout'
+  return 'airtime'
+}
+
+function railLabel(rail: RailKey): string {
+  if (rail === 'data') return 'Data'
+  if (rail === 'cashout') return 'Cash out'
+  return 'Airtime'
+}
+
+/** Server-decided availability notice. Renders nothing when verified or unknown. */
+function RailNotice({ capability, label }: { capability: RailCapability | undefined; label: string }) {
+  if (!capability || capability.status === 'verified') return null
+  return (
+    <div className="truth-note"><Icon name="info" size={18} /><p>
+      {capability.status === 'unavailable'
+        ? `${label} is not available right now: ${capability.reason} Actions below stay disabled — no money can move.`
+        : `${label}: ${capability.reason}`}
+    </p></div>
+  )
+}
 
 function serviceNoun(order: Pick<PaymentOrder, 'serviceType'>): 'Airtime' | 'Data' | 'Cash out' {
   if (order.serviceType === 'DATA') return 'Data'
@@ -93,7 +119,28 @@ export function PayPage({ api, defaultPhone = '', connection }: {
   const [ratePreview, setRatePreview] = useState<CashoutRatePreview | null>(null)
   const [rateLoading, setRateLoading] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [readiness, setReadiness] = useState<ReadinessReport | null>(null)
   const autoReconciled = useRef<Set<string>>(new Set())
+
+  // Server-decided rail capability. Unknown (offline/older server) fails
+  // open to current behavior — the server still guards every money step.
+  function railStatus(rail: RailKey): RailStatus {
+    return readiness?.rails[rail].status ?? 'verified'
+  }
+
+  useEffect(() => {
+    let active = true
+    api.getReadiness()
+      .then((report) => {
+        if (active) setReadiness(report)
+      })
+      .catch(() => {
+        if (active) setReadiness(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [api])
 
   useEffect(() => {
     let active = true
@@ -499,6 +546,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
           <p className="eyebrow">Airtime order</p>
           <h1 id="pay-title">Top up airtime</h1>
           <p className="screen-lede">Save the top-up as a Munus order first, then get a live NIM quote for it.</p>
+          <RailNotice capability={readiness?.rails.airtime} label="Airtime" />
           <div className="form-grid">
             <label>
               <span>Recipient phone</span>
@@ -538,7 +586,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
           </div>
           {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
           <div className="truth-note"><Icon name="info" size={18} /><p>This saves the order only — no money moves until you review a live quote and approve it in Nimiq Pay.</p></div>
-          <PrimaryButton disabled={saving} onClick={() => void saveAirtimeOrder()}>
+          <PrimaryButton disabled={saving || railStatus('airtime') === 'unavailable'} onClick={() => void saveAirtimeOrder()}>
             {saving ? 'Saving order…' : 'Review airtime order'}
           </PrimaryButton>
         </section>
@@ -550,6 +598,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
           <p className="eyebrow">Data order</p>
           <h1 id="pay-title">Buy data</h1>
           <p className="screen-lede">Pick a current network bundle. The price comes from the live catalog — never typed in.</p>
+          <RailNotice capability={readiness?.rails.data} label="Data" />
           <div className="form-grid">
             <label>
               <span>Network</span>
@@ -604,7 +653,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
           ) : null}
           {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
           <div className="truth-note"><Icon name="info" size={18} /><p>This saves the order at the catalog price only — no money moves until you review a live quote and approve it in Nimiq Pay.</p></div>
-          <PrimaryButton disabled={saving || !selectedPlanId || !dataPhone.trim()} onClick={() => void saveDataOrder()}>
+          <PrimaryButton disabled={saving || !selectedPlanId || !dataPhone.trim() || railStatus('data') === 'unavailable'} onClick={() => void saveDataOrder()}>
             {saving ? 'Saving order…' : 'Review data order'}
           </PrimaryButton>
         </section>
@@ -616,6 +665,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
           <p className="eyebrow">Cash out</p>
           <h1 id="pay-title">Cash out USDT</h1>
           <p className="screen-lede">Send USDT on Polygon and receive naira in a verified Nigerian bank account. Nothing moves until you approve the exact total in your wallet.</p>
+          <RailNotice capability={readiness?.rails.cashout} label="Cash out" />
           <div className="form-grid">
             <label>
               <span>Amount (USDT)</span>
@@ -668,7 +718,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
             <div className="truth-note"><Icon name="info" size={18} /><p>Verified account: {verifiedAccount.accountName} · {verifiedAccount.bankName} {maskBankAccountNumber(verifiedAccount.accountNumber)}. The exact USDT total and payout are set by live payout details on the next step.</p></div>
           ) : null}
           <div className="truth-note"><Icon name="info" size={18} /><p>This saves the order only — no money moves until you review live payout details and approve the exact USDT total in your wallet.</p></div>
-          <PrimaryButton disabled={saving || !verifiedAccount || !cashoutAmount.trim()} onClick={() => void saveCashoutOrder()}>
+          <PrimaryButton disabled={saving || !verifiedAccount || !cashoutAmount.trim() || railStatus('cashout') === 'unavailable'} onClick={() => void saveCashoutOrder()}>
             {saving ? 'Saving order…' : 'Review payout'}
           </PrimaryButton>
         </section>
@@ -682,6 +732,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
             ? `${reviewed.usdtTotalAmount ?? reviewed.requestedAmount} USDT cash out`
             : `₦${reviewed.requestedAmount} ${describeServiceLabel(reviewed.serviceType).toLowerCase()}`}</h1>
           <p className="screen-lede">{describeOrderStage(reviewed)}</p>
+          <RailNotice capability={readiness?.rails[railForService(reviewed.serviceType)]} label={railLabel(railForService(reviewed.serviceType))} />
           <dl className="contact-details">
             {reviewed.serviceType === 'CASH_OUT' ? (
               <>
@@ -749,6 +800,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
                   payBusy={payBusy}
                   refreshing={refreshing}
                   pendingTxHash={pendingTxHash}
+                  railBlocked={railStatus('cashout') === 'unavailable'}
                   onCreateQuote={() => void createCashoutQuote(reviewed.id)}
                   onRefreshQuote={() => void refreshCashoutQuote(reviewed.id)}
                   onPay={() => void payWithUsdt()}
@@ -767,6 +819,7 @@ export function PayPage({ api, defaultPhone = '', connection }: {
                 payBusy={payBusy}
                 refreshing={refreshing}
                 pendingTxHash={pendingTxHash}
+                railBlocked={railStatus(railForService(reviewed.serviceType)) === 'unavailable'}
                 onCreateQuote={() => void createQuote(reviewed.id)}
                 onPay={() => void payWithNim()}
                 onRetrySubmission={() => void retryPendingSubmission()}
@@ -788,9 +841,27 @@ export function PayPage({ api, defaultPhone = '', connection }: {
             <p>Start with airtime or data. Munus saves a real order, quotes live NIM, and delivers after on-chain confirmation.</p>
           </section>
           {loadError ? <p className="inline-error" role="alert">{loadError}</p> : null}
+          {readiness && (['airtime', 'data', 'cashout'] as const).some((rail) => readiness.rails[rail].status !== 'verified') ? (
+            <div className="truth-note"><Icon name="info" size={18} /><p>
+              Availability —
+              {(['airtime', 'data', 'cashout'] as const).map((rail) => ` ${railLabel(rail)}: ${readiness.rails[rail].status === 'verified' ? 'live' : readiness.rails[rail].reason}`).join(' · ')}
+            </p></div>
+          ) : null}
           <section aria-label="Essential categories" className="category-list">
             {ESSENTIAL_CATEGORIES.map((category) => {
               if (category.id === 'airtime') {
+                if (railStatus('airtime') === 'unavailable') {
+                  return (
+                    <ListRow
+                      description={readiness?.rails.airtime.reason ?? 'Not available.'}
+                      disabled
+                      icon={icons[category.id]}
+                      key={category.id}
+                      meta={<StatusPill label="Not available" />}
+                      title={category.name}
+                    />
+                  )
+                }
                 return (
                   <ListRow
                     description="Save a top-up order with a phone number and amount."
@@ -803,6 +874,18 @@ export function PayPage({ api, defaultPhone = '', connection }: {
                 )
               }
               if (category.id === 'data') {
+                if (railStatus('data') === 'unavailable') {
+                  return (
+                    <ListRow
+                      description={readiness?.rails.data.reason ?? 'Not available.'}
+                      disabled
+                      icon={icons[category.id]}
+                      key={category.id}
+                      meta={<StatusPill label="Not available" />}
+                      title={category.name}
+                    />
+                  )
+                }
                 return (
                   <ListRow
                     description="Buy a current network bundle at the live catalog price."
@@ -825,14 +908,25 @@ export function PayPage({ api, defaultPhone = '', connection }: {
                 />
               )
             })}
-            <ListRow
-              description="Send USDT on Polygon and receive naira in a verified Nigerian bank account."
-              icon="wallet"
-              key="cashout"
-              meta={<StatusPill label="Start cash out" tone="ready" />}
-              onClick={openCashoutForm}
-              title="Cash out"
-            />
+            {railStatus('cashout') === 'unavailable' ? (
+              <ListRow
+                description={readiness?.rails.cashout.reason ?? 'Not available.'}
+                disabled
+                icon="wallet"
+                key="cashout"
+                meta={<StatusPill label="Not available" />}
+                title="Cash out"
+              />
+            ) : (
+              <ListRow
+                description="Send USDT on Polygon and receive naira in a verified Nigerian bank account."
+                icon="wallet"
+                key="cashout"
+                meta={<StatusPill label="Start cash out" tone="ready" />}
+                onClick={openCashoutForm}
+                title="Cash out"
+              />
+            )}
           </section>
           <section aria-label="Your recent orders" className="support-section">
             <SectionHeading>Your recent orders</SectionHeading>
@@ -885,7 +979,7 @@ function PaymentStageLabel({ order }: { order: PaymentOrder }) {
   }
 }
 
-function CashoutReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, pendingTxHash, onCreateQuote, onRefreshQuote, onPay, onRetrySubmission, onRefresh, onRefreshPayment }: {
+function CashoutReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, pendingTxHash, railBlocked, onCreateQuote, onRefreshQuote, onPay, onRetrySubmission, onRefresh, onRefreshPayment }: {
   order: PaymentOrder
   quoteLive: boolean
   nowMs: number
@@ -893,6 +987,7 @@ function CashoutReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refre
   payBusy: boolean
   refreshing: boolean
   pendingTxHash: string | null
+  railBlocked: boolean
   onCreateQuote: () => void
   onRefreshQuote: () => void
   onPay: () => void
@@ -904,7 +999,7 @@ function CashoutReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refre
     return (
       <>
         <div className="truth-note"><Icon name="info" size={18} /><p>Get live payout details to see the exact USDT total and the naira you will receive.</p></div>
-        <PrimaryButton disabled={quoting} onClick={onCreateQuote}>
+        <PrimaryButton disabled={quoting || railBlocked} onClick={onCreateQuote}>
           {quoting ? 'Getting payout details…' : 'Get payout details'}
         </PrimaryButton>
       </>
@@ -997,7 +1092,7 @@ function quoteCountdown(expiresAt: string, nowMs: number): string {
   return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`
 }
 
-function ReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, pendingTxHash, onCreateQuote, onPay, onRetrySubmission, onRefresh, onRefreshPayment }: {
+function ReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, pendingTxHash, railBlocked, onCreateQuote, onPay, onRetrySubmission, onRefresh, onRefreshPayment }: {
   order: PaymentOrder
   quoteLive: boolean
   nowMs: number
@@ -1005,6 +1100,7 @@ function ReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, 
   payBusy: boolean
   refreshing: boolean
   pendingTxHash: string | null
+  railBlocked: boolean
   onCreateQuote: () => void
   onPay: () => void
   onRetrySubmission: () => void
@@ -1015,7 +1111,7 @@ function ReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, 
     return (
       <>
         <div className="truth-note"><Icon name="info" size={18} /><p>Get a live NIM quote to see exactly what this {serviceNoun(order).toLowerCase()} costs right now.</p></div>
-        <PrimaryButton disabled={quoting} onClick={onCreateQuote}>
+        <PrimaryButton disabled={quoting || railBlocked} onClick={onCreateQuote}>
           {quoting ? 'Getting quote…' : 'Get NIM quote'}
         </PrimaryButton>
       </>

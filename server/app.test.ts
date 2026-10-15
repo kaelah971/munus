@@ -71,6 +71,7 @@ async function createTestServer(options: {
   paycrestRequests?: Array<{ url: string; init: { method: string; body?: string } }>
   paycrestSecret?: string | null
   disableCashout?: boolean
+  liveFlags?: { airtime?: boolean; data?: boolean; cashout?: boolean }
 } = {}) {
   const repository = new InMemoryMunusRepository()
   const planning = new InMemoryPlanningRepository()
@@ -162,6 +163,25 @@ async function createTestServer(options: {
       cookieName: 'munus_test_session',
       cookieSecure: false,
       defaultNetwork: 'mainnet',
+      nimPayments: nimPayments
+        ? { receiverAddress: options.nimReceiver ?? TEST_NIM_RECEIVER, quoteTtlMs: 120_000 }
+        : { quoteTtlMs: 120_000 },
+      clubKonnect: options.airtimeFetch || options.dataFetch
+        ? { userId: 'fixture-user', apiKey: 'fixture-key', callbackBaseUrl: 'https://munus.example' }
+        : undefined,
+      paycrest: options.disableCashout
+        ? undefined
+        : {
+          apiKey: 'fixture-key',
+          apiSecret: 'fixture-secret',
+          refundAddress: `0x${'cd'.repeat(20)}`,
+          usdtContractAddress: `0x${'ab'.repeat(20)}`,
+        },
+      live: {
+        airtime: options.liveFlags?.airtime ?? false,
+        data: options.liveFlags?.data ?? false,
+        cashout: options.liveFlags?.cashout ?? false,
+      },
     },
   })
   openServers.push(server)
@@ -1656,5 +1676,102 @@ describe('Munus Live public proof', () => {
     expect(serialized).not.toContain(walletAddress)
     const compact = walletAddress.replace(/\s+/g, '')
     expect(serialized).toContain(`${compact.slice(0, 4)}…${compact.slice(-4)}`)
+  })
+})
+
+describe('activation preflight readiness', () => {
+  it('requires a session and leaks no secrets', async () => {
+    const { baseUrl } = await createTestServer()
+    expect((await fetch(`${baseUrl}/readiness`)).status).toBe(401)
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const response = await fetch(`${baseUrl}/readiness`, { headers: { cookie } })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as Record<string, unknown>
+    expect(body.network).toBe('mainnet')
+    expect(body.database).toBe('ready')
+    const serialized = JSON.stringify(body)
+    expect(serialized).not.toMatch(/key|secret|http|NQ|0x|postgres|fixture/i)
+  })
+
+  it('reflects effective wiring without attestation by default', async () => {
+    const { baseUrl } = await createTestServer()
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const body = (await (await fetch(`${baseUrl}/readiness`, { headers: { cookie } })).json()) as {
+      rails: Record<string, { status: string; reason: string }>
+    }
+    // No fulfilment or catalog fixtures: airtime/data unavailable.
+    expect(body.rails.airtime.status).toBe('unavailable')
+    expect(body.rails.data.status).toBe('unavailable')
+    // Cash-out service is wired but unattested: configured, never verified.
+    expect(body.rails.cashout.status).toBe('configured')
+  })
+
+  it('reports verified rails only when wired and attested, without provider calls', async () => {
+    const airtimeRequests: string[] = []
+    const dataRequests: string[] = []
+    const paycrestRequests: Array<{ url: string }> = []
+    let rateCalls = 0
+    const { baseUrl } = await createTestServer({
+      airtimeFetch: async (url: string) => {
+        airtimeRequests.push(url)
+        return {}
+      },
+      dataFetch: async (url: string) => {
+        dataRequests.push(url)
+        return {}
+      },
+      dataCatalog: fixtureCatalog(),
+      paycrestFetch: async (url: string) => {
+        paycrestRequests.push({ url })
+        return {}
+      },
+      nimRateFetch: async () => {
+        rateCalls += 1
+        return { 'nimiq-2': { ngn: 2000 } }
+      },
+      liveFlags: { airtime: true, data: true, cashout: true },
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const body = (await (await fetch(`${baseUrl}/readiness`, { headers: { cookie } })).json()) as {
+      rails: Record<string, { status: string }>
+    }
+    expect(body.rails.airtime.status).toBe('verified')
+    expect(body.rails.data.status).toBe('verified')
+    expect(body.rails.cashout.status).toBe('verified')
+    // Readiness is config truth: no provider, rate, or chain call may fire.
+    expect(airtimeRequests).toEqual([])
+    expect(dataRequests).toEqual([])
+    expect(paycrestRequests).toEqual([])
+    expect(rateCalls).toBe(0)
+  })
+
+  it('fails unconfigured airtime before any wallet or spend step', async () => {
+    const { baseUrl } = await createTestServer({ disableNimPayments: true })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const created = await fetch(`${baseUrl}/payment-orders`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceType: 'AIRTIME', paymentAsset: 'NIM', recipientPhone: '08012345678', recipientNetwork: 'MTN', requestedAmount: '1000' }),
+    })
+    expect(created.status).toBe(201)
+    const order = (await created.json()) as { id: string }
+    // Order saving works (harmless draft); the quote — the first money
+    // step — fails closed with 503.
+    expect((await fetch(`${baseUrl}/payment-orders/${order.id}/quote`, { method: 'POST', headers: { cookie } })).status).toBe(503)
+    expect((await fetch(`${baseUrl}/payment-orders/${order.id}/fulfil`, { method: 'POST', headers: { cookie } })).status).toBe(503)
+  })
+
+  it('refuses provider spend for testnet payments', async () => {
+    const { baseUrl, payment } = await createTestServer({
+      airtimeFetch: async () => ({ orderid: 'ord-live', statuscode: '100', status: 'ORDER_RECEIVED' }),
+    })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    const orderId = await createPaidAirtimeOrder(baseUrl, cookie, payment)
+    const stored = payment.orders.get(orderId)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    stored.paymentNetwork = 'testnet'
+    const fulfil = await fetch(`${baseUrl}/payment-orders/${orderId}/fulfil`, { method: 'POST', headers: { cookie } })
+    expect(fulfil.status).toBe(409)
+    await expect(fulfil.json()).resolves.toMatchObject({ error: expect.stringContaining('mainnet') })
   })
 })
