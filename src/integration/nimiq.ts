@@ -245,7 +245,11 @@ export async function loadNimiqWallet(
     return { status: 'loading', network }
   }
 
-  if (connection.status !== 'ready' || !connection.provider || !address) {
+  // The RPC fallback needs no provider — only the session wallet — so a
+  // non-ready connection must not skip it. The host read below is
+  // attempted only when a provider is actually available.
+  const hostReadable = connection.status === 'ready' && !!connection.provider && !!address
+  if (!hostReadable && !address) {
     return {
       status: 'unavailable',
       network,
@@ -256,44 +260,50 @@ export async function loadNimiqWallet(
   // Some hosts only accept the compact (spaceless) address spelling.
   // The verbatim session spelling goes first so identity never shifts;
   // the compact retry only fires after a failure and is recorded.
-  const compact = address.replace(/\s+/g, '')
-  const attempts: Array<{ variant: 'verbatim' | 'compact'; value: string }> = [{ variant: 'verbatim', value: address }]
-  if (compact !== address) attempts.push({ variant: 'compact', value: compact })
   let lastFailure: { balanceType: string; name: string; message: string; code?: string | number } | null = null
-  for (const attempt of attempts) {
-    try {
-      const result = await connection.provider.getBalance(attempt.value) as unknown
-      // The provider may answer with a legacy error object instead of a
-      // luna integer. Surface its message so failures stay diagnosable
-      // instead of collapsing into a generic unavailable state.
-      if (isNimiqErrorResponse(result)) throw new Error(result.error.message, { cause: result })
-      if (typeof result !== 'number' || !Number.isSafeInteger(result) || result < 0) {
-        lastFailure = {
-          balanceType: Array.isArray(result) ? 'array' : typeof result,
-          name: 'UnreadableBalance',
-          message: 'Nimiq Pay returned an unreadable balance.',
+  let hostTried = false
+  let rpcTried = false
+  if (hostReadable && address) {
+    hostTried = true
+    const compact = address.replace(/\s+/g, '')
+    const attempts: Array<{ variant: 'verbatim' | 'compact'; value: string }> = [{ variant: 'verbatim', value: address }]
+    if (compact !== address) attempts.push({ variant: 'compact', value: compact })
+    for (const attempt of attempts) {
+      try {
+        const result = await connection.provider!.getBalance(attempt.value) as unknown
+        // The provider may answer with a legacy error object instead of a
+        // luna integer. Surface its message so failures stay diagnosable
+        // instead of collapsing into a generic unavailable state.
+        if (isNimiqErrorResponse(result)) throw new Error(result.error.message, { cause: result })
+        if (typeof result !== 'number' || !Number.isSafeInteger(result) || result < 0) {
+          lastFailure = {
+            balanceType: Array.isArray(result) ? 'array' : typeof result,
+            name: 'UnreadableBalance',
+            message: 'Nimiq Pay returned an unreadable balance.',
+          }
+          continue
         }
-        continue
+        const lunaBalance = result
+        return {
+          status: lunaBalance === 0 ? 'zero' : 'available',
+          address,
+          lunaBalance,
+          nimBalance: formatNimFromLuna(lunaBalance),
+          network,
+          balanceSource: 'host',
+          debug: { ...baseDebug, addressVariant: attempt.variant, ok: true, balanceType: 'number', balanceSource: 'host' },
+        }
+      } catch (error) {
+        lastFailure = { balanceType: 'thrown', ...describeWalletError(error) }
       }
-      const lunaBalance = result
-      return {
-        status: lunaBalance === 0 ? 'zero' : 'available',
-        address,
-        lunaBalance,
-        nimBalance: formatNimFromLuna(lunaBalance),
-        network,
-        balanceSource: 'host',
-        debug: { ...baseDebug, addressVariant: attempt.variant, ok: true, balanceType: 'number', balanceSource: 'host' },
-      }
-    } catch (error) {
-      lastFailure = { balanceType: 'thrown', ...describeWalletError(error) }
     }
   }
-  // Host read failed: fall back to confirmed server RPC for the same
-  // session wallet. Silent and read-only — no prompt, no signing — and
-  // only ever the canonical address. Both failing stays unavailable;
-  // failure is never rendered as zero.
-  if (fetchRpcBalance) {
+  // Host read failed or was impossible: fall back to confirmed server RPC
+  // for the same session wallet. Silent and read-only — no prompt, no
+  // signing — and only ever the canonical address. Both failing stays
+  // unavailable; failure is never rendered as zero.
+  if (address && fetchRpcBalance) {
+    rpcTried = true
     try {
       const rpc = await fetchRpcBalance()
       if (!Number.isSafeInteger(rpc.lunaBalance) || rpc.lunaBalance < 0) {
@@ -324,6 +334,13 @@ export async function loadNimiqWallet(
       }
     } catch (rpcError) {
       lastFailure = { balanceType: 'rpc-thrown', ...describeWalletError(rpcError) }
+    }
+  }
+  if (!address || (!hostTried && !rpcTried)) {
+    return {
+      status: 'unavailable',
+      network,
+      debug: { ...baseDebug, addressVariant: 'none' as const, ok: false, balanceType: 'none' },
     }
   }
   const failure = lastFailure ?? { balanceType: 'unknown', name: 'Unknown', message: getErrorMessage(null) }

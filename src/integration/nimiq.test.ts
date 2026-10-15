@@ -166,6 +166,39 @@ describe('Nimiq Pay integration boundary', () => {
     expect(state.debug).toMatchObject({ ok: false, balanceType: 'object' })
   })
 
+  it('uses RPC fallback without a ready provider when the session wallet is known', async () => {
+    const getBalance = vi.fn()
+    const fetchRpcBalance = vi.fn().mockResolvedValue({ lunaBalance: 500, nimBalance: '0.005', network: 'mainnet' as const })
+
+    const state = await loadNimiqWallet(
+      { accounts: [], status: 'unavailable' as const },
+      'NQ47 1234 5678',
+      fetchRpcBalance,
+    )
+
+    expect(getBalance).not.toHaveBeenCalled()
+    expect(fetchRpcBalance).toHaveBeenCalledOnce()
+    expect(state).toMatchObject({
+      status: 'available',
+      address: 'NQ47 1234 5678',
+      lunaBalance: 500,
+      nimBalance: '0.005',
+      network: 'mainnet',
+      balanceSource: 'rpc',
+    })
+    expect(state.debug).toMatchObject({ ok: true, balanceSource: 'rpc', rpcOk: true })
+  })
+
+  it('stays unavailable without a provider when no RPC fallback exists', async () => {
+    const state = await loadNimiqWallet(
+      { accounts: [], status: 'unavailable' as const },
+      'NQ47 1234 5678',
+    )
+
+    expect(state).toMatchObject({ status: 'unavailable' })
+    expect(state).not.toHaveProperty('lunaBalance')
+  })
+
   it('returns an error state when balance retrieval fails', async () => {
     const provider = {
       getBalance: vi.fn().mockRejectedValue(new Error('consensus unavailable')),
