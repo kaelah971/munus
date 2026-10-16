@@ -24,7 +24,7 @@ import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState, type
 import { requestUsdtTransfer } from '../integration/ethereum'
 import type { PaymentApi, RailCapability, RailStatus, ReadinessReport } from '../persistence/paymentApi'
 import { estimateNgn, mapNimBalance, type NgnQuoteResult } from '../domain/accountPresentation'
-import { buildAggregateFundingView, buildFundingPreview, buildNimFundingView, estimateNimFromNgn } from '../domain/funding'
+import { buildAggregateFundingView, buildFundingPreview, buildNimFundingView, estimateNimFromNgn, formatNgnAmount } from '../domain/funding'
 import { NimFundingCard, type FundingDeduction } from '../components/NimFundingCard'
 import { RECENT_RATE_TTL_MS, useNimRate, type NimRateState } from '../hooks/useNimRate'
 import { RecoveryCenter } from '../components/RecoveryCenter'
@@ -799,7 +799,7 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
           <p className="eyebrow">Order review</p>
           <h1 id="pay-title">{reviewed.serviceType === 'CASH_OUT'
             ? `${reviewed.usdtTotalAmount ?? reviewed.requestedAmount} USDT cash out`
-            : `₦${reviewed.requestedAmount} ${describeServiceLabel(reviewed.serviceType).toLowerCase()}`}</h1>
+            : `₦${formatNgnAmount(reviewed.requestedAmount)} ${describeServiceLabel(reviewed.serviceType).toLowerCase()}`}</h1>
           <p className="screen-lede">{describeOrderStage(reviewed)}</p>
           <RailNotice capability={readiness?.rails[railForService(reviewed.serviceType)]} label={railLabel(railForService(reviewed.serviceType))} />
           {(() => {
@@ -846,7 +846,7 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
               if (preview) {
                 deduction = {
                   preview,
-                  targetLabel: `₦${reviewed.requestedAmount} ${describeServiceLabel(reviewed.serviceType)}`,
+                  targetLabel: `₦${formatNgnAmount(reviewed.requestedAmount)} ${describeServiceLabel(reviewed.serviceType)}`,
                   mode: pending ? 'pending' : 'preview',
                   context: aggregateBasis ? 'aggregate' : 'wallet',
                 }
@@ -872,7 +872,7 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
               <>
                 <div><dt>Recipient</dt><dd>{maskPhone(reviewed.recipientPhone ?? '')}</dd></div>
                 <div><dt>Network</dt><dd>{reviewed.recipientNetwork ?? 'Not known'}</dd></div>
-                <div><dt>Amount</dt><dd>₦{reviewed.requestedAmount}</dd></div>
+                <div><dt>Amount</dt><dd>₦{formatNgnAmount(reviewed.requestedAmount)}</dd></div>
               </>
             )}
             {reviewed.planDisplayLabel ? <div><dt>Bundle</dt><dd>{reviewed.planDisplayLabel}</dd></div> : null}
@@ -1075,7 +1075,7 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
                     onClick={() => setView({ name: 'review', orderId: order.id })}
                     title={isCashout
                       ? `${order.usdtTotalAmount ?? order.requestedAmount} USDT cash out`
-                      : `₦${order.requestedAmount} ${describeServiceLabel(order.serviceType).toLowerCase()}`}
+                      : `₦${formatNgnAmount(order.requestedAmount)} ${describeServiceLabel(order.serviceType).toLowerCase()}`}
                   />
                 )
               })}

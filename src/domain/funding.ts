@@ -243,6 +243,23 @@ function networkLabel(network: string): string {
 }
 
 /**
+ * Display-only NGN amount: strips database decimal scale ("50.00000000"
+ * → "50") without ever changing the value. Pure trailing-zero
+ * removal plus leading-zero tidy, string-only — no floats, no rounding,
+ * and fractional intent ("50.25") is preserved, never truncated.
+ * Unparseable input returns untouched so display never crashes.
+ */
+export function formatNgnAmount(value: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 200) return value
+  const trimmed = value.trim()
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(trimmed)
+  if (!match) return value
+  const whole = match[1].replace(/^0+(?=\d)/, '')
+  const fraction = (match[2] ?? '').replace(/0+$/, '')
+  return fraction ? `${whole}.${fraction}` : whole
+}
+
+/**
  * Aggregate funding view across host-exposed accounts. Same NimFundingView
  * shape so Home and review reuse one card; the amount is the exact
  * server-computed aggregate, the status names the funding context instead

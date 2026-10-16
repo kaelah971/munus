@@ -137,6 +137,27 @@ describe('NIM payment service', () => {
     expect(quoted.quoteExpiresAt).toBe(new Date(NOW + 120_000).toISOString())
   })
 
+  it('quotes a saved order carrying DB decimal scale as whole naira', async () => {
+    const { repository, fulfilCalls, service } = setup()
+    const created = await draftOrder(repository, { ...airtimeDraft, requestedAmount: '50' })
+    // Simulate the Postgres NUMERIC(30,8) read-back: pg returns the
+    // exact value with database scale ("50.00000000"). The quote must
+    // accept it as ₦50 — this is the production draft that was stuck.
+    const stored = await repository.getOrder('user-a', created.id)
+    if (!stored) throw new Error('Saved order must exist.')
+    stored.requestedAmount = '50.00000000'
+    const quoted = await service.createQuote('user-a', created.id)
+    expect(quoted).toMatchObject({
+      paymentStatus: 'READY_FOR_PAYMENT',
+      quotedCryptoAmount: '0.025',
+      quoteLunaAmount: '2500',
+      quoteRateNgnPerNim: '2000',
+    })
+    expect(quoted.quoteExpiresAt).toBe(new Date(NOW + 120_000).toISOString())
+    // Quote only: no fulfilment, no provider call, no payment.
+    expect(fulfilCalls).toEqual([])
+  })
+
   it('fails closed when pricing is unavailable, leaving the draft untouched', async () => {
     const { repository, rates, service } = setup()
     rates.error = new NimRateError('Live NIM rate is unavailable. No quote was created.')

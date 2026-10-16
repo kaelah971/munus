@@ -681,6 +681,21 @@ describe('Pay essentials order flow', () => {
     expect(screen.getByLabelText('Network')).toBeInTheDocument()
   })
 
+  it('displays a saved DB-scale ₦50 draft as ₦50 and allows quoting', async () => {
+    // Production regression: Postgres NUMERIC(30,8) reads back as
+    // "50.00000000". The review must show ₦50 and the quote must be
+    // allowed — no whole-naira warning for an exact whole-naira value.
+    const api = apiStub([order({ id: 'order-50', requestedAmount: '50.00000000' })])
+    useApiRate(api)
+    render(<PayPage api={api} connection={offlineConnection} />)
+    fireEvent.click(await screen.findByRole('button', { name: /₦50 airtime/ }))
+    expect(await screen.findByRole('heading', { name: '₦50 airtime' })).toBeInTheDocument()
+    expect(screen.queryByText(/50\.00000000/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Get NIM quote' }))
+    await waitFor(() => expect(api.createQuote).toHaveBeenCalledWith('order-50'))
+    expect(screen.queryByText(/whole naira/i)).not.toBeInTheDocument()
+  })
+
   it('shows the funding preview from the authoritative quote without mutating balance', async () => {
     const api = apiStub([quotedOrder()])
     useApiRate(api)

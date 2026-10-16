@@ -9,6 +9,7 @@ import type {
   DataPurchaseInput,
 } from '../src/domain/orders'
 import type { SupportNetwork } from '../src/domain/support'
+import { normalizeMoney } from '../src/domain/planning'
 
 export const CLUBKONNECT_PROVIDER_ID = 'clubkonnect'
 export const CLUBKONNECT_BASE_URL = 'https://www.nellobytesystems.com'
@@ -49,12 +50,24 @@ export function deriveProviderRequestId(orderId: string): string {
   return hex
 }
 
-/** Whole-naira provider amount within the documented airtime bounds. */
+/**
+ * Whole-naira provider amount within the documented airtime bounds.
+ * Accepts DB/API decimal representations such as "50.00000000": the
+ * value is parsed decimal-safely (bigint, never float) and only values
+ * with an exactly-zero fractional part qualify as whole naira.
+ * Fractional amounts (e.g. "50.25") stay invalid — never rounded.
+ */
 export function toProviderAmount(requestedAmount: string): string {
-  if (!/^\d+$/.test(requestedAmount)) {
+  let normalized: string
+  try {
+    normalized = normalizeMoney(requestedAmount)
+  } catch {
     throw new ClubKonnectError(`Airtime amount must be whole naira from ₦${AIRTIME_MIN_NGN} to ₦${AIRTIME_MAX_NGN}.`, 400)
   }
-  const amount = Number(requestedAmount)
+  if (!/^\d+$/.test(normalized)) {
+    throw new ClubKonnectError(`Airtime amount must be whole naira from ₦${AIRTIME_MIN_NGN} to ₦${AIRTIME_MAX_NGN}.`, 400)
+  }
+  const amount = Number(normalized)
   if (!Number.isSafeInteger(amount) || amount < AIRTIME_MIN_NGN || amount > AIRTIME_MAX_NGN) {
     throw new ClubKonnectError(`Airtime amount must be whole naira from ₦${AIRTIME_MIN_NGN} to ₦${AIRTIME_MAX_NGN}.`, 400)
   }

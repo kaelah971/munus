@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildAggregateFundingView, buildFundingPreview, estimateNimFromNgn, nimBalanceForEstimate } from './funding'
+import { buildAggregateFundingView, buildFundingPreview, estimateNimFromNgn, formatNgnAmount, nimBalanceForEstimate } from './funding'
 import type { AssetBalanceResult, NgnQuoteResult } from './accountPresentation'
 
 describe('funding preview math', () => {
@@ -29,6 +29,17 @@ describe('funding preview math', () => {
     const exact = buildFundingPreview('50500', '0.505', '50500', '0.505')
     expect(exact).toMatchObject({ sufficient: true, remainingNim: '0' })
     expect(buildFundingPreview('50500', '0.505', '0', '0')).toBeNull()
+  })
+
+  it('formats NGN display amounts without database scale or rounding', () => {
+    expect(formatNgnAmount('50.00000000')).toBe('50')
+    expect(formatNgnAmount('100.0000')).toBe('100')
+    expect(formatNgnAmount('1000')).toBe('1000')
+    expect(formatNgnAmount('50')).toBe('50')
+    // Cosmetic only: trailing zeros go, fractional intent stays.
+    expect(formatNgnAmount('50.25000000')).toBe('50.25')
+    expect(formatNgnAmount('not-an-amount')).toBe('not-an-amount')
+    expect(formatNgnAmount('')).toBe('')
   })
 
   it('renders the production aggregate with full precision and no suffixes', () => {

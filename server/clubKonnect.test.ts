@@ -78,6 +78,22 @@ describe('ClubKonnect airtime adapter', () => {
     expect(() => toProviderMsisdn('123')).toThrow(ClubKonnectError)
   })
 
+  it('accepts DB decimal scale as whole naira without rounding fractions', () => {
+    // Postgres NUMERIC(30,8) reads back as "50.00000000"; that exact
+    // value is ₦50 and must quote. Anything fractional stays invalid.
+    expect(toProviderAmount('50.00000000')).toBe('50')
+    expect(toProviderAmount('100.0000')).toBe('100')
+    expect(toProviderAmount('50.0')).toBe('50')
+    expect(toProviderAmount('200000.00000000')).toBe('200000')
+    expect(() => toProviderAmount('50.25')).toThrow(ClubKonnectError)
+    expect(() => toProviderAmount('50.25000000')).toThrow(ClubKonnectError)
+    expect(() => toProviderAmount('50.00000001')).toThrow(ClubKonnectError)
+    expect(() => toProviderAmount('')).toThrow(ClubKonnectError)
+    expect(() => toProviderAmount('abc')).toThrow(ClubKonnectError)
+    expect(() => toProviderAmount('NaN')).toThrow(ClubKonnectError)
+    expect(() => toProviderAmount('Infinity')).toThrow(ClubKonnectError)
+  })
+
   it('parses ORDER_RECEIVED and ORDER_COMPLETED without provider wallet data', async () => {
     const urls: string[] = []
     const adapter = provider(async (url) => {
