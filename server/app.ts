@@ -635,6 +635,47 @@ export async function handleRequest(
       return
     }
 
+    // Public informational NIM/NGN market data. No session, no wallet,
+    // no user data — the response is global market data only. Payment
+    // quote endpoints stay authenticated; this route never quotes.
+    if (request.method === 'GET' && url.pathname === '/public/rates/nim-ngn') {
+      const startedAt = Date.now()
+      try {
+        const outcome = await informativeRates.getRateDetailed()
+        console.info('nim-rate:', {
+          route: 'GET /public/rates/nim-ngn hit',
+          memory: outcome.trace.memory,
+          durable: outcome.trace.durable,
+          durableAgeMs: outcome.trace.durableAgeMs,
+          upstreamAttempted: outcome.trace.upstreamAttempted,
+          upstream: outcome.trace.upstream,
+          upstreamStatus: outcome.trace.upstreamStatus,
+          status: 200,
+          source: outcome.rate.source,
+          freshness: outcome.trace.freshness,
+          durationMs: outcome.trace.durationMs,
+        })
+        sendPublicJson(response, 200, outcome.rate)
+        return
+      } catch (error) {
+        const status = error instanceof NimRateError ? error.statusCode : 502
+        console.info('nim-rate:', {
+          route: 'GET /public/rates/nim-ngn hit',
+          memory: 'miss',
+          durable: 'miss',
+          durableAgeMs: null,
+          upstreamAttempted: true,
+          upstream: 'failure',
+          upstreamStatus: error instanceof NimRateError ? (error.upstream?.status ?? null) : null,
+          status,
+          source: null,
+          freshness: null,
+          durationMs: Date.now() - startedAt,
+        })
+        throw error
+      }
+    }
+
     if (request.method === 'GET' && url.pathname === '/nim/rate') {
       const session = await requireSession(request, response, dependencies)
       if (!session) return
@@ -1207,6 +1248,17 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
+  })
+  response.end(body)
+}
+
+/** Public market data: safe for shared caches with a short TTL; the
+ *  durable Neon row stays authoritative behind revalidation. */
+function sendPublicJson(response: ServerResponse, status: number, value: unknown): void {
+  const body = JSON.stringify(value)
+  response.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'public, max-age=30, stale-while-revalidate=300',
   })
   response.end(body)
 }

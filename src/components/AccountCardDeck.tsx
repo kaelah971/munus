@@ -41,6 +41,10 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
     ? wallet.network
     : aggregate?.network ?? fallbackNetwork ?? wallet.network
   const nimRate = useNimRate(now)
+  // No ordering assumption: balance and rate arrive independently and
+  // the reactive hook rerenders whichever lands later. rateLoading is
+  // true only while no usable rate exists yet and no failure is known.
+  const rateLoading = nimRate.loading
   // Informational horizon: the hook retains a displayable rate for up to
   // 15 minutes past observation, so the mapped quote carries that horizon
   // — not the 120s server payment TTL. Payment quotes never see this
@@ -118,6 +122,7 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
                       nim: aggregate.nim,
                       estimateNgn: estimateNgn(aggregateBalance, nimQuote, now),
                       network: aggregate.network,
+                      rateLoading,
                     })
                   }
                   return buildNimFundingView({
@@ -127,6 +132,7 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
                     walletNetwork: wallet.network,
                     hideAmounts: hideBalances,
                     fallbackNetwork,
+                    rateLoading,
                   })
                 })()} />
               ) : (

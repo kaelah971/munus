@@ -135,7 +135,12 @@ export class NimRateStore {
 
   private ensureRunning(): void {
     if (!this.fetcher || this.listeners.size === 0 || this.interval) return
-    void this.attemptFetch()
+    // A remount with a still-fresh rate reuses it with zero network:
+    // route changes and user switches never reset the store and never
+    // force a refetch. Anything missing or past its server TTL
+    // revalidates immediately; the interval keeps subscribers fresh.
+    const held = this.snapshot.rate
+    if (!held || Date.now() >= Date.parse(held.expiresAt)) void this.attemptFetch()
     this.interval = setInterval(() => this.attemptFetch(), REVALIDATE_INTERVAL_MS)
   }
 
@@ -223,7 +228,8 @@ export class NimRateStore {
 
 export const nimRateStore = new NimRateStore()
 
-/** Wire (or unwire) the authenticated fetcher feeding the shared loop. */
+/** Wire (or unwire) the fetcher feeding the shared loop. Production wires
+ *  the public endpoint once at bootstrap; tests wire fixtures here. */
 export function configureNimRateFetcher(
   fetcher: ((signal: AbortSignal) => Promise<NimIndicativeRate>) | null,
 ): void {

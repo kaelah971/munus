@@ -44,7 +44,9 @@ describe('funding preview math', () => {
     expect(view.amountText).not.toBe('221.00')
     expect(view.amountText).not.toBe('221.01')
     const withoutEstimate = buildAggregateFundingView({ nim: '221.005', estimateNgn: null, network: 'mainnet' })
-    expect(withoutEstimate.estimateText).toBe('NGN estimate unavailable')
+    expect(withoutEstimate.estimateText).toBe('NGN estimate temporarily unavailable')
+    const loadingEstimate = buildAggregateFundingView({ nim: '221.005', estimateNgn: null, network: 'mainnet', rateLoading: true })
+    expect(loadingEstimate.estimateText).toBe('Getting current NIM rate…')
   })
 
   it('attributes confirmed balances to the resolved network for estimates only', () => {

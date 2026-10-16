@@ -813,6 +813,48 @@ describe('Munus production API', () => {
     expect((await fetch(`${off.baseUrl}/nim/rate`, { headers: { cookie: offCookie } })).status).toBe(503)
   })
 
+  it('serves the global informational rate publicly without any session', async () => {
+    const { baseUrl } = await createTestServer()
+    // No cookie at all: global market data must not depend on auth.
+    const response = await fetch(`${baseUrl}/public/rates/nim-ngn`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toContain('public')
+    expect(response.headers.get('cache-control')).toContain('max-age=30')
+    const body = (await response.json()) as { ngnPerNim: string; source: string; asOf: string; expiresAt: string; freshness: string }
+    expect(body.ngnPerNim).toBe('2000')
+    expect(body.source).toContain('coingecko')
+    expect(body.freshness).toBe('fresh')
+    expect(Date.parse(body.asOf)).toBeGreaterThan(0)
+    expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.parse(body.asOf))
+    expect(JSON.stringify(body)).not.toMatch(/receiver|memo|luna|private|session|wallet/i)
+    // The authenticated endpoint keeps its session gate; payment quote
+    // endpoints are untouched by the public informational route.
+    expect((await fetch(`${baseUrl}/nim/rate`)).status).toBe(401)
+  })
+
+  it('serves the same public durable rate to every session without quoting', async () => {
+    const observedAt = new Date(Date.now() - 10 * 60_000).toISOString()
+    const { baseUrl, marketRates } = await createTestServer({ nimRateFetch: async () => { throw new Error('rate down') } })
+    await marketRates.writeRate({
+      asset: 'NIM',
+      quoteCurrency: 'NGN',
+      rate: '0.410829',
+      source: 'coingecko:nimiq-2/ngn',
+      observedAt,
+    })
+    // Two different users, no shared state: identical global rate.
+    const cookieA = await authenticate(baseUrl, KeyPair.generate())
+    const cookieB = await authenticate(baseUrl, KeyPair.generate())
+    const [anon, authedA, authedB] = await Promise.all([
+      fetch(`${baseUrl}/public/rates/nim-ngn`).then((r) => r.json()),
+      fetch(`${baseUrl}/public/rates/nim-ngn`, { headers: { cookie: cookieA } }).then((r) => r.json()),
+      fetch(`${baseUrl}/nim/rate`, { headers: { cookie: cookieB } }).then((r) => r.json()),
+    ])
+    expect(anon).toMatchObject({ ngnPerNim: '0.410829', asOf: observedAt, freshness: 'recent' })
+    expect(authedA).toMatchObject({ ngnPerNim: '0.410829', asOf: observedAt, freshness: 'recent' })
+    expect(authedB).toMatchObject({ ngnPerNim: '0.410829', asOf: observedAt, freshness: 'recent' })
+  })
+
   it('serves a recent durable rate when upstream fails, preserving its age', async () => {
     const observedAt = new Date(Date.now() - 10 * 60_000).toISOString()
     const { baseUrl, marketRates } = await createTestServer({ nimRateFetch: async () => { throw new Error('rate down') } })

@@ -14,13 +14,14 @@ const available = {
   observedAt: 1,
 } as const
 
-function view(balance: AssetBalanceResult = available, estimate: string | null = '442000.00') {
+function view(balance: AssetBalanceResult = available, estimate: string | null = '442000.00', rateLoading = false) {
   return buildNimFundingView({
     balance,
     estimateNgn: estimate,
     connectionReady: true,
     walletNetwork: 'mainnet',
     hideAmounts: false,
+    rateLoading,
   })
 }
 
@@ -139,7 +140,8 @@ describe('buildNimFundingView', () => {
     const hidden = buildNimFundingView({ balance: available, estimateNgn: '1', connectionReady: true, walletNetwork: 'mainnet', hideAmounts: true })
     expect(hidden.amountText).toBe('••••')
     expect(hidden.estimateText).toBe('NGN estimate hidden')
-    expect(view({ ...available }, null).estimateText).toBe('NGN estimate unavailable')
+    expect(view({ ...available }, null).estimateText).toBe('NGN estimate temporarily unavailable')
+    expect(view({ ...available }, null, true).estimateText).toBe('Getting current NIM rate…')
     expect(view().networkText).toBe('Mainnet')
   })
 })

@@ -82,6 +82,9 @@ describe('personal mobile finance app', () => {
     render(<App />)
     expect(window.sessionStorage.getItem('munus:pending-name')).toBeNull()
     expect(screen.getByRole('heading', { name: /Good (morning|afternoon|evening), Ada/ })).toBeInTheDocument()
+    // No rate loop is wired in this shell yet: Home must name the missing
+    // rate leg instead of flashing "unavailable" on first paint.
+    expect(screen.getByText('Getting current NIM rate…')).toBeInTheDocument()
     expect(screen.getAllByText('NGN estimate unavailable')[0]).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'View USDT account' })).toHaveAttribute('aria-pressed', 'false')
     const nav = within(screen.getByRole('navigation', { name: 'Primary navigation' }))

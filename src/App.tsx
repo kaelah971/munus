@@ -52,7 +52,6 @@ import { RemoteSupportApi, type SupportApi, type SupportData } from './persisten
 import { RemotePaymentApi, type PaymentApi } from './persistence/paymentApi'
 import { clearHostAccounts, readHostAccounts, saveHostAccounts } from './persistence/hostAccounts'
 import { useNimiqFunding } from './hooks/useNimiqFunding'
-import { configureNimRateFetcher } from './hooks/useNimRate'
 import { LocalPaymentApi } from './persistence/paymentStore'
 import { LocalSupportApi } from './persistence/supportStore'
 import { RemoteProfileApi } from './persistence/profileApi'
@@ -199,21 +198,10 @@ export function App() {
   const fundingContext = funding.status === 'ready' && funding.nim && funding.luna
     ? { luna: funding.luna, nim: funding.nim, network: funding.network }
     : null
-  // One shared informational rate loop for Home and Pay, fed by the
-  // authenticated server endpoint. No wallet contact; loop pauses with
-  // no subscribers and resumes on return.
-  useEffect(() => {
-    if (!paymentApi) return
-    configureNimRateFetcher(async () => {
-      const rate = await paymentApi.getNimRate()
-      const asOf = Date.parse(rate.asOf)
-      const expiresAt = Date.parse(rate.expiresAt)
-      if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
-        throw new Error('NIM rate unavailable.')
-      }
-      return rate
-    })
-  }, [paymentApi])
+  // The shared informational rate loop is wired once at application
+  // bootstrap (main.tsx) against the public endpoint, so it never waits
+  // for session, wallet, or profile — and never resets across users or
+  // routes. Home and Pay both subscribe to that same global store.
   const getReadiness = useMemo(
     () => (paymentApi ? () => paymentApi.getReadiness() : undefined),
     [paymentApi],

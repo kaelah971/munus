@@ -37,7 +37,11 @@ describe('account card deck', () => {
     render(<AccountCardDeck connection={connection} wallet={wallet} hideBalances={false} />)
     expect(screen.getByText('0 NIM')).toBeInTheDocument()
     expect(screen.getByText('— USDT')).toBeInTheDocument()
-    expect(screen.getAllByText('NGN estimate unavailable')).toHaveLength(2)
+    // Initial mount with no rate yet and no failure: the NIM leg names
+    // the missing rate instead of flashing "unavailable"; the USDT leg
+    // (separate source) keeps its own copy.
+    expect(screen.getByText('Getting current NIM rate…')).toBeInTheDocument()
+    expect(screen.getAllByText('NGN estimate unavailable')).toHaveLength(1)
     expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'View USDT account' })).toHaveAttribute('aria-pressed', 'false'))
   })
@@ -157,7 +161,10 @@ describe('account card deck', () => {
       aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
     />)
     expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
-    expect(screen.getAllByText('NGN estimate unavailable')).toHaveLength(2)
+    // Prolonged rate failure with a good balance: the NIM leg says the
+    // rate — not the balance — is temporarily missing.
+    expect(screen.getByText('NGN estimate temporarily unavailable')).toBeInTheDocument()
+    expect(screen.getAllByText('NGN estimate unavailable')).toHaveLength(1)
   })
 
   it('attributes a confirmed host balance to the session-verified network for estimates', async () => {

@@ -144,13 +144,23 @@ export function buildNimFundingView(input: {
   walletNetwork: string
   hideAmounts: boolean
   /**
+   * True while no usable rate exists yet and the shared loop is still
+   * trying (initial mount, no error). Distinguishes "still loading"
+   * from a prolonged rate failure so Home never flashes "unavailable"
+   * the moment it mounts.
+   */
+  rateLoading?: boolean
+  /**
    * Server/session-verified network, used ONLY when the host exposes
    * none. Rendered labeled (e.g. "Mainnet (session)") — never silently
    * substituted for host truth.
    */
   fallbackNetwork?: 'mainnet' | 'testnet'
 }): NimFundingView {
-  const { balance, estimateNgn, connectionReady, walletNetwork, hideAmounts, fallbackNetwork } = input
+  const { balance, estimateNgn, connectionReady, walletNetwork, hideAmounts, fallbackNetwork, rateLoading = false } = input
+  // No ordering assumption between balance and rate: either may arrive
+  // first and the view rerenders when the other lands. The copy names
+  // exactly which leg is still missing.
   const rpcAttested = balance.status === 'available' && balance.source === 'rpc'
   const network: { text: string; provenance: NetworkProvenance } = networkDisplay(walletNetwork, fallbackNetwork, rpcAttested)
   const statusText = balance.status === 'loading'
@@ -174,7 +184,7 @@ export function buildNimFundingView(input: {
   if (balance.status === 'loading') {
     return {
       amountText: '—',
-      estimateText: 'NGN estimate unavailable',
+      estimateText: rateLoading ? 'Getting current NIM rate…' : 'NGN estimate unavailable',
       statusText: 'Loading balance',
       networkText: network.text,
       networkProvenance: network.provenance,
@@ -184,7 +194,7 @@ export function buildNimFundingView(input: {
   if (balance.status !== 'available') {
     return {
       amountText: '—',
-      estimateText: 'NGN estimate unavailable',
+      estimateText: rateLoading ? 'Getting current NIM rate…' : 'NGN estimate unavailable',
       statusText,
       networkText: network.text,
       networkProvenance: network.provenance,
@@ -194,7 +204,11 @@ export function buildNimFundingView(input: {
   const liveNetwork = networkDisplay(balance.network, fallbackNetwork, rpcAttested)
   return {
     amountText: balance.amount,
-    estimateText: estimateNgn !== null ? `≈ ₦${estimateNgn}` : 'NGN estimate unavailable',
+    estimateText: estimateNgn !== null
+      ? `≈ ₦${estimateNgn}`
+      : rateLoading
+        ? 'Getting current NIM rate…'
+        : 'NGN estimate temporarily unavailable',
     statusText,
     networkText: liveNetwork.text,
     networkProvenance: liveNetwork.provenance,
@@ -238,10 +252,16 @@ export function buildAggregateFundingView(input: {
   nim: string
   estimateNgn: string | null
   network: 'mainnet' | 'testnet'
+  /** Same loading-vs-failed distinction as the single-wallet view. */
+  rateLoading?: boolean
 }): NimFundingView {
   return {
     amountText: input.nim,
-    estimateText: input.estimateNgn !== null ? `≈ ₦${input.estimateNgn}` : 'NGN estimate unavailable',
+    estimateText: input.estimateNgn !== null
+      ? `≈ ₦${input.estimateNgn}`
+      : input.rateLoading
+        ? 'Getting current NIM rate…'
+        : 'NGN estimate temporarily unavailable',
     statusText: 'Available in Nimiq Pay',
     networkText: networkLabel(input.network),
     networkProvenance: 'aggregate',

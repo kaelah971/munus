@@ -119,6 +119,40 @@ describe('NimRateStore informational policy', () => {
     expect(result.current.freshness).toBe('recent')
   })
 
+  it('reuses a fresh held rate across remounts without refetching', async () => {
+    const store = createNimRateStore()
+    const fetchRate = vi.fn().mockResolvedValue(rateAt(Date.now()))
+    store.configure(fetchRate)
+    const first = renderHook(() => useNimRate(Date.now(), store))
+    await flush()
+    expect(first.result.current.rate?.ngnPerNim).toBe('0.410829')
+    expect(fetchRate).toHaveBeenCalledTimes(1)
+    // Home → Pay → Home: the store is not reset and no second fetch
+    // fires while the held rate is still within its server TTL.
+    first.unmount()
+    const second = renderHook(() => useNimRate(Date.now(), store))
+    await flush()
+    expect(second.result.current.rate?.ngnPerNim).toBe('0.410829')
+    expect(fetchRate).toHaveBeenCalledTimes(1)
+    second.unmount()
+  })
+
+  it('revalidates on remount once the held rate passes its server TTL', async () => {
+    const store = createNimRateStore()
+    const fetchRate = vi.fn().mockResolvedValue(rateAt(Date.now()))
+    store.configure(fetchRate)
+    const first = renderHook(() => useNimRate(Date.now(), store))
+    await flush()
+    expect(fetchRate).toHaveBeenCalledTimes(1)
+    first.unmount()
+    await flush(130_000)
+    const second = renderHook(() => useNimRate(Date.now(), store))
+    await flush()
+    expect(fetchRate).toHaveBeenCalledTimes(2)
+    expect(second.result.current.rate?.ngnPerNim).toBe('0.410829')
+    second.unmount()
+  })
+
   it('seeds from validated persisted rates without extending freshness', async () => {
     const now = Date.now()
     window.localStorage.setItem('munus:nim-rate', JSON.stringify(rateAt(now - 130_000)))
