@@ -12,6 +12,7 @@ import { ClubKonnectAirtimeProvider, ClubKonnectDataProvider } from './clubKonne
 import { ClubKonnectDataCatalog } from './dataCatalog'
 import { NimPaymentService } from './nimPayments'
 import { CoinGeckoNimRateProvider } from './nimRates'
+import { InformativeRateService, PostgresMarketRateStore } from './marketRates'
 import { RpcNimiqChainReader } from './nimiqChain'
 import { CashoutService } from './cashout'
 import { PaycrestClient } from './paycrest'
@@ -46,10 +47,17 @@ const fulfilment = config.clubKonnect
     { callbackBaseUrl: config.clubKonnect.callbackBaseUrl, onFulfilmentSettled: essentialSync },
   )
   : null
+const nimRateProvider = new CoinGeckoNimRateProvider()
+const informativeRates = new InformativeRateService({
+  rates: nimRateProvider,
+  store: new PostgresMarketRateStore(database),
+  quoteTtlMs: config.nimPayments.quoteTtlMs,
+})
+informativeRates.start()
 const nimPayments = config.nimPayments.receiverAddress
   ? new NimPaymentService(
     payment,
-    new CoinGeckoNimRateProvider(),
+    nimRateProvider,
     config.nimPayments.rpcUrl ? new RpcNimiqChainReader(config.nimPayments.rpcUrl) : null,
     fulfilment,
     {
@@ -87,6 +95,7 @@ const server = createMunusServer({
   cashout,
   paycrestApiSecret: config.paycrest?.apiSecret,
   live,
+  informativeRates,
   auth,
   staticDir: resolve(process.cwd(), 'dist'),
   config,

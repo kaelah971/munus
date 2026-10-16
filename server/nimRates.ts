@@ -22,6 +22,13 @@ export class NimRateError extends Error {
   }
 }
 
+export class NimRateTimeoutError extends NimRateError {
+  constructor() {
+    super('Live NIM rate is unavailable: upstream timed out. No quote was created.')
+    this.name = 'NimRateTimeoutError'
+  }
+}
+
 /** Short instance cache: one upstream call per minute across all callers. */
 export const NIM_RATE_CACHE_TTL_MS = 60_000
 /** Upstream fetch budget: a hung CoinGecko must fail closed, not hang quotes. */
@@ -67,7 +74,7 @@ async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await new Promise<T>((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error('Rate fetch timed out.')), timeoutMs)
+      timer = setTimeout(() => reject(new NimRateTimeoutError()), timeoutMs)
       work.then(resolve, reject)
     })
   } finally {

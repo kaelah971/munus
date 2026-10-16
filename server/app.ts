@@ -22,6 +22,7 @@ import {
   type CashoutService,
 } from './cashout'
 import { LiveStatsService } from './liveStats'
+import type { InformativeRateService } from './marketRates'
 import { buildReadiness } from './readiness'
 import {
   PaymentValidationError,
@@ -94,6 +95,7 @@ export interface MunusServerDependencies {
   cashout: CashoutService | null
   paycrestApiSecret?: string
   live: LiveStatsService
+  informativeRates: InformativeRateService
   auth: MunusAuthService
   staticDir?: string
   config: Pick<
@@ -122,7 +124,7 @@ export async function handleRequest(
   dependencies: MunusServerDependencies,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://munus.local')
-  const { auth, repository, planning, support, payment, fulfilment, nimPayments, dataCatalog, cashout, paycrestApiSecret, live, staticDir, config } = dependencies
+  const { auth, repository, planning, support, payment, fulfilment, nimPayments, dataCatalog, cashout, paycrestApiSecret, live, informativeRates, staticDir, config } = dependencies
   applyCorsHeaders(request, response, config.corsOrigin)
 
   if (request.method === 'OPTIONS') {
@@ -640,11 +642,28 @@ export async function handleRequest(
         sendError(response, 503, 'NIM payments are not configured yet.')
         return
       }
-      // Informational estimate for balance display. Same provider and
-      // source as payment quotes, but binds to no order and authorizes
-      // nothing — never a substitute for a real quote.
-      sendJson(response, 200, await nimPayments.getIndicativeRate())
-      return
+      // Informational estimate for balance display. Served from the
+      // durable market-rate store when upstream is down; binds to no
+      // order and authorizes nothing — never a substitute for a quote.
+      const startedAt = Date.now()
+      try {
+        const outcome = await informativeRates.getRateDetailed()
+        console.info('Munus nim rate served', {
+          freshness: outcome.trace.freshness,
+          upstream: outcome.trace.upstream,
+          durable: outcome.trace.durable,
+          durationMs: outcome.trace.durationMs,
+          asOf: outcome.trace.asOf,
+        })
+        sendJson(response, 200, outcome.rate)
+        return
+      } catch (error) {
+        console.info('Munus nim rate unavailable', {
+          durationMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.name : 'unknown',
+        })
+        throw error
+      }
     }
 
     const quotePath = matchPath(url.pathname, /^\/payment-orders\/([^/]+)\/quote$/)

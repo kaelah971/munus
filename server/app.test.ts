@@ -20,6 +20,7 @@ import type { NimiqChainReader } from './nimiqChain'
 import { CashoutService } from './cashout'
 import { PaycrestClient } from './paycrest'
 import { InMemoryLiveStatsSource, LiveStatsService } from './liveStats'
+import { InformativeRateService, InMemoryMarketRateStore } from './marketRates'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -144,6 +145,12 @@ async function createTestServer(options: {
     essentialRequests: () => support.essentialRequests.values(),
     supportRequests: () => support.supportRequests.values(),
   }))
+  const informativeRatesStore = new InMemoryMarketRateStore()
+  const informativeRates = new InformativeRateService({
+    rates,
+    store: informativeRatesStore,
+    quoteTtlMs: 120_000,
+  })
   const server = createMunusServer({
     repository,
     planning,
@@ -157,6 +164,7 @@ async function createTestServer(options: {
       ? 'fixture-secret'
       : options.paycrestSecret ?? undefined,
     live,
+    informativeRates,
     auth,
     staticDir: options.staticDir,
     config: {
@@ -189,7 +197,7 @@ async function createTestServer(options: {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Test server did not open a port.')
 
-  return { baseUrl: `http://127.0.0.1:${address.port}`, repository, payment, support }
+  return { baseUrl: `http://127.0.0.1:${address.port}`, repository, payment, support, marketRates: informativeRatesStore }
 }
 
 async function createPaidAirtimeOrder(baseUrl: string, cookie: string, payment: InMemoryPaymentRepository): Promise<string> {
@@ -788,9 +796,10 @@ describe('Munus production API', () => {
     const cookie = await authenticate(baseUrl, KeyPair.generate())
     const response = await fetch(`${baseUrl}/nim/rate`, { headers: { cookie } })
     expect(response.status).toBe(200)
-    const body = (await response.json()) as { ngnPerNim: string; source: string; asOf: string; expiresAt: string }
+    const body = (await response.json()) as { ngnPerNim: string; source: string; asOf: string; expiresAt: string; freshness: string }
     expect(body.ngnPerNim).toBe('2000')
     expect(body.source).toContain('coingecko')
+    expect(body.freshness).toBe('fresh')
     expect(Date.parse(body.asOf)).toBeGreaterThan(0)
     expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.parse(body.asOf))
     expect(JSON.stringify(body)).not.toMatch(/receiver|memo|luna|private/i)
@@ -802,6 +811,26 @@ describe('Munus production API', () => {
     const off = await createTestServer({ disableNimPayments: true })
     const offCookie = await authenticate(off.baseUrl, KeyPair.generate())
     expect((await fetch(`${off.baseUrl}/nim/rate`, { headers: { cookie: offCookie } })).status).toBe(503)
+  })
+
+  it('serves a recent durable rate when upstream fails, preserving its age', async () => {
+    const observedAt = new Date(Date.now() - 10 * 60_000).toISOString()
+    const { baseUrl, marketRates } = await createTestServer({ nimRateFetch: async () => { throw new Error('rate down') } })
+    const cookie = await authenticate(baseUrl, KeyPair.generate())
+    // Nothing durable yet: honest 502, never fabricated.
+    expect((await fetch(`${baseUrl}/nim/rate`, { headers: { cookie } })).status).toBe(502)
+    await marketRates.writeRate({
+      asset: 'NIM',
+      quoteCurrency: 'NGN',
+      rate: '0.410829',
+      source: 'coingecko:nimiq-2/ngn',
+      observedAt,
+    })
+    const response = await fetch(`${baseUrl}/nim/rate`, { headers: { cookie } })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { ngnPerNim: string; asOf: string; freshness: string }
+    expect(body).toMatchObject({ ngnPerNim: '0.410829', asOf: observedAt, freshness: 'recent' })
+    expect(JSON.stringify(body)).not.toMatch(/receiver|memo|luna|NQ|fixture|secret|http/i)
   })
 
   it('settles verified wallet payments to PAID and hands off fulfilment once', async () => {
@@ -1864,9 +1893,10 @@ describe('activation preflight readiness', () => {
     const cookie = await authenticate(baseUrl, KeyPair.generate())
     const response = await fetch(`${baseUrl}/nim/rate`, { headers: { cookie } })
     expect(response.status).toBe(200)
-    const body = (await response.json()) as { ngnPerNim: string; source: string; asOf: string; expiresAt: string }
+    const body = (await response.json()) as { ngnPerNim: string; source: string; asOf: string; expiresAt: string; freshness: string }
     expect(body.ngnPerNim).toBe('2000')
     expect(body.source).toBe('coingecko:nimiq-2/ngn')
+    expect(body.freshness).toBe('fresh')
     expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.parse(body.asOf))
     expect(JSON.stringify(body)).not.toMatch(/receiver|memo|luna|NQ|fixture/i)
 

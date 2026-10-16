@@ -3,10 +3,12 @@ import type { NimIndicativeRate } from '../persistence/paymentApi'
 
 /**
  * Recent informational window: a recent rate may back Home/form display.
- * Freshness itself still follows the server quote TTL (~120s); beyond
- * that a rate is recent-but-aging until this bound, then stale.
+ * Matches the server durable max age so a served recent rate never
+ * vanishes client-side the moment it arrives. Freshness itself still
+ * follows the server quote TTL (~120s); beyond that a rate is
+ * recent-but-aging until this bound, then stale.
  */
-export const RECENT_RATE_TTL_MS = 15 * 60_000
+export const RECENT_RATE_TTL_MS = 30 * 60_000
 /** Bounded retry after a failed fetch, then a steady low cadence forever. */
 const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000]
 /** Steady background revalidation while observed. */
