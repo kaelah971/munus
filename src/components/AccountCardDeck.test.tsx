@@ -126,6 +126,24 @@ describe('account card deck', () => {
     expect(screen.queryByText(/BCKQ|J28D/)).not.toBeInTheDocument()
   })
 
+  it('keeps the aggregate after an internal transfer instead of zeroing', async () => {
+    // Production case: the payment moved ~121.97 NIM between two exposed
+    // accounts (fee 0). The server-restored aggregate still totals
+    // 221.005 NIM, so Home shows the total — never 0/₦0.00.
+    configureRate('10')
+    window.localStorage.clear()
+    render(<AccountCardDeck
+      connection={connection}
+      wallet={{ ...wallet, status: 'error', nimBalance: undefined, network: 'unknown' }}
+      hideBalances={false}
+      sources={usdtSources()}
+      aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
+    />)
+    expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
+    expect(await screen.findByText(/2210\.05/)).toBeInTheDocument()
+    expect(screen.queryByText('0 NIM')).not.toBeInTheDocument()
+  })
+
   it('still masks an aggregate balance when requested', () => {
     render(<AccountCardDeck
       connection={connection}

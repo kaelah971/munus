@@ -331,6 +331,36 @@ describe('NIM payment service', () => {
     expect(fulfilCalls).toEqual([quoted.id])
   })
 
+  it('never pays or fulfils for hashes absent from the configured chain', async () => {
+    const { repository, chain, fulfilCalls, service } = setup()
+    const quoted = await quotedOrder(service, repository)
+    chain.transaction = null
+    const pending = await service.submitPayment('user-a', quoted.id, HASH)
+    expect(pending.paymentStatus).toBe('ONCHAIN_PENDING')
+    expect(await service.reconcilePayment('user-a', quoted.id)).toMatchObject({ paymentStatus: 'ONCHAIN_PENDING' })
+    expect(await service.reconcilePayment('user-a', quoted.id)).toMatchObject({ paymentStatus: 'ONCHAIN_PENDING' })
+    expect(fulfilCalls).toEqual([])
+  })
+
+  it('never downgrades a valid PAID payment back to failed', async () => {
+    const { repository, chain, fulfilCalls, service } = setup()
+    const quoted = await quotedOrder(service, repository)
+    const memo = quoted.paymentMemo ?? ''
+    chain.transaction = matchingTransaction({ dataFields: [memo] })
+    const settled = await service.submitPayment('user-a', quoted.id, HASH)
+    expect(settled.paymentStatus).toBe('PAID')
+    expect(fulfilCalls).toEqual([quoted.id])
+    // Later lookups go dark and even contradict: PAID stands, provider untouched.
+    chain.transaction = null
+    const stored = await repository.getOrder('user-a', quoted.id)
+    if (!stored) throw new Error('Paid order must exist.')
+    stored.fulfilmentStatus = 'DELIVERED'
+    expect(await service.reconcilePayment('user-a', quoted.id)).toMatchObject({ paymentStatus: 'PAID' })
+    chain.transaction = matchingTransaction({ dataFields: [memo], valueLuna: '1' })
+    expect(await service.reconcilePayment('user-a', quoted.id)).toMatchObject({ paymentStatus: 'PAID' })
+    expect(fulfilCalls).toEqual([quoted.id])
+  })
+
   it('leaves affirmative failures failed on reconcile without touching the provider', async () => {
     const { repository, chain, fulfilCalls, service } = setup()
     const quoted = await quotedOrder(service, repository)

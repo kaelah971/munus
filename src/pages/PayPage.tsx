@@ -19,7 +19,7 @@ import {
 import type { DataPlan } from '../domain/orders'
 import { maskPhone, SUPPORT_NETWORKS } from '../domain/support'
 import { maskBankAccountNumber, type CashoutBank, type CashoutRatePreview } from '../domain/cashout'
-import { buildRecoveryState } from '../domain/recovery'
+import { buildPaymentRecoveryCase, buildRecoveryState } from '../domain/recovery'
 import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState, type NimiqWalletState } from '../integration/nimiq'
 import { requestUsdtTransfer } from '../integration/ethereum'
 import type { PaymentApi, RailCapability, RailStatus, ReadinessReport } from '../persistence/paymentApi'
@@ -85,7 +85,7 @@ function emptyAirtimeDraft(defaultPhone: string): PaymentOrderDraft {
   }
 }
 
-export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp, onRefreshWallet: refreshWalletProp, fallbackNetwork, funding }: {
+export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp, onRefreshWallet: refreshWalletProp, fallbackNetwork, funding, onPaymentSettled }: {
   api: PaymentApi
   defaultPhone?: string
   connection: NimiqConnectionState
@@ -95,6 +95,9 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
   fallbackNetwork?: 'mainnet' | 'testnet'
   /** Confirmed aggregate funding context; review prefers it when ready. */
   funding?: { luna: string; nim: string; network: 'mainnet' | 'testnet' } | null
+  /** Called whenever an order update lands PAID, so the aggregate funding
+   *  context re-reads from chain instead of going stale. Chain reads only. */
+  onPaymentSettled?: () => void
 }) {
   // App always supplies both; the fallback keeps review renderable without
   // wallet context (unavailable funding state, never invented values).
@@ -251,6 +254,9 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
 
   function updateOrder(next: PaymentOrder) {
     setOrders((current) => current.map((entry) => entry.id === next.id ? next : entry))
+    // Post-PAID the aggregate must re-read from chain (both exposed
+    // accounts move in an internal transfer) — never local subtraction.
+    if (next.paymentStatus === 'PAID') onPaymentSettled?.()
   }
 
   async function refreshOrder(orderId: string, mode: 'get' | 'reconcile') {
@@ -1367,9 +1373,21 @@ function ReviewActions({ order, quoteLive, nowMs, quoting, payBusy, refreshing, 
     )
   }
 
+  // A bound-but-unverified payment is recoverable in place: re-checking
+  // re-verifies THAT SAME transaction on-chain. Never the wallet, never
+  // a new payment — the button below deliberately does not say "pay".
+  const paymentRecovery = buildPaymentRecoveryCase(order)
   return (
     <>
       <div className="truth-note"><Icon name="info" size={18} /><p>{describePaymentFailureReason(order.paymentFailureReason)}</p></div>
+      {paymentRecovery ? (
+        <>
+          <div className="truth-note"><Icon name="info" size={18} /><p>{paymentRecovery.explanation}</p></div>
+          <PrimaryButton disabled={refreshing} onClick={onRefreshPayment}>
+            {refreshing ? 'Verifying…' : 'Verify existing payment'}
+          </PrimaryButton>
+        </>
+      ) : null}
       <QuietButton disabled={refreshing} onClick={onRefresh}>
         {refreshing ? 'Checking…' : 'Refresh order status'}
       </QuietButton>

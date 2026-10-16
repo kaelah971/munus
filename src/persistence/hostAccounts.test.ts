@@ -4,6 +4,7 @@ import {
   normalizeHostAddress,
   readHostAccounts,
   saveHostAccounts,
+  selectFundingAddresses,
 } from './hostAccounts'
 
 describe('host account persistence', () => {
@@ -39,5 +40,15 @@ describe('host account persistence', () => {
   it('normalizes addresses for comparison only', () => {
     expect(normalizeHostAddress('NQ47 1111 2222')).toBe('NQ4711112222')
     expect(normalizeHostAddress('nq47 1111')).toBe('NQ471111')
+  })
+
+  it('prefers the server set once known, keeping local as the fast cache', () => {
+    // Restore not yet landed: local cache keeps Home working.
+    expect(selectFundingAddresses(null, ['A'])).toEqual(['A'])
+    expect(selectFundingAddresses(undefined, ['A'])).toEqual(['A'])
+    // Server truth wins afterwards — even an empty set, so stale local
+    // entries can never resurrect after the user removed them.
+    expect(selectFundingAddresses(['B'], ['A'])).toEqual(['B'])
+    expect(selectFundingAddresses([], ['A'])).toEqual([])
   })
 })

@@ -17,6 +17,7 @@ import { RpcNimiqChainReader } from './nimiqChain'
 import { CashoutService } from './cashout'
 import { PaycrestClient } from './paycrest'
 import { LiveStatsService, PostgresLiveStatsSource } from './liveStats'
+import { PostgresWalletAccountStore } from './walletAccounts'
 import { syncEssentialForOrder } from './essentialRequests'
 import type { PaymentOrder } from '../src/domain/orders'
 
@@ -84,11 +85,13 @@ const cashout = config.paycrest
   )
   : null
 const live = new LiveStatsService(new PostgresLiveStatsSource(database))
+const walletAccounts = new PostgresWalletAccountStore(database)
 const server = createMunusServer({
   repository,
   planning,
   support,
   payment,
+  walletAccounts,
   fulfilment,
   nimPayments,
   dataCatalog,

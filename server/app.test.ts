@@ -21,6 +21,7 @@ import { CashoutService } from './cashout'
 import { PaycrestClient } from './paycrest'
 import { InMemoryLiveStatsSource, LiveStatsService } from './liveStats'
 import { InformativeRateService, InMemoryMarketRateStore } from './marketRates'
+import { InMemoryWalletAccountStore } from './walletAccounts'
 
 const openServers: Array<ReturnType<typeof createMunusServer>> = []
 
@@ -151,6 +152,7 @@ async function createTestServer(options: {
     store: informativeRatesStore,
     quoteTtlMs: 120_000,
   })
+  const walletAccounts = new InMemoryWalletAccountStore()
   const server = createMunusServer({
     repository,
     planning,
@@ -165,6 +167,7 @@ async function createTestServer(options: {
       : options.paycrestSecret ?? undefined,
     live,
     informativeRates,
+    walletAccounts,
     auth,
     staticDir: options.staticDir,
     config: {
@@ -197,7 +200,7 @@ async function createTestServer(options: {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Test server did not open a port.')
 
-  return { baseUrl: `http://127.0.0.1:${address.port}`, repository, payment, support, marketRates: informativeRatesStore }
+  return { baseUrl: `http://127.0.0.1:${address.port}`, repository, payment, support, marketRates: informativeRatesStore, walletAccounts }
 }
 
 async function createPaidAirtimeOrder(baseUrl: string, cookie: string, payment: InMemoryPaymentRepository): Promise<string> {
@@ -853,6 +856,28 @@ describe('Munus production API', () => {
     expect(anon).toMatchObject({ ngnPerNim: '0.410829', asOf: observedAt, freshness: 'recent' })
     expect(authedA).toMatchObject({ ngnPerNim: '0.410829', asOf: observedAt, freshness: 'recent' })
     expect(authedB).toMatchObject({ ngnPerNim: '0.410829', asOf: observedAt, freshness: 'recent' })
+  })
+
+  it('persists each user\u2019s exposed wallet set for silent funding restore', async () => {
+    const { baseUrl } = await createTestServer()
+    expect((await fetch(`${baseUrl}/wallet/accounts`)).status).toBe(401)
+    const cookieA = await authenticate(baseUrl, KeyPair.generate())
+    const cookieB = await authenticate(baseUrl, KeyPair.generate())
+    const addrA = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const addrB = KeyPair.generate().toAddress().toUserFriendlyAddress()
+    const put = (cookie: string, body: unknown) => fetch(`${baseUrl}/wallet/accounts`, {
+      method: 'PUT',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const saved = await (await put(cookieA, { addresses: [addrA, addrB, addrA] })).json() as { addresses: string[] }
+    expect(saved.addresses).toHaveLength(2)
+    const listed = await (await fetch(`${baseUrl}/wallet/accounts`, { headers: { cookie: cookieA } })).json() as { addresses: string[] }
+    expect(listed.addresses).toEqual(saved.addresses)
+    // Scoped: another user sees nothing and cannot overwrite.
+    expect(await (await fetch(`${baseUrl}/wallet/accounts`, { headers: { cookie: cookieB } })).json()).toEqual({ addresses: [] })
+    expect((await put(cookieB, { addresses: ['not-an-address'] })).status).toBe(400)
+    expect(await (await fetch(`${baseUrl}/wallet/accounts`, { headers: { cookie: cookieA } })).json()).toEqual({ addresses: saved.addresses })
   })
 
   it('serves a recent durable rate when upstream fails, preserving its age', async () => {

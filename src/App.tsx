@@ -50,7 +50,7 @@ import { LocalPlanningApi } from './persistence/planningStore'
 import { RemotePlanningApi, type PlanningApi } from './persistence/planningApi'
 import { RemoteSupportApi, type SupportApi, type SupportData } from './persistence/supportApi'
 import { RemotePaymentApi, type PaymentApi } from './persistence/paymentApi'
-import { clearHostAccounts, readHostAccounts, saveHostAccounts } from './persistence/hostAccounts'
+import { clearHostAccounts, readHostAccounts, saveHostAccounts, selectFundingAddresses } from './persistence/hostAccounts'
 import { useNimiqFunding } from './hooks/useNimiqFunding'
 import { LocalPaymentApi } from './persistence/paymentStore'
 import { LocalSupportApi } from './persistence/supportStore'
@@ -186,9 +186,14 @@ export function App() {
     [sessionUserId],
   )
   const { state: wallet, refreshWallet } = useNimiqWallet(connection, session?.walletAddress, fetchRpcBalance)
-  // Aggregate funding across host-exposed accounts, resolved once per
-  // session from the Connect-time set. Silent server reads only.
-  const storedHostAddresses = sessionUserId ? readHostAccounts(sessionUserId)?.addresses ?? [] : []
+  // Durable funding context: the server-persisted exposed set (source of
+  // truth, survives webview storage loss) with the local cache as fast
+  // fallback until the restore fetch lands. Silent server reads only.
+  const [serverAccounts, setServerAccounts] = useState<string[] | null>(null)
+  const storedHostAddresses = selectFundingAddresses(
+    sessionUserId ? serverAccounts : null,
+    sessionUserId ? readHostAccounts(sessionUserId)?.addresses ?? [] : [],
+  )
   const listBalances = useMemo(
     () => (paymentApi ? (addresses: string[]) => paymentApi.listAccountBalances(addresses) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -232,6 +237,11 @@ export function App() {
         setPinRecord(restoredPin)
         setUnlocked(!restoredPin)
         setHideBalances(preferencesStore.get(restoredSession.userId).hideBalances)
+        // Restore the durable funding set alongside the session so Home
+        // aggregates from chain reads even after localStorage loss.
+        void createPaymentApi(restoredSession.userId).getWalletAccounts()
+          .then((saved) => { if (active) setServerAccounts(saved.addresses) })
+          .catch(() => { if (active) setServerAccounts(null) })
         const restoredProfile = await remoteProfileApi.getProfile()
         if (!active) return
         setProfile(restoredProfile)
@@ -326,7 +336,10 @@ export function App() {
       if (!usesRemotePersistence) sessionStore.save(nextSession)
       // Remember the host-exposed account set from this explicit Connect
       // so silent restores never need a wallet prompt to show funding.
+      // Local cache first, then the server set (authoritative, survives
+      // storage loss). Persistence must never break authentication.
       saveHostAccounts(nextSession.userId, accounts)
+      void createPaymentApi(nextSession.userId).saveWalletAccounts([...accounts]).catch(() => undefined)
       setPlanningLoading(true)
       setSupportLoading(true)
       setSession(nextSession)
@@ -440,6 +453,7 @@ export function App() {
 
     authGeneration.current += 1
     sessionStore.clear()
+    setServerAccounts(null)
     if (session) clearHostAccounts(session.userId)
     setAuthBusy(false)
     setProfileSaving(false)
@@ -758,6 +772,7 @@ export function App() {
       onCheckBalances={paymentApi && sessionUserId ? (addresses) => paymentApi.listAccountBalances(addresses).then((report) => {
         // Keep the stored set fresh after an explicit diagnostics refresh.
         saveHostAccounts(sessionUserId, addresses)
+        void paymentApi.saveWalletAccounts(addresses).catch(() => undefined)
         return report
       }) : undefined}
       onNavigate={navigate} onRemovePin={removePin} onSave={(draft) => saveProfile(draft, 'profile')}
@@ -767,7 +782,7 @@ export function App() {
       onOpenContacts={() => openContacts('list')} onCopyAddress={copyWalletAddress}
     />
   } else if (destination === 'pay') {
-    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} wallet={wallet} onRefreshWallet={refreshWallet} fallbackNetwork={session?.network} funding={fundingContext} /> : null
+    content = paymentApi ? <PayPage api={paymentApi} connection={connection} defaultPhone={profile.defaultPhone} wallet={wallet} onRefreshWallet={refreshWallet} fallbackNetwork={session?.network} funding={fundingContext} onPaymentSettled={() => void funding.refresh()} /> : null
   } else if (destination === 'pockets') {
     content = <PocketsPage
       authenticated connection={connection} error={planningError} loading={planningLoading}
@@ -799,7 +814,7 @@ export function App() {
       onListDataPlans={(network: SupportNetwork) => paymentApi?.listDataPlans(network) ?? Promise.resolve([] as DataPlan[])}
     />
   } else if (destination === 'activity') {
-    content = paymentApi ? <ActivityPage api={paymentApi} onNavigate={navigate} /> : null
+    content = paymentApi ? <ActivityPage api={paymentApi} onNavigate={navigate} onPaymentSettled={() => void funding.refresh()} /> : null
   } else {
     content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances} fallbackNetwork={session?.network} funding={fundingContext}
       pockets={planning.pockets} reminders={planning.reminders} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests}

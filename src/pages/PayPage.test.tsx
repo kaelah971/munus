@@ -222,6 +222,8 @@ function apiStub(initial: PaymentOrder[] = []) {
       okCount: addresses.length,
       network: 'mainnet',
     })),
+    getWalletAccounts: vi.fn().mockResolvedValue({ addresses: [] }),
+    saveWalletAccounts: vi.fn().mockImplementation(async (addresses: string[]) => ({ addresses })),
   }
   return api
 }
@@ -694,6 +696,31 @@ describe('Pay essentials order flow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Get NIM quote' }))
     await waitFor(() => expect(api.createQuote).toHaveBeenCalledWith('order-50'))
     expect(screen.queryByText(/whole naira/i)).not.toBeInTheDocument()
+  })
+
+  it('verifies a bound wrong-network failure from review without a new payment', async () => {
+    const failed = order({
+      id: 'order-failed-50',
+      requestedAmount: '50.00000000',
+      paymentStatus: 'PAYMENT_FAILED',
+      paymentFailureReason: 'wrong-network',
+      walletTxRef: 'ab'.repeat(32),
+    })
+    const api = apiStub([failed])
+    useApiRate(api)
+    const onPaymentSettled = vi.fn()
+    render(<PayPage api={api} connection={offlineConnection} onPaymentSettled={onPaymentSettled} />)
+    fireEvent.click(await screen.findByRole('button', { name: /₦50 airtime/ }))
+    expect(await screen.findByText(/wrong Nimiq network/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /pay again/i })).not.toBeInTheDocument()
+    const paid = { ...failed, paymentStatus: 'PAID' as const, paymentFailureReason: undefined }
+    api.reconcilePayment.mockResolvedValue(paid)
+    fireEvent.click(screen.getByRole('button', { name: 'Verify existing payment' }))
+    await waitFor(() => expect(api.reconcilePayment).toHaveBeenCalledWith('order-failed-50'))
+    // The SAME hash is re-checked; the wallet is never opened here.
+    expect(mockedRequestNimPayment).not.toHaveBeenCalled()
+    // Landing PAID re-reads aggregate funding from chain, never by math.
+    await waitFor(() => expect(onPaymentSettled).toHaveBeenCalled())
   })
 
   it('shows the funding preview from the authoritative quote without mutating balance', async () => {

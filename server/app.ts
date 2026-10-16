@@ -23,6 +23,7 @@ import {
 } from './cashout'
 import { LiveStatsService } from './liveStats'
 import type { InformativeRateService } from './marketRates'
+import { WalletAccountError, type WalletAccountStore } from './walletAccounts'
 import { buildReadiness } from './readiness'
 import {
   PaymentValidationError,
@@ -96,6 +97,7 @@ export interface MunusServerDependencies {
   paycrestApiSecret?: string
   live: LiveStatsService
   informativeRates: InformativeRateService
+  walletAccounts: WalletAccountStore
   auth: MunusAuthService
   staticDir?: string
   config: Pick<
@@ -619,6 +621,25 @@ export async function handleRequest(
       return
     }
 
+    // Durable funding context: the Nimiq Pay host-exposed account set,
+    // established only during explicit Connect / diagnostics discovery
+    // and read back on silent restore. Public on-chain addresses scoped
+    // to the canonical user — never auth identity, never a balance.
+    if (request.method === 'GET' && url.pathname === '/wallet/accounts') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      sendJson(response, 200, { addresses: await dependencies.walletAccounts.listAccounts(session.userId) })
+      return
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/wallet/accounts') {
+      const session = await requireSession(request, response, dependencies)
+      if (!session) return
+      const body = asRecord(await readJson(request))
+      sendJson(response, 200, { addresses: await dependencies.walletAccounts.replaceAccounts(session.userId, body.addresses) })
+      return
+    }
+
     if (request.method === 'POST' && url.pathname === '/wallet/account-balances') {
       const session = await requireSession(request, response, dependencies)
       if (!session) return
@@ -1025,9 +1046,10 @@ export async function handleRequest(
       error instanceof NimRateError ||
       error instanceof NimiqChainError ||
       error instanceof CashoutError ||
-      error instanceof PaycrestError
+      error instanceof PaycrestError ||
+      error instanceof WalletAccountError
     ) {
-      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError || error instanceof FulfilmentError || error instanceof ClubKonnectError || error instanceof NimPaymentError || error instanceof NimRateError || error instanceof NimiqChainError || error instanceof CashoutError || error instanceof PaycrestError
+      const statusCode = error instanceof AuthServiceError || error instanceof PlanningRepositoryError || error instanceof SupportRepositoryError || error instanceof PaymentRepositoryError || error instanceof FulfilmentError || error instanceof ClubKonnectError || error instanceof NimPaymentError || error instanceof NimRateError || error instanceof NimiqChainError || error instanceof CashoutError || error instanceof PaycrestError || error instanceof WalletAccountError
         ? error.statusCode
         : 400
       sendError(response, statusCode, error.message, error instanceof AuthServiceError ? error.code : undefined)

@@ -10,6 +10,7 @@ import type { DataNetwork, DataPlan } from '../domain/orders'
 import type { SupportNetwork } from '../domain/support'
 import type { CashoutOrderInput } from '../domain/cashout'
 import type { DataOrderInput, HostAccountBalances, NimIndicativeRate, PaymentApi, PaymentIntentResponse, ReadinessReport, RpcNimBalance } from './paymentApi'
+import { readHostAccounts, saveHostAccounts } from './hostAccounts'
 
 const PAYMENT_KEY_PREFIX = 'munus:payments:'
 
@@ -117,6 +118,15 @@ export class LocalPaymentApi implements PaymentApi {
   async listAccountBalances(addresses: string[]): Promise<HostAccountBalances> {
     void addresses
     throw new Error('NIM balances require the Munus API.')
+  }
+
+  async getWalletAccounts(): Promise<{ addresses: string[] }> {
+    return { addresses: readHostAccounts(this.userId)?.addresses ?? [] }
+  }
+
+  async saveWalletAccounts(addresses: string[]): Promise<{ addresses: string[] }> {
+    saveHostAccounts(this.userId, addresses)
+    return { addresses: readHostAccounts(this.userId)?.addresses ?? [] }
   }
 
   async getReadiness(): Promise<ReadinessReport> {

@@ -107,6 +107,33 @@ describe('useNimiqFunding', () => {
     expect(listAccountBalances).not.toHaveBeenCalled()
   })
 
+  it('preserves the aggregate across an internal transfer between exposed accounts', async () => {
+    // Production case: J28D paid BCKQ ~121.97 NIM (fee 0). Both legs sit
+    // inside the same exposed set, so Home must keep showing ~221 NIM —
+    // never 0 — by re-reading both accounts from chain.
+    const listAccountBalances = vi.fn()
+      .mockResolvedValueOnce(reportFor([
+        { suffix: '…BCKQ', luna: '500', nim: '0.005' },
+        { suffix: '…J28D', luna: '22100000', nim: '221' },
+      ], '221.005'))
+      .mockResolvedValueOnce(reportFor([
+        { suffix: '…BCKQ', luna: '12197764', nim: '121.97764' },
+        { suffix: '…J28D', luna: '9902736', nim: '99.02736' },
+      ], '221.005'))
+    const { result } = renderHook(() => useNimiqFunding({
+      sessionUserId: 'user-1',
+      addresses: ['NQ47 BCKQ', 'NQ48 J28D'],
+      listAccountBalances,
+    }))
+    await waitFor(() => expect(result.current.nim).toBe('221.005'))
+    await act(async () => {
+      await result.current.refresh()
+    })
+    await waitFor(() => expect(listAccountBalances).toHaveBeenCalledTimes(2))
+    expect(result.current).toMatchObject({ status: 'ready', luna: '22100500', nim: '221.005' })
+    expect(result.current.nim).not.toBe('0')
+  })
+
   it('refreshes on demand without wallet interaction', async () => {
     const listAccountBalances = vi.fn()
       .mockResolvedValueOnce(reportFor([{ suffix: '…BCKQ', luna: '500', nim: '0.005' }], '0.005'))

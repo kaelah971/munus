@@ -189,6 +189,74 @@ describe('Activity and Receipt Vault', () => {
     expect(screen.queryByText('Recovery Center')).not.toBeInTheDocument()
   })
 
+  it('re-reads funding when payment recovery lands PAID', async () => {
+    const failed = order({
+      id: 'f2f2f2f2-0000-0000-0000-000000000009',
+      paymentStatus: 'PAYMENT_FAILED',
+      paymentFailureReason: 'wrong-network',
+      walletTxRef: TX_HASH,
+    })
+    const api = apiStub([failed])
+    const onPaymentSettled = vi.fn()
+    render(<ActivityPage api={api} onNavigate={() => {}} onPaymentSettled={onPaymentSettled} />)
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    vi.mocked(api.reconcilePayment).mockResolvedValue({ ...failed, paymentStatus: 'PAID' as const })
+    fireEvent.click(await screen.findByRole('button', { name: 'Verify existing payment' }))
+    await waitFor(() => expect(onPaymentSettled).toHaveBeenCalled())
+  })
+
+  it('exposes Verify existing payment for a bound wrong-network failure', async () => {
+    const failed = order({
+      id: 'f0f0f0f0-0000-0000-0000-000000000007',
+      paymentStatus: 'PAYMENT_FAILED',
+      paymentFailureReason: 'wrong-network',
+      walletTxRef: TX_HASH,
+      requestedAmount: '50.00000000',
+    })
+    const api = apiStub([failed])
+    renderPage(api)
+    // Database scale never leaks into the list, and the row asks for
+    // attention instead of showing a dead receipt.
+    const row = await screen.findByRole('button', { name: /₦50 airtime/ })
+    expect(row).toHaveTextContent('Needs attention')
+    expect(screen.queryByText(/50\.00000000/)).not.toBeInTheDocument()
+    fireEvent.click(row)
+    expect(await screen.findByText('Recovery Center')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Verify existing payment' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /pay again/i })).not.toBeInTheDocument()
+    // Verifying re-checks the SAME hash through payment reconciliation
+    // only — no fulfilment reconcile, and no wallet exists on this path.
+    const paid: PaymentOrder = {
+      ...failed,
+      paymentStatus: 'PAID',
+      paymentFailureReason: undefined,
+      paymentVerifiedAt: '2026-10-16T12:05:00.000Z',
+    }
+    vi.mocked(api.reconcilePayment).mockResolvedValue(paid)
+    fireEvent.click(screen.getByRole('button', { name: 'Verify existing payment' }))
+    await waitFor(() => expect(api.reconcilePayment).toHaveBeenCalledWith(failed.id))
+    expect(api.reconcilePayment).toHaveBeenCalledTimes(1)
+    expect(api.reconcileOrder).not.toHaveBeenCalled()
+    // Projection updates to the live receipt; the obsolete failure is gone.
+    expect(await screen.findByText('Order detail')).toBeInTheDocument()
+    expect(screen.queryByText('Recovery Center')).not.toBeInTheDocument()
+    expect(screen.queryByText(/wrong Nimiq network/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Verify existing payment' })).not.toBeInTheDocument()
+  })
+
+  it('offers no payment recovery for affirmative mismatches', async () => {
+    const failed = order({
+      id: 'f1f1f1f1-0000-0000-0000-000000000008',
+      paymentStatus: 'PAYMENT_FAILED',
+      paymentFailureReason: 'wrong-amount',
+      walletTxRef: TX_HASH,
+    })
+    renderPage(apiStub([failed]))
+    fireEvent.click(await screen.findByRole('button', { name: /₦1000 airtime/ }))
+    expect(await screen.findByText('Order detail')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Verify existing payment' })).not.toBeInTheDocument()
+  })
+
   it('opens a completed receipt with sections, timeline, and copy action', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })

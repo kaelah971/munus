@@ -94,4 +94,43 @@ describe('RecoveryCenter', () => {
       expect.objectContaining({ fulfilmentStatus: 'DELIVERED' }),
     ))
   })
+
+  it('verifies a bound payment failure without wallet or pay-again wording', async () => {
+    const failed = order({
+      paymentStatus: 'PAYMENT_FAILED',
+      paymentFailureReason: 'wrong-network',
+      fulfilmentStatus: 'NOT_STARTED',
+      requestedAmount: '50.00000000',
+    })
+    const onVerifyPayment = vi.fn(async (orderId: string) => ({
+      ...failed,
+      id: orderId,
+      paymentStatus: 'PAID' as const,
+      paymentVerifiedAt: '2026-10-16T12:00:00.000Z',
+    }))
+    const onResolved = vi.fn()
+    render(
+      <RecoveryCenter
+        order={failed}
+        onRefresh={async () => failed}
+        onRetry={async () => failed}
+        onBack={() => {}}
+        onResolved={onResolved}
+        paymentRecovery={{
+          headline: 'Re-check existing payment',
+          explanation: 'Same transaction, no new payment.',
+        }}
+        onVerifyPayment={onVerifyPayment}
+      />,
+    )
+    expect(await screen.findByRole('button', { name: 'Verify existing payment' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /pay again/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/50 airtime/)).toBeInTheDocument()
+    expect(screen.queryByText(/50\.00000000/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Verify existing payment' }))
+    await waitFor(() => expect(onVerifyPayment).toHaveBeenCalledWith(failed.id))
+    await waitFor(() => expect(onResolved).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentStatus: 'PAID' }),
+    ))
+  })
 })

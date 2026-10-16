@@ -22,6 +22,42 @@ export interface RecoveryCase {
   retryBlockedReason?: string
 }
 
+export interface PaymentRecoveryCase {
+  headline: string
+  explanation: string
+}
+
+/**
+ * Payment re-verification for the proven false-failure class: a NIM
+ * airtime/data order stuck PAYMENT_FAILED with reason wrong-network and
+ * a bound wallet hash. Re-checking re-verifies THAT SAME transaction
+ * against the configured chain — it never opens the wallet, never
+ * requests another payment, and never touches the provider until PAID.
+ * Affirmative mismatches (recipient/amount/memo) are never recoverable
+ * here; anything without a bound hash has nothing to re-check.
+ */
+export function buildPaymentRecoveryCase(
+  order: Pick<
+    PaymentOrder,
+    | 'serviceType'
+    | 'paymentAsset'
+    | 'paymentStatus'
+    | 'paymentFailureReason'
+    | 'walletTxRef'
+  >,
+): PaymentRecoveryCase | null {
+  if (order.paymentAsset !== 'NIM') return null
+  if (order.serviceType !== 'AIRTIME' && order.serviceType !== 'DATA') return null
+  if (order.paymentStatus !== 'PAYMENT_FAILED') return null
+  if (order.paymentFailureReason !== 'wrong-network') return null
+  if (!order.walletTxRef) return null
+  return {
+    headline: 'Re-check existing payment',
+    explanation:
+      'This order already has a submitted wallet transaction. Verifying re-checks that same transaction on-chain — it never opens Nimiq Pay and never asks for another payment.',
+  }
+}
+
 /**
  * Returns a recovery case for PAID orders whose delivery is unresolved,
  * or null when no recovery applies. Non-PAID orders are never fulfilment

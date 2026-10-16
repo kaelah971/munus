@@ -1,4 +1,5 @@
 import { maskBankAccountNumber } from './cashout'
+import { formatNgnAmount } from './funding'
 import { maskPhone } from './support'
 import type { FulfilmentStatus, PaymentAsset, PaymentOrder, PaymentServiceType } from './orders'
 
@@ -271,7 +272,7 @@ export function buildReceipt(order: PaymentOrder): MunusReceipt {
     recipientMasked: isCashout
       ? maskBankAccountNumber(order.bankAccountNumber ?? '')
       : maskPhone(order.recipientPhone ?? ''),
-    localAmount: order.requestedAmount,
+    localAmount: formatNgnAmount(order.requestedAmount),
     localCurrency: 'NGN',
     bundleLabel: order.planDisplayLabel,
     dataAllowance: order.planDataAllowance,

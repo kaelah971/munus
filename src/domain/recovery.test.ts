@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildRecoveryState, RECOVERY_STALE_MS } from './recovery'
+import { buildPaymentRecoveryCase, buildRecoveryState, RECOVERY_STALE_MS } from './recovery'
 import type { PaymentOrder } from './orders'
 
 function order(overrides: Partial<PaymentOrder> = {}): PaymentOrder {
@@ -74,6 +74,25 @@ describe('recovery cases', () => {
     const data = buildRecoveryState(order({ serviceType: 'DATA', fulfilmentStatus: 'FULFILLMENT_FAILED' }), NOW)
     expect(data?.headline).toBe('Data delivery failed')
     expect(JSON.stringify(data)).not.toMatch(/provider_ref|walletTxRef|RequestID/)
+  })
+
+  it('exposes payment re-verification only for bound wrong-network failures', () => {
+    const failed = {
+      paymentStatus: 'PAYMENT_FAILED' as const,
+      paymentFailureReason: 'wrong-network',
+      walletTxRef: 'ab'.repeat(32),
+    }
+    const recoverable = buildPaymentRecoveryCase(order(failed))
+    expect(recoverable).not.toBeNull()
+    expect(JSON.stringify(recoverable)).not.toMatch(/pay again|Pay again/)
+    // Affirmative mismatches, hashless failures, non-NIM rails, and paid
+    // orders are never payment-recoverable here.
+    expect(buildPaymentRecoveryCase(order({ ...failed, paymentFailureReason: 'wrong-amount' }))).toBeNull()
+    expect(buildPaymentRecoveryCase(order({ ...failed, paymentFailureReason: 'wrong-memo' }))).toBeNull()
+    expect(buildPaymentRecoveryCase(order({ ...failed, walletTxRef: undefined }))).toBeNull()
+    expect(buildPaymentRecoveryCase(order({ ...failed, paymentStatus: 'ONCHAIN_PENDING' }))).toBeNull()
+    expect(buildPaymentRecoveryCase(order({ ...failed, paymentStatus: 'PAID' }))).toBeNull()
+    expect(buildPaymentRecoveryCase(order({ ...failed, paymentAsset: 'USDT' as const, serviceType: 'CASH_OUT' as const }))).toBeNull()
   })
 
   it('keeps cash-out recovery refresh-only with payout wording', () => {

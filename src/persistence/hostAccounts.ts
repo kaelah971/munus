@@ -79,6 +79,18 @@ export function saveHostAccounts(userId: string, addresses: readonly string[]): 
   }
 }
 
+/**
+ * Funding address resolution: the server-persisted set wins once known
+ * (null = not yet loaded, keep the local fast cache); an authoritative
+ * empty set means the user established no exposed accounts.
+ */
+export function selectFundingAddresses(
+  server: string[] | null | undefined,
+  local: string[],
+): string[] {
+  return server ?? local
+}
+
 export function clearHostAccounts(userId: string): void {
   try {
     const storage = getStorage()

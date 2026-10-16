@@ -165,6 +165,11 @@ describe('receipt projection', () => {
     expect(matchesActivityFilter('delivered', 'attention')).toBe(false)
   })
 
+  it('displays database-scale amounts without trailing scale', () => {
+    expect(buildReceipt(order({ requestedAmount: '50.00000000' })).localAmount).toBe('50')
+    expect(buildReceipt(order({ requestedAmount: '1000' })).localAmount).toBe('1000')
+  })
+
   it('keeps the chain sender independent from the session wallet', () => {
     const receipt = buildReceipt(deliveredOrder())
     expect(receipt.senderShort).toBe('NQ198DSN…NKBXBN')

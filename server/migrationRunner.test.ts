@@ -60,12 +60,13 @@ describe('Munus PostgreSQL migration runner', () => {
       '0010_recovery.sql',
       '0011_cashout.sql',
       '0012_market_rates.sql',
+      '0013_wallet_accounts.sql',
     ])
     expect(await applyMigrations(pool, directory)).toEqual(files)
     expect(await applyMigrations(pool, directory)).toEqual([])
     expect([...pool.applied]).toEqual(files)
-    expect(pool.executedSql).toHaveLength(12)
+    expect(pool.executedSql).toHaveLength(13)
     expect(pool.executedSql.join('\n')).not.toMatch(/supabase|auth\.uid|row level security/i)
-    expect(pool.calls.filter((call) => call.text === 'BEGIN')).toHaveLength(12)
+    expect(pool.calls.filter((call) => call.text === 'BEGIN')).toHaveLength(13)
   })
 })

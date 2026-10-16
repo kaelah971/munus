@@ -21,7 +21,8 @@ import {
   type MunusReceipt,
 } from '../domain/receipts'
 import type { PaymentOrder } from '../domain/orders'
-import { buildRecoveryState } from '../domain/recovery'
+import { buildPaymentRecoveryCase, buildRecoveryState } from '../domain/recovery'
+import { formatNgnAmount } from '../domain/funding'
 import type { PaymentApi } from '../persistence/paymentApi'
 import { RecoveryCenter } from '../components/RecoveryCenter'
 
@@ -33,9 +34,11 @@ function serviceIcon(order: PaymentOrder): 'phone' | 'data' | 'wallet' {
   return 'phone'
 }
 
-export function ActivityPage({ api, onNavigate }: {
+export function ActivityPage({ api, onNavigate, onPaymentSettled }: {
   api: PaymentApi
   onNavigate: (destination: AppDestination) => void
+  /** Called whenever an order update lands PAID, to re-read funding from chain. */
+  onPaymentSettled?: () => void
 }) {
   const [view, setView] = useState<ActivityView>({ name: 'list' })
   const [orders, setOrders] = useState<PaymentOrder[]>([])
@@ -83,15 +86,30 @@ export function ActivityPage({ api, onNavigate }: {
 
   function updateOrder(next: PaymentOrder) {
     setOrders((current) => current.map((entry) => entry.id === next.id ? next : entry))
+    if (next.paymentStatus === 'PAID') onPaymentSettled?.()
   }
 
   function findOrder(orderId: string): PaymentOrder | undefined {
     return orders.find((entry) => entry.id === orderId)
   }
 
+  async function verifyPaymentOrder(orderId: string): Promise<PaymentOrder> {
+    // Payment re-verification only: re-checks the SAME bound transaction
+    // on-chain. Never opens the wallet, never requests another payment.
+    const updated = await api.reconcilePayment(orderId)
+    updateOrder(updated)
+    return updated
+  }
+
   async function refreshRecoveryOrder(orderId: string): Promise<PaymentOrder> {
+    const current = findOrder(orderId)
+    // A recoverable payment failure refreshes via payment re-verification
+    // (same hash, no wallet), not via fulfilment reconciliation.
+    if (current && buildPaymentRecoveryCase(current)) {
+      return verifyPaymentOrder(orderId)
+    }
     // Cash-out recovery re-checks Paycrest, never the airtime provider.
-    const updated = findOrder(orderId)?.serviceType === 'CASH_OUT'
+    const updated = current?.serviceType === 'CASH_OUT'
       ? await api.reconcileCashoutOrder(orderId)
       : await api.reconcileOrder(orderId)
     updateOrder(updated)
@@ -116,6 +134,8 @@ export function ActivityPage({ api, onNavigate }: {
           order={selected}
           onRefresh={refreshRecoveryOrder}
           onRetry={retryRecoveryOrder}
+          paymentRecovery={buildPaymentRecoveryCase(selected)}
+          onVerifyPayment={verifyPaymentOrder}
           onBack={() => setView({ name: 'list' })}
           onResolved={(resolved) => {
             updateOrder(resolved)
@@ -175,9 +195,10 @@ export function ActivityPage({ api, onNavigate }: {
                 : `${context}${order.recipientNetwork ? `${order.recipientNetwork} · ` : ''}${receipt.recipientMasked} · ${formatActivityDate(order.createdAt)}`
               const title = isCashout
                 ? `${receipt.usdtTotalAmount ?? order.requestedAmount} USDT cash out`
-                : `₦${order.requestedAmount} ${receipt.serviceLabel.toLowerCase()}`
+                : `₦${formatNgnAmount(order.requestedAmount)} ${receipt.serviceLabel.toLowerCase()}`
               const recovery = buildRecoveryState(order)
-              const needsRecovery = recovery !== null && (recovery.kind === 'attention' || recovery.kind === 'failed')
+              const paymentRecovery = buildPaymentRecoveryCase(order)
+              const needsRecovery = (recovery !== null && (recovery.kind === 'attention' || recovery.kind === 'failed')) || paymentRecovery !== null
               return (
                 <ListRow
                   description={description}
