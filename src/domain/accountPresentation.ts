@@ -77,37 +77,6 @@ export async function getNgnQuote(asset: AccountAsset, network: string, signal: 
 
 export const accountDataSources: AccountDataSources = { readUsdtBalance, getNgnQuote }
 
-export interface ServerNimRate {
-  ngnPerNim: string
-  source: string
-  asOf: string
-  expiresAt: string
-}
-
-/**
- * NIM/NGN quote backed by the authenticated server rate endpoint (same
- * provider and source as payment quotes). Informational only: expiry is
- * enforced by estimateNgn, and failures degrade to unavailable — the real
- * balance still renders.
- */
-export function createServerNgnQuote(fetchRate: () => Promise<ServerNimRate>): AccountDataSources['getNgnQuote'] {
-  return async (asset, network, signal) => {
-    signal.throwIfAborted()
-    if (asset !== 'NIM' || network !== 'mainnet') return { status: 'unavailable' }
-    try {
-      const rate = await fetchRate()
-      const asOf = Date.parse(rate.asOf)
-      const expiresAt = Date.parse(rate.expiresAt)
-      if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
-        return { status: 'unavailable' }
-      }
-      return { status: 'available', asset, network, ngnPerUnit: rate.ngnPerNim, source: rate.source, asOf, expiresAt }
-    } catch {
-      return { status: 'unavailable' }
-    }
-  }
-}
-
 /** Exact multiplication and half-up rounding to NGN's two decimal places. */
 export function estimateNgn(balance: AssetBalanceResult, quote: NgnQuoteResult, now = Date.now()): string | null {
   if (balance.status !== 'available' || quote.status !== 'available') return null

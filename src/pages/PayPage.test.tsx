@@ -1,11 +1,14 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi, type Mock } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type { DataPlan, PaymentOrder } from '../domain/orders'
 import type { PaymentApi } from '../persistence/paymentApi'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 import { requestNimPayment } from '../integration/nimiq'
 import { requestUsdtTransfer } from '../integration/ethereum'
+import { configureNimRateFetcher, nimRateStore } from '../hooks/useNimRate'
 import { PayPage } from './PayPage'
+// NOTE: nimRateStore.refresh() below drives the shared loop directly so
+// recovery assertions never depend on wall-clock retry timing.
 
 vi.mock('../integration/nimiq', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../integration/nimiq')>()
@@ -284,6 +287,18 @@ const offlineConnection: NimiqConnectionState = { accounts: [], status: 'unavail
 const readyConnection: NimiqConnectionState = { accounts: [], status: 'ready', provider: {} as never }
 
 describe('Pay essentials order flow', () => {
+  beforeEach(() => {
+    nimRateStore.resetForTests()
+  })
+
+  function useApiRate(api: PaymentApi & { getNimRate: Mock }) {
+    // Mirrors the App wiring: one shared loop fed by the api mock.
+    configureNimRateFetcher(async () => {
+      const rate = await api.getNimRate()
+      return { ngnPerNim: rate.ngnPerNim, source: rate.source, asOf: rate.asOf, expiresAt: rate.expiresAt }
+    })
+  }
+
   it('opens the airtime form, saves a persisted order, and shows a truthful review', async () => {
     const api = apiStub()
     render(<PayPage api={api} connection={offlineConnection} defaultPhone="08099999999" />)
@@ -309,6 +324,7 @@ describe('Pay essentials order flow', () => {
 
   it('shows an indicative conversion on the airtime form before any quote', async () => {
     const api = apiStub()
+    useApiRate(api)
     render(<PayPage
       api={api}
       connection={offlineConnection}
@@ -338,9 +354,10 @@ describe('Pay essentials order flow', () => {
     expect(api.getNimRate.mock.calls.length).toBe(rateCalls)
   })
 
-  it('warns on shortfall without blocking and retries honest rate failures', async () => {
+  it('warns on shortfall without blocking and recovers automatically', async () => {
     const api = apiStub()
     api.getNimRate.mockRejectedValue(new Error('Live NIM rate is unavailable. No quote was created.'))
+    useApiRate(api)
     render(<PayPage
       api={api}
       connection={offlineConnection}
@@ -349,17 +366,19 @@ describe('Pay essentials order flow', () => {
     await waitFor(() => expect(api.list).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: /Airtime/ }))
     fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '1000' } })
+    // Honest failure state with no manual button: recovery is automatic.
     expect(await screen.findByText(/Current NIM rate is temporarily unavailable/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
+    // The shared loop recovers on its own once upstream heals.
     api.getNimRate.mockResolvedValue({
       ngnPerNim: '2000',
       source: 'test:rate',
       asOf: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 120_000).toISOString(),
     })
-    const callsBefore = api.getNimRate.mock.calls.length
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
-    await waitFor(() => expect(api.getNimRate.mock.calls.length).toBeGreaterThan(callsBefore))
-
+    await act(async () => {
+      nimRateStore.refresh()
+    })
     expect(await screen.findByText('Estimated payment')).toBeInTheDocument()
     expect(screen.getByText('≈ 0.5 NIM')).toBeInTheDocument()
     expect(screen.getByText(/higher than your current Nimiq Pay balance/)).toBeInTheDocument()
@@ -664,6 +683,7 @@ describe('Pay essentials order flow', () => {
 
   it('shows the funding preview from the authoritative quote without mutating balance', async () => {
     const api = apiStub([quotedOrder()])
+    useApiRate(api)
     const wallet: NimiqWalletState = { status: 'available', address: 'NQ12 3456', lunaBalance: 22100000, nimBalance: '221', network: 'mainnet' }
     const onRefreshWallet = vi.fn().mockResolvedValue(wallet)
     render(<PayPage api={api} connection={readyConnection} wallet={wallet} onRefreshWallet={onRefreshWallet} />)
@@ -772,6 +792,7 @@ describe('Pay essentials order flow', () => {
 
   it('reviews against the aggregate funding context with informational wording', async () => {
     const api = apiStub([quotedOrder()])
+    useApiRate(api)
     render(<PayPage
       api={api}
       connection={readyConnection}
@@ -789,6 +810,7 @@ describe('Pay essentials order flow', () => {
 
   it('shows the full conversion breakdown on review before approval', async () => {
     const api = apiStub([quotedOrder()])
+    useApiRate(api)
     render(<PayPage
       api={api}
       connection={readyConnection}

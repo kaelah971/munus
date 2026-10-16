@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   accountDataSources, estimateNgn, mapNimBalance,
   type AccountAsset, type AccountDataSources, type AssetBalanceResult,
@@ -6,8 +6,7 @@ import {
 } from '../domain/accountPresentation'
 import { buildAggregateFundingView, buildNimFundingView, nimBalanceForEstimate } from '../domain/funding'
 import { NimFundingCard } from './NimFundingCard'
-import { useNimRate } from '../hooks/useNimRate'
-import type { NimIndicativeRate } from '../persistence/paymentApi'
+import { RECENT_RATE_TTL_MS, useNimRate } from '../hooks/useNimRate'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 
 const unavailableQuote: NgnQuoteResult = { status: 'unavailable' }
@@ -41,28 +40,26 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
   const quoteNetwork = wallet.network === 'mainnet' || wallet.network === 'testnet'
     ? wallet.network
     : aggregate?.network ?? fallbackNetwork ?? wallet.network
-  const fetchNimRate = useMemo(() => async (signal: AbortSignal): Promise<NimIndicativeRate> => {
-    const result = await sources.getNgnQuote('NIM', quoteNetwork, signal)
-    if (result.status !== 'available') throw new Error('NIM rate unavailable.')
+  const nimRate = useNimRate(now)
+  // Informational horizon: the hook retains a displayable rate for up to
+  // 15 minutes past observation, so the mapped quote carries that horizon
+  // — not the 120s server payment TTL. Payment quotes never see this
+  // object; they price server-side with their own strict expiry.
+  const nimQuote: NgnQuoteResult = (() => {
+    const rate = nimRate.rate
+    if (!rate) return unavailableQuote
+    const asOf = Date.parse(rate.asOf)
+    if (!Number.isFinite(asOf)) return unavailableQuote
     return {
-      ngnPerNim: result.ngnPerUnit,
-      source: result.source,
-      asOf: new Date(result.asOf).toISOString(),
-      expiresAt: new Date(result.expiresAt).toISOString(),
-    }
-  }, [sources, quoteNetwork])
-  const nimRate = useNimRate(fetchNimRate, now, accountKey)
-  const nimQuote: NgnQuoteResult = nimRate.rate
-    ? {
       status: 'available',
       asset: 'NIM',
       network: quoteNetwork,
-      ngnPerUnit: nimRate.rate.ngnPerNim,
-      source: nimRate.rate.source,
-      asOf: Date.parse(nimRate.rate.asOf),
-      expiresAt: Date.parse(nimRate.rate.expiresAt),
+      ngnPerUnit: rate.ngnPerNim,
+      source: rate.source,
+      asOf,
+      expiresAt: asOf + RECENT_RATE_TTL_MS,
     }
-    : unavailableQuote
+  })()
   const usdtQuoteValue = usdtQuote?.key === accountKey ? usdtQuote.quote : unavailableQuote
 
   useEffect(() => {

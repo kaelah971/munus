@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AccountCardDeck } from './AccountCardDeck'
+import { configureNimRateFetcher, nimRateStore } from '../hooks/useNimRate'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 import type { AccountDataSources } from '../domain/accountPresentation'
 
@@ -8,7 +9,30 @@ const address = 'NQ12 3456 7890 1234 5678 9012 3456 7890 1234'
 const connection: NimiqConnectionState = { status: 'ready', accounts: [address] }
 const wallet: NimiqWalletState = { status: 'zero', nimBalance: '0', address, network: 'mainnet' }
 
+function usdtSources(): AccountDataSources {
+  return {
+    readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }),
+    getNgnQuote: vi.fn().mockResolvedValue({ status: 'unavailable' }),
+  }
+}
+
+function configureRate(ngnPerNim: string) {
+  // Observation precedes display, exactly as in production: capture the
+  // timestamps now so asOf always predates the component mount below.
+  const observedAt = Date.now()
+  configureNimRateFetcher(async () => ({
+    ngnPerNim,
+    source: 'Fixture',
+    asOf: new Date(observedAt).toISOString(),
+    expiresAt: new Date(observedAt + 120_000).toISOString(),
+  }))
+}
+
 describe('account card deck', () => {
+  beforeEach(() => {
+    nimRateStore.resetForTests()
+  })
+
   it('shows real zero and unavailable USDT/NGN without fake conversions', async () => {
     render(<AccountCardDeck connection={connection} wallet={wallet} hideBalances={false} />)
     expect(screen.getByText('0 NIM')).toBeInTheDocument()
@@ -28,7 +52,8 @@ describe('account card deck', () => {
 
   it('masks balances and quotes, and passes no Nimiq address into the USDT adapter', async () => {
     const readUsdtBalance = vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' })
-    const sources: AccountDataSources = { readUsdtBalance, getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 }) }
+    const sources: AccountDataSources = { readUsdtBalance, getNgnQuote: vi.fn().mockResolvedValue({ status: 'unavailable' }) }
+    configureRate('10')
     const view = render(<AccountCardDeck connection={connection} wallet={{ ...wallet, status: 'available', nimBalance: '12.5' }} hideBalances={false} sources={sources} />)
     await waitFor(() => expect(screen.getByText('≈ ₦125.00')).toBeInTheDocument())
     expect(readUsdtBalance.mock.calls[0][0]).toBeUndefined()
@@ -48,26 +73,32 @@ describe('account card deck', () => {
   it('keeps a valid NIM quote when a separate USDT adapter fails', async () => {
     const sources: AccountDataSources = {
       readUsdtBalance: vi.fn().mockRejectedValue(new Error('USDT unavailable')),
-      getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 }),
+      getNgnQuote: vi.fn().mockResolvedValue({ status: 'unavailable' }),
     }
+    configureRate('10')
     render(<AccountCardDeck connection={connection} wallet={{ ...wallet, status: 'available', nimBalance: '12.5' }} hideBalances={false} sources={sources} />)
     await waitFor(() => expect(screen.getByText('≈ ₦125.00')).toBeInTheDocument())
     expect(screen.getByText('Balance unavailable')).toBeInTheDocument()
   })
 
-  it('ignores pending data from an account that has changed', async () => {
-    let resolveFirst!: (quote: { status: 'available'; asset: 'NIM'; network: string; ngnPerUnit: string; source: string; asOf: number; expiresAt: number }) => void
-    const firstQuote = new Promise<Awaited<ReturnType<AccountDataSources['getNgnQuote']>>>((resolve) => { resolveFirst = resolve })
-    const sources: AccountDataSources = {
-      readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }),
-      getNgnQuote: vi.fn().mockReturnValueOnce(firstQuote).mockResolvedValue({ status: 'unavailable' }),
-    }
+  it('does not refetch the global rate when the account changes', async () => {
+    const observedAt = Date.now()
+    const fetchRate = vi.fn(async () => ({
+      ngnPerNim: '10',
+      source: 'Fixture',
+      asOf: new Date(observedAt).toISOString(),
+      expiresAt: new Date(observedAt + 120_000).toISOString(),
+    }))
+    configureNimRateFetcher(fetchRate)
+    const sources = usdtSources()
     const view = render(<AccountCardDeck connection={connection} wallet={{ ...wallet, status: 'available', nimBalance: '12.5' }} hideBalances={false} sources={sources} />)
+    await waitFor(() => expect(screen.getByText('≈ ₦125.00')).toBeInTheDocument())
+    expect(fetchRate).toHaveBeenCalledTimes(1)
+    // A different account reuses the same global market rate: no refetch,
+    // and the estimate recomputes locally for the new balance.
     view.rerender(<AccountCardDeck connection={{ ...connection, accounts: ['NQ99 different'] }} wallet={{ ...wallet, address: 'NQ99 different', status: 'available', nimBalance: '5' }} hideBalances={false} sources={sources} />)
-    resolveFirst({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Old account', asOf: Date.now(), expiresAt: Date.now() + 60000 })
-    await waitFor(() => expect(sources.getNgnQuote).toHaveBeenCalledTimes(2))
-    expect(screen.queryByText('≈ ₦50.00')).not.toBeInTheDocument()
-    expect(screen.getAllByText('NGN estimate unavailable')).toHaveLength(2)
+    await waitFor(() => expect(screen.getByText('≈ ₦50.00')).toBeInTheDocument())
+    expect(fetchRate).toHaveBeenCalledTimes(1)
   })
 
   it('labels the session-network fallback instead of hiding it', () => {
@@ -77,20 +108,17 @@ describe('account card deck', () => {
   })
 
   it('prefers the confirmed aggregate over the single signer balance', async () => {
-    const sources: AccountDataSources = {
-      readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }),
-      getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '2000', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 }),
-    }
+    configureRate('2000')
     render(<AccountCardDeck
       connection={connection}
       wallet={{ ...wallet, status: 'error', nimBalance: undefined, network: 'unknown' }}
       hideBalances={false}
-      sources={sources}
+      sources={usdtSources()}
       aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
     />)
     expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
     expect(screen.getByText('Available in Nimiq Pay')).toBeInTheDocument()
-    expect(screen.getByText('≈ ₦442010.00')).toBeInTheDocument()
+    expect(await screen.findByText('≈ ₦442010.00')).toBeInTheDocument()
     expect(screen.queryByText(/BCKQ|J28D/)).not.toBeInTheDocument()
   })
 
@@ -105,33 +133,27 @@ describe('account card deck', () => {
     expect(screen.getByText('•••• NIM')).toBeInTheDocument()
   })
 
-  it('fetches the estimate for an unknown host network via the aggregate network', async () => {
-    const getNgnQuote = vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '0.415461', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 })
-    const sources: AccountDataSources = { readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }), getNgnQuote }
-    // Production shape: host exposes no network, aggregate is confirmed.
+  it('renders the estimate for an unknown host network from the global rate', async () => {
+    configureRate('0.415461')
     render(<AccountCardDeck
       connection={connection}
       wallet={{ ...wallet, status: 'unavailable', network: 'unknown' }}
       hideBalances={false}
-      sources={sources}
+      sources={usdtSources()}
       aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
     />)
-    await waitFor(() => expect(getNgnQuote).toHaveBeenCalledWith('NIM', 'mainnet', expect.anything()))
     expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
     // 221.005 × 0.415461 = 91.819… → ₦91.82 indicative.
-    expect(screen.getByText('≈ ₦91.82')).toBeInTheDocument()
+    expect(await screen.findByText('≈ ₦91.82')).toBeInTheDocument()
   })
 
   it('keeps the NIM balance visible when the rate fails', async () => {
-    const sources: AccountDataSources = {
-      readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }),
-      getNgnQuote: vi.fn().mockRejectedValue(new Error('rate down')),
-    }
+    configureNimRateFetcher(async () => { throw new Error('rate down') })
     render(<AccountCardDeck
       connection={connection}
       wallet={{ ...wallet, status: 'unavailable', network: 'unknown' }}
       hideBalances={false}
-      sources={sources}
+      sources={usdtSources()}
       aggregate={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
     />)
     expect(await screen.findByText('221.005 NIM')).toBeInTheDocument()
@@ -139,16 +161,14 @@ describe('account card deck', () => {
   })
 
   it('attributes a confirmed host balance to the session-verified network for estimates', async () => {
-    const getNgnQuote = vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 })
-    const sources: AccountDataSources = { readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }), getNgnQuote }
+    configureRate('10')
     render(<AccountCardDeck
       connection={connection}
       wallet={{ ...wallet, status: 'available', nimBalance: '12.5', network: 'unknown' }}
       hideBalances={false}
-      sources={sources}
+      sources={usdtSources()}
       fallbackNetwork="mainnet"
     />)
-    await waitFor(() => expect(getNgnQuote).toHaveBeenCalledWith('NIM', 'mainnet', expect.anything()))
     expect(await screen.findByText('≈ ₦125.00')).toBeInTheDocument()
   })
 })

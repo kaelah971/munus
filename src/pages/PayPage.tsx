@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Icon, ListRow, PrimaryButton, QuietButton, SectionHeading, StatusPill } from '../components/Primitives'
 import { ESSENTIAL_CATEGORIES } from '../domain/payment'
 import type { IconName } from '../components/Primitives'
@@ -26,8 +26,7 @@ import type { PaymentApi, RailCapability, RailStatus, ReadinessReport } from '..
 import { estimateNgn, mapNimBalance, type NgnQuoteResult } from '../domain/accountPresentation'
 import { buildAggregateFundingView, buildFundingPreview, buildNimFundingView, estimateNimFromNgn } from '../domain/funding'
 import { NimFundingCard, type FundingDeduction } from '../components/NimFundingCard'
-import { useNimRate, type NimRateState } from '../hooks/useNimRate'
-import type { NimIndicativeRate } from '../persistence/paymentApi'
+import { RECENT_RATE_TTL_MS, useNimRate, type NimRateState } from '../hooks/useNimRate'
 import { RecoveryCenter } from '../components/RecoveryCenter'
 
 const icons: Record<(typeof ESSENTIAL_CATEGORIES)[number]['id'], IconName> = {
@@ -211,29 +210,25 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
     ? `${reviewed.id}:${reviewed.quotedCryptoAmount}:${reviewed.quoteLunaAmount}`
     : null
 
-  // Shared informational rate for the form preview and review funding
-  // card. Retained across transient failures; never payment authority.
-  const fetchPageRate = useMemo(() => async (): Promise<NimIndicativeRate> => {
-    const rate = await api.getNimRate()
+  // Shared global informational rate (same loop as Home). Retained
+  // across transient failures; never payment authority. The mapped quote
+  // carries the informational horizon, not the server payment TTL.
+  const pageRate = useNimRate(nowMs)
+  const reviewRate: NgnQuoteResult | null = (() => {
+    const rate = pageRate.rate
+    if (!rate) return null
     const asOf = Date.parse(rate.asOf)
-    const expiresAt = Date.parse(rate.expiresAt)
-    if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
-      throw new Error('NIM rate unavailable.')
-    }
-    return rate
-  }, [api])
-  const pageRate = useNimRate(fetchPageRate, nowMs)
-  const reviewRate: NgnQuoteResult | null = pageRate.rate
-    ? {
+    if (!Number.isFinite(asOf)) return null
+    return {
       status: 'available',
       asset: 'NIM',
       network: 'mainnet',
-      ngnPerUnit: pageRate.rate.ngnPerNim,
-      source: pageRate.rate.source,
-      asOf: Date.parse(pageRate.rate.asOf),
-      expiresAt: Date.parse(pageRate.rate.expiresAt),
+      ngnPerUnit: rate.ngnPerNim,
+      source: rate.source,
+      asOf,
+      expiresAt: asOf + RECENT_RATE_TTL_MS,
     }
-    : null
+  })()
 
   useEffect(() => {
     // A new quote deserves a fresh rate attempt alongside the retained one.
@@ -1116,11 +1111,10 @@ function AirtimeEstimatePanel({ amount, rateState, funding }: {
     return <p className="section-copy" role="status">Getting current NIM rate…</p>
   }
   if (!rate) {
+    // No manual retry in normal flow: the shared loop keeps retrying
+    // automatically and the estimate appears on its own when healthy.
     return (
-      <>
-        <p className="section-copy">Current NIM rate is temporarily unavailable.</p>
-        <QuietButton onClick={() => rateState.refresh()}>Check again</QuietButton>
-      </>
+      <p className="section-copy">Current NIM rate is temporarily unavailable. We’ll update it automatically.</p>
     )
   }
   const estimate = estimateNimFromNgn(trimmed, rate.ngnPerNim)

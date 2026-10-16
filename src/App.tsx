@@ -52,7 +52,7 @@ import { RemoteSupportApi, type SupportApi, type SupportData } from './persisten
 import { RemotePaymentApi, type PaymentApi } from './persistence/paymentApi'
 import { clearHostAccounts, readHostAccounts, saveHostAccounts } from './persistence/hostAccounts'
 import { useNimiqFunding } from './hooks/useNimiqFunding'
-import { accountDataSources, createServerNgnQuote } from './domain/accountPresentation'
+import { configureNimRateFetcher } from './hooks/useNimRate'
 import { LocalPaymentApi } from './persistence/paymentStore'
 import { LocalSupportApi } from './persistence/supportStore'
 import { RemoteProfileApi } from './persistence/profileApi'
@@ -199,14 +199,21 @@ export function App() {
   const fundingContext = funding.status === 'ready' && funding.nim && funding.luna
     ? { luna: funding.luna, nim: funding.nim, network: funding.network }
     : null
-  // Home NGN estimates reuse the authenticated server rate endpoint (same
-  // provider as quotes). Falls back to offline-safe stubs without a session.
-  const accountSources = useMemo(
-    () => (paymentApi
-      ? { ...accountDataSources, getNgnQuote: createServerNgnQuote(() => paymentApi.getNimRate()) }
-      : accountDataSources),
-    [paymentApi],
-  )
+  // One shared informational rate loop for Home and Pay, fed by the
+  // authenticated server endpoint. No wallet contact; loop pauses with
+  // no subscribers and resumes on return.
+  useEffect(() => {
+    if (!paymentApi) return
+    configureNimRateFetcher(async () => {
+      const rate = await paymentApi.getNimRate()
+      const asOf = Date.parse(rate.asOf)
+      const expiresAt = Date.parse(rate.expiresAt)
+      if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
+        throw new Error('NIM rate unavailable.')
+      }
+      return rate
+    })
+  }, [paymentApi])
   const getReadiness = useMemo(
     () => (paymentApi ? () => paymentApi.getReadiness() : undefined),
     [paymentApi],
@@ -806,7 +813,7 @@ export function App() {
   } else if (destination === 'activity') {
     content = paymentApi ? <ActivityPage api={paymentApi} onNavigate={navigate} /> : null
   } else {
-    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances} sources={accountSources} fallbackNetwork={session?.network} funding={fundingContext}
+    content = <HomePage connection={connection} wallet={wallet} profile={profile} hideBalances={hideBalances} fallbackNetwork={session?.network} funding={fundingContext}
       pockets={planning.pockets} reminders={planning.reminders} supportDrafts={support.supportDrafts} supportRequests={support.supportRequests}
       contacts={support.contacts} contactsLoading={supportLoading} contactsError={supportError}
       onNavigate={navigate} onProfile={() => navigate('profile')}
