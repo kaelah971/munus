@@ -645,22 +645,41 @@ export async function handleRequest(
       // Informational estimate for balance display. Served from the
       // durable market-rate store when upstream is down; binds to no
       // order and authorizes nothing — never a substitute for a quote.
+      // Safe operator log only: route/memory/durable/upstream verdicts
+      // plus market-data source and freshness. Never cookies, wallets,
+      // tokens, signatures, or session IDs.
       const startedAt = Date.now()
       try {
         const outcome = await informativeRates.getRateDetailed()
-        console.info('Munus nim rate served', {
-          freshness: outcome.trace.freshness,
-          upstream: outcome.trace.upstream,
+        console.info('nim-rate:', {
+          route: 'GET /nim/rate hit',
+          memory: outcome.trace.memory,
           durable: outcome.trace.durable,
+          durableAgeMs: outcome.trace.durableAgeMs,
+          upstreamAttempted: outcome.trace.upstreamAttempted,
+          upstream: outcome.trace.upstream,
+          upstreamStatus: outcome.trace.upstreamStatus,
+          status: 200,
+          source: outcome.rate.source,
+          freshness: outcome.trace.freshness,
           durationMs: outcome.trace.durationMs,
-          asOf: outcome.trace.asOf,
         })
         sendJson(response, 200, outcome.rate)
         return
       } catch (error) {
-        console.info('Munus nim rate unavailable', {
+        const status = error instanceof NimRateError ? error.statusCode : 502
+        console.info('nim-rate:', {
+          route: 'GET /nim/rate hit',
+          memory: 'miss',
+          durable: 'miss',
+          durableAgeMs: null,
+          upstreamAttempted: true,
+          upstream: 'failure',
+          upstreamStatus: error instanceof NimRateError ? (error.upstream?.status ?? null) : null,
+          status,
+          source: null,
+          freshness: null,
           durationMs: Date.now() - startedAt,
-          error: error instanceof Error ? error.name : 'unknown',
         })
         throw error
       }

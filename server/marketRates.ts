@@ -125,7 +125,15 @@ export interface InformativeRate {
 export interface InformativeRateTrace {
   upstream: 'success' | 'failure' | 'skipped-cooldown'
   upstreamError?: 'timeout' | 'error'
+  /** True when the provider was contacted on this call. */
+  upstreamAttempted: boolean
+  /** HTTP status when upstream responded; null on transport failure or skip. */
+  upstreamStatus: number | null
+  /** Short instance-cache verdict for this call. */
+  memory: 'hit' | 'miss'
   durable: 'hit' | 'miss' | 'unused'
+  /** Age of the served durable row; null unless durable was hit. */
+  durableAgeMs: number | null
   durationMs: number
   freshness?: InformativeFreshness
   asOf?: string
@@ -202,7 +210,11 @@ export class InformativeRateService {
           rate,
           trace: {
             upstream: 'success',
+            upstreamAttempted: true,
+            upstreamStatus: null,
+            memory: this.rates.lastServedFromCache === true ? 'hit' : 'miss',
             durable: 'unused',
+            durableAgeMs: null,
             durationMs: this.now() - startedAt,
             freshness: 'fresh',
             asOf: rate.asOf,
@@ -214,14 +226,18 @@ export class InformativeRateService {
         const stored = await this.readDurableQuietly()
         if (stored) {
           return {
-            rate: stored,
+            rate: stored.rate,
             trace: {
               upstream: 'failure',
               upstreamError: error instanceof NimRateTimeoutError ? 'timeout' : 'error',
+              upstreamAttempted: true,
+              upstreamStatus: error instanceof NimRateError ? (error.upstream?.status ?? null) : null,
+              memory: 'miss',
               durable: 'hit',
+              durableAgeMs: stored.ageMs,
               durationMs: this.now() - startedAt,
               freshness: 'recent',
-              asOf: stored.asOf,
+              asOf: stored.rate.asOf,
             },
           }
         }
@@ -231,13 +247,17 @@ export class InformativeRateService {
     const stored = await this.readDurableQuietly()
     if (stored) {
       return {
-        rate: stored,
+        rate: stored.rate,
         trace: {
           upstream: 'skipped-cooldown',
+          upstreamAttempted: false,
+          upstreamStatus: null,
+          memory: 'miss',
           durable: 'hit',
+          durableAgeMs: stored.ageMs,
           durationMs: this.now() - startedAt,
           freshness: 'recent',
-          asOf: stored.asOf,
+          asOf: stored.rate.asOf,
         },
       }
     }
@@ -280,7 +300,7 @@ export class InformativeRateService {
     }
   }
 
-  private async readDurableQuietly(): Promise<InformativeRate | null> {
+  private async readDurableQuietly(): Promise<{ rate: InformativeRate; ageMs: number } | null> {
     let stored: MarketRateRecord | null
     try {
       stored = await this.store.readRate('NIM', 'NGN')
@@ -290,12 +310,19 @@ export class InformativeRateService {
     if (!stored) return null
     const ageMs = this.now() - Date.parse(stored.observedAt)
     if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > this.maxAgeMs) return null
-    return this.toRate(stored.rate, stored.source, stored.observedAt, 'recent')
+    return { rate: this.toRate(stored.rate, stored.source, stored.observedAt, 'recent'), ageMs }
   }
 
   private async persistQuietly(record: MarketRateRecord): Promise<void> {
     try {
       await this.store.writeRate(record)
+      // Proof of durability: every successful upsert is explicit.
+      // Rate + source + observed_at are public market data; safe to log.
+      console.info('NIM/NGN market rate persisted', {
+        rate: record.rate,
+        source: record.source,
+        observedAt: record.observedAt,
+      })
     } catch (error) {
       // A persistence hiccup must never fail a healthy rate response.
       // Rate + source are public market data; safe to log.
@@ -326,6 +353,9 @@ export class InformativeRateService {
       this.lastFailure = error
       console.info('Munus market rate refresh retryable', {
         cause: error instanceof Error ? error.message : 'unknown upstream error',
+        upstreamStatus: error instanceof NimRateError ? (error.upstream?.status ?? null) : null,
+        upstreamShape: error instanceof NimRateError ? (error.upstream?.shape ?? null) : null,
+        retryAfterMs: error instanceof NimRateError ? (error.upstream?.retryAfterMs ?? null) : null,
       })
     } finally {
       this.refreshing = false

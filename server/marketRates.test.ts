@@ -163,6 +163,87 @@ describe('informative NIM/NGN market rates', () => {
     await expect(store.readRate('NIM', 'NGN')).resolves.toMatchObject({ rate: '0.410829' })
     service.stop()
   })
+
+  it('reports memory/durable/upstream verdicts in every trace', async () => {
+    const { service } = setup()
+    const outcome = await service.getRateDetailed()
+    expect(outcome.trace).toMatchObject({
+      upstream: 'success',
+      upstreamAttempted: true,
+      upstreamStatus: null,
+      memory: 'miss',
+      durable: 'unused',
+      durableAgeMs: null,
+    })
+  })
+
+  it('reports durable age and upstream status when falling back', async () => {
+    const seedObservedAt = iso(NOW - 5 * 60_000)
+    const seeded = new InMemoryMarketRateStore()
+    await seeded.writeRate({ asset: 'NIM', quoteCurrency: 'NGN', rate: '0.41', source: 'fixture', observedAt: seedObservedAt })
+    const rates = fixtureRates()
+    rates.fail = new NimRateError('Live NIM rate is unavailable.', 502, {
+      status: 429,
+      latencyMs: 12,
+      shape: 'http-error',
+      retryAfterMs: null,
+    })
+    const service = new InformativeRateService({ rates, store: seeded, quoteTtlMs: 120_000, now: () => NOW })
+    const outcome = await service.getRateDetailed()
+    expect(outcome.trace).toMatchObject({
+      upstream: 'failure',
+      upstreamAttempted: true,
+      upstreamStatus: 429,
+      memory: 'miss',
+      durable: 'hit',
+      durableAgeMs: 5 * 60_000,
+      freshness: 'recent',
+    })
+  })
+
+  it('recovers in the background after a failure without a permanent lock', async () => {
+    const rates = fixtureRates()
+    rates.fail = new Error('upstream down')
+    const store = new InMemoryMarketRateStore()
+    const logged: unknown[][] = []
+    const info = console.info
+    console.info = (...args: unknown[]) => { logged.push(args) }
+    try {
+      const service = new InformativeRateService({
+        rates, store, quoteTtlMs: 120_000, now: () => NOW, refreshIntervalMs: 15,
+      })
+      service.start()
+      await vi.waitFor(() => expect(rates.calls).toBeGreaterThanOrEqual(1))
+      service.stop()
+      // A failed startup refresh leaves no row but must not wedge the loop.
+      await expect(store.readRate('NIM', 'NGN')).resolves.toBeNull()
+      rates.fail = undefined
+      const retry = new InformativeRateService({
+        rates, store, quoteTtlMs: 120_000, now: () => NOW, refreshIntervalMs: 15,
+      })
+      retry.start()
+      await vi.waitFor(() => expect(rates.calls).toBeGreaterThanOrEqual(2))
+      retry.stop()
+      await expect(store.readRate('NIM', 'NGN')).resolves.toMatchObject({ rate: '0.410829' })
+      expect(logged.some((args) => args[0] === 'NIM/NGN market rate persisted')).toBe(true)
+    } finally {
+      console.info = info
+    }
+  })
+
+  it('logs every successful market-rate upsert explicitly', async () => {
+    const logged: unknown[][] = []
+    const info = console.info
+    console.info = (...args: unknown[]) => { logged.push(args) }
+    try {
+      const { service } = setup()
+      await service.getRateDetailed()
+      const persisted = logged.find((args) => args[0] === 'NIM/NGN market rate persisted')
+      expect(persisted?.[1]).toMatchObject({ rate: '0.410829', observedAt: iso(NOW) })
+    } finally {
+      console.info = info
+    }
+  })
 })
 
 describe('Postgres market rate store', () => {
