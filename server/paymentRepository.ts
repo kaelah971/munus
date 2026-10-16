@@ -76,6 +76,13 @@ export interface PaymentRepository {
   recordPaymentSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null>
   recordVerifiedPayment(userId: string, orderId: string, payment: VerifiedNimPayment): Promise<PaymentOrder | null>
   recordPaymentFailure(userId: string, orderId: string, reason: string): Promise<PaymentOrder | null>
+  /**
+   * Returns a wrong-network failure to verifiable pending WITHOUT
+   * touching money, provider, or transaction binding. Only the proven
+   * false-failure class (failure reason wrong-network with a bound
+   * wallet hash) qualifies; affirmative mismatches stay failed.
+   */
+  reopenWrongNetworkPayment(userId: string, orderId: string): Promise<PaymentOrder | null>
   recordCashoutQuote(userId: string, orderId: string, quote: CashoutQuoteRecord): Promise<PaymentOrder | null>
   recordCashoutIntent(userId: string, orderId: string, nowIso: string): Promise<PaymentOrder | null>
   recordCashoutSubmission(userId: string, orderId: string, transactionHash: string, nowIso: string): Promise<PaymentOrder | null>
@@ -263,6 +270,22 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       ...order,
       paymentFailureReason: reason,
       paymentStatus: 'PAYMENT_FAILED',
+      updatedAt: new Date().toISOString(),
+    }
+    this.orders.set(orderId, updated)
+    return updated
+  }
+
+  async reopenWrongNetworkPayment(userId: string, orderId: string): Promise<PaymentOrder | null> {
+    const order = await this.getOrder(userId, orderId)
+    if (!order) return null
+    if (order.paymentStatus !== 'PAYMENT_FAILED') return null
+    if (order.paymentFailureReason !== 'wrong-network') return null
+    if (!order.walletTxRef) return null
+    const updated: PaymentOrder = {
+      ...order,
+      paymentFailureReason: undefined,
+      paymentStatus: 'ONCHAIN_PENDING',
       updatedAt: new Date().toISOString(),
     }
     this.orders.set(orderId, updated)
@@ -539,6 +562,23 @@ export class PostgresPaymentRepository implements PaymentRepository {
          AND LOWER(wallet_tx_ref) = LOWER($8)
        RETURNING *`,
       [orderId, userId, payment.sender, payment.receiver, payment.blockNumber, payment.confirmations, payment.verifiedAt, payment.transactionHash],
+    ))
+    return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
+  }
+
+  async reopenWrongNetworkPayment(userId: string, orderId: string): Promise<PaymentOrder | null> {
+    const result = await this.run('reopen wrong-network payment', () => this.database.query(
+      `UPDATE payment_orders
+       SET payment_failure_reason = NULL,
+           payment_status = 'ONCHAIN_PENDING',
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND payment_status = 'PAYMENT_FAILED'
+         AND payment_failure_reason = 'wrong-network'
+         AND wallet_tx_ref IS NOT NULL
+       RETURNING *`,
+      [orderId, userId],
     ))
     return result.rows[0] ? mapPaymentOrder(result.rows[0]) : null
   }

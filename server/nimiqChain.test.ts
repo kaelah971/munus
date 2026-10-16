@@ -84,18 +84,32 @@ describe('Nimiq chain verification', () => {
       .toEqual({ ok: false, reason: 'pending' })
   })
 
-  it('rejects wrong receiver, amount, network, and memo affirmatively', () => {
+  it('rejects wrong receiver, amount, and memo affirmatively', () => {
     expect(verifyNimPayment(transaction({ to: address() }), 103, expectation()))
       .toEqual({ ok: false, reason: 'wrong-recipient' })
     expect(verifyNimPayment(transaction({ valueLuna: '250000001' }), 103, expectation()))
       .toEqual({ ok: false, reason: 'wrong-amount' })
-    expect(verifyNimPayment(transaction({ networkId: 53 }), 103, expectation()))
-      .toEqual({ ok: false, reason: 'wrong-network' })
     expect(verifyNimPayment(transaction({ dataFields: ['MNS:deadbeef1234'] }), 103, expectation()))
       .toEqual({ ok: false, reason: 'wrong-memo' })
     // Absent memo data cannot bind the payment: fail closed.
     expect(verifyNimPayment(transaction({ dataFields: [] }), 103, expectation()))
       .toEqual({ ok: false, reason: 'wrong-memo' })
+  })
+
+  it('accepts a chain-confirmed transaction regardless of its wallet-origin networkId', () => {
+    // Production proof (2026-10-16): a transaction confirmed on mainnet
+    // (block + confirmations from the mainnet RPC, exact recipient,
+    // amount, and memo) carried networkId 24 from its signing wallet.
+    // Chain membership is the network oracle — the label must never
+    // strand real funds. A genuinely foreign submission is simply
+    // absent from this chain (not-found → pending, never PAID).
+    const foreign = verifyNimPayment(transaction({ networkId: 24 }), 103, expectation())
+    expect(foreign).toEqual({
+      ok: true,
+      evidence: expect.objectContaining({ receiver: RECEIVER, lunaAmount: '250000000' }),
+    })
+    const unlabeled = verifyNimPayment(transaction({ networkId: undefined }), 103, expectation())
+    expect(unlabeled).toEqual(expect.objectContaining({ ok: true }))
   })
 
   it('reads raw RPC payloads into normalized chain evidence', async () => {

@@ -239,4 +239,41 @@ describe('Munus payment order persistence', () => {
     expect(await repository.recordPaymentFailure('user-a', pending.id, 'wrong-amount'))
       .toMatchObject({ paymentStatus: 'PAYMENT_FAILED', paymentFailureReason: 'wrong-amount' })
   })
+
+  it('reopens only wrong-network failures with a bound hash for re-verification', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    const stored = repository.orders.get(order.id)
+    if (!stored) throw new Error('Fixture order missing.')
+    stored.paymentStatus = 'ONCHAIN_PENDING'
+    stored.walletTxRef = 'ab'.repeat(32)
+    expect(await repository.recordPaymentFailure('user-a', order.id, 'wrong-network'))
+      .toMatchObject({ paymentStatus: 'PAYMENT_FAILED' })
+    // Affirmative mismatches are never reopened.
+    const other = await repository.createOrder('user-a', parsePaymentOrderDraft(airtimeDraft))
+    const otherStored = repository.orders.get(other.id)
+    if (!otherStored) throw new Error('Fixture order missing.')
+    otherStored.paymentStatus = 'ONCHAIN_PENDING'
+    otherStored.walletTxRef = 'cd'.repeat(32)
+    await repository.recordPaymentFailure('user-a', other.id, 'wrong-amount')
+    expect(await repository.reopenWrongNetworkPayment('user-a', other.id)).toBeNull()
+    expect(await repository.reopenWrongNetworkPayment('user-b', order.id)).toBeNull()
+    // The wrong-network failure returns to pending with its binding intact.
+    const reopened = await repository.reopenWrongNetworkPayment('user-a', order.id)
+    expect(reopened).toMatchObject({
+      paymentStatus: 'ONCHAIN_PENDING',
+      walletTxRef: 'ab'.repeat(32),
+    })
+    expect(reopened?.paymentFailureReason).toBeUndefined()
+    // Verified payment then lands on the same hash.
+    expect(await repository.recordVerifiedPayment('user-a', order.id, {
+      transactionHash: 'ab'.repeat(32),
+      sender: 's',
+      receiver: 'r',
+      lunaAmount: '1',
+      blockNumber: '7',
+      confirmations: 5,
+      verifiedAt: '2026-10-16T12:00:00.000Z',
+    })).toMatchObject({ paymentStatus: 'PAID' })
+  })
 })

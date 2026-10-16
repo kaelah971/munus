@@ -186,9 +186,18 @@ export interface NimPaymentIntent {
 export async function requestNimPayment(
   connection: NimiqConnectionState,
   intent: NimPaymentIntent,
+  hostNetwork: NimiqNetwork = getNimiqNetwork(),
 ): Promise<string> {
   if (connection.status !== 'ready' || !connection.provider) {
     throw new Error('Connect a Nimiq Pay account before paying with NIM.')
+  }
+  // Fail closed BEFORE opening wallet approval: the payment call cannot
+  // specify a network and its result exposes none, so an unprovable or
+  // non-mainnet host must never reach approval for a mainnet purchase.
+  // Production proof (2026-10-16): a testnet-host wallet signed a
+  // transaction that still confirmed on mainnet and moved real funds.
+  if (hostNetwork !== 'mainnet') {
+    throw new Error('Nimiq Pay must be on Mainnet before Munus can request a NIM payment. Switch networks in Nimiq Pay and try again.')
   }
   const luna = Number(intent.lunaAmount)
   if (!Number.isSafeInteger(luna) || luna <= 0) {

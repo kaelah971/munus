@@ -247,6 +247,19 @@ export class NimPaymentService {
     const order = await this.requireOwnedOrder(userId, orderId)
     if (order.paymentStatus === 'ONCHAIN_PENDING') return this.verifyAndSettle(order)
     if (order.paymentStatus === 'PAID') return this.maybeHandoffFulfilment(order)
+    // Recovery for the proven false-failure class: a wrong-network
+    // failure keeps its wallet binding, so re-running chain verification
+    // against the SAME hash either confirms real funds (→ PAID, single
+    // handoff) or re-fails deterministically. Affirmative mismatches
+    // (recipient/amount/memo) are never reopened here.
+    if (
+      order.paymentStatus === 'PAYMENT_FAILED' &&
+      order.paymentFailureReason === 'wrong-network' &&
+      order.walletTxRef
+    ) {
+      const reopened = await this.payment.reopenWrongNetworkPayment(userId, orderId)
+      if (reopened) return this.verifyAndSettle(reopened)
+    }
     return order
   }
 

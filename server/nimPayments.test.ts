@@ -283,7 +283,6 @@ describe('NIM payment service', () => {
     const cases: Array<{ name: string; override: Partial<ChainTransaction>; reason: string }> = [
       { name: 'wrong receiver', override: { to: KeyPair.generate().toAddress().toUserFriendlyAddress() }, reason: 'wrong-recipient' },
       { name: 'wrong amount', override: { valueLuna: '49999' }, reason: 'wrong-amount' },
-      { name: 'wrong network', override: { networkId: 53 }, reason: 'wrong-network' },
       { name: 'wrong memo', override: { dataFields: ['MNS:ffffffffffff'] }, reason: 'wrong-memo' },
     ]
     for (const { override, reason } of cases) {
@@ -294,6 +293,55 @@ describe('NIM payment service', () => {
       expect(failed).toMatchObject({ paymentStatus: 'PAYMENT_FAILED', paymentFailureReason: reason })
       expect(fulfilCalls).toEqual([])
     }
+  })
+
+  it('accepts a chain-confirmed payment carrying a foreign wallet networkId', async () => {
+    // Production case 2026-10-16: mainnet-confirmed, exact recipient /
+    // amount / memo, but networkId 24 from the signing wallet.
+    const { repository, chain, fulfilCalls, service } = setup()
+    const quoted = await quotedOrder(service, repository)
+    chain.transaction = matchingTransaction({ dataFields: [quoted.paymentMemo ?? ''], networkId: 24 })
+    const settled = await service.submitPayment('user-a', quoted.id, HASH)
+    expect(settled).toMatchObject({ paymentStatus: 'PAID', paymentFailureReason: undefined })
+    expect(fulfilCalls).toEqual([quoted.id])
+  })
+
+  it('reconciles an existing wrong-network failure from the same hash without a new payment', async () => {
+    const { repository, chain, fulfilCalls, service } = setup()
+    const quoted = await quotedOrder(service, repository)
+    chain.transaction = null
+    const pending = await service.submitPayment('user-a', quoted.id, HASH)
+    expect(pending.paymentStatus).toBe('ONCHAIN_PENDING')
+    // Historical failure as recorded before the verification fix.
+    const failed = await repository.recordPaymentFailure('user-a', quoted.id, 'wrong-network')
+    expect(failed?.paymentStatus).toBe('PAYMENT_FAILED')
+    // The real chain evidence lands later: same hash, exact quote match.
+    chain.transaction = matchingTransaction({ dataFields: [quoted.paymentMemo ?? ''], networkId: 24 })
+    const recovered = await service.reconcilePayment('user-a', quoted.id)
+    expect(recovered).toMatchObject({
+      paymentStatus: 'PAID',
+      walletTxRef: HASH,
+      paymentSender: SENDER,
+      paymentReceiver: RECEIVER,
+    })
+    expect(recovered.paymentFailureReason).toBeUndefined()
+    expect(fulfilCalls).toEqual([quoted.id])
+    // Repeat reconciliation never double-hands off.
+    expect(await service.reconcilePayment('user-a', quoted.id)).toMatchObject({ paymentStatus: 'PAID' })
+    expect(fulfilCalls).toEqual([quoted.id])
+  })
+
+  it('leaves affirmative failures failed on reconcile without touching the provider', async () => {
+    const { repository, chain, fulfilCalls, service } = setup()
+    const quoted = await quotedOrder(service, repository)
+    chain.transaction = matchingTransaction({ dataFields: [quoted.paymentMemo ?? ''], valueLuna: '1' })
+    const failed = await service.submitPayment('user-a', quoted.id, HASH)
+    expect(failed).toMatchObject({ paymentStatus: 'PAYMENT_FAILED', paymentFailureReason: 'wrong-amount' })
+    expect(await service.reconcilePayment('user-a', quoted.id)).toMatchObject({
+      paymentStatus: 'PAYMENT_FAILED',
+      paymentFailureReason: 'wrong-amount',
+    })
+    expect(fulfilCalls).toEqual([])
   })
 
   it('rejects malformed hashes and conflicting bindings', async () => {

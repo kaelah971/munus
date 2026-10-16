@@ -1,5 +1,4 @@
 import { Address } from '@nimiq/core'
-import { NIMIQ_MAINNET_NETWORK_ID } from '../src/domain/orders'
 
 export interface ChainTransaction {
   hash: string
@@ -241,13 +240,14 @@ export function verifyNimPayment(
 ): ChainVerification {
   if (!transaction) return { ok: false, reason: 'not-found' }
 
-  if (
-    expectation.network === 'mainnet' &&
-    transaction.networkId !== undefined &&
-    transaction.networkId !== NIMIQ_MAINNET_NETWORK_ID
-  ) {
-    return { ok: false, reason: 'wrong-network' }
-  }
+  // Network truth is chain membership as reported by the configured RPC
+  // endpoint — never the wallet-origin networkId label. Production proof
+  // (2026-10-16): a fully mainnet-confirmed transaction (block +
+  // confirmations on the mainnet RPC) carried a foreign networkId from
+  // its signing wallet, and rejecting it stranded real mainnet funds as
+  // "wrong-network". A genuinely foreign-network submission is simply
+  // absent from this chain: it stays not-found/pending and can never
+  // become PAID, so no networkId check is needed to fail it closed.
 
   let actualReceiver: string
   try {

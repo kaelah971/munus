@@ -270,7 +270,7 @@ describe('Nimiq Pay integration boundary', () => {
     }
 
     await expect(
-      requestNimPayment({ accounts: [], provider, status: 'ready' }, intent),
+      requestNimPayment({ accounts: [], provider, status: 'ready' }, intent, 'mainnet'),
     ).resolves.toBe('ab'.repeat(32))
     expect(sendBasicTransactionWithData).toHaveBeenCalledOnce()
     expect(sendBasicTransactionWithData).toHaveBeenCalledWith({
@@ -286,8 +286,8 @@ describe('Nimiq Pay integration boundary', () => {
     const intent = { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' }
 
     await expect(requestNimPayment({ accounts: [], status: 'unavailable' }, intent)).rejects.toThrow()
-    await expect(requestNimPayment({ accounts: [], provider, status: 'ready' }, { ...intent, lunaAmount: '50.5' })).rejects.toThrow()
-    await expect(requestNimPayment({ accounts: [], provider, status: 'ready' }, { ...intent, memo: '' })).rejects.toThrow()
+    await expect(requestNimPayment({ accounts: [], provider, status: 'ready' }, { ...intent, lunaAmount: '50.5' }, 'mainnet')).rejects.toThrow()
+    await expect(requestNimPayment({ accounts: [], provider, status: 'ready' }, { ...intent, memo: '' }, 'mainnet')).rejects.toThrow()
     expect(sendBasicTransactionWithData).not.toHaveBeenCalled()
   })
 
@@ -299,6 +299,7 @@ describe('Nimiq Pay integration boundary', () => {
       requestNimPayment(
         { accounts: [], provider: rejected, status: 'ready' },
         { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' },
+        'mainnet',
       ),
     ).rejects.toThrow('User cancelled the Nimiq Pay request.')
 
@@ -311,6 +312,7 @@ describe('Nimiq Pay integration boundary', () => {
       requestNimPayment(
         { accounts: [], provider: errorResult, status: 'ready' },
         { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' },
+        'mainnet',
       ),
     ).rejects.toThrow('Payment was declined in Nimiq Pay.')
 
@@ -321,8 +323,24 @@ describe('Nimiq Pay integration boundary', () => {
       requestNimPayment(
         { accounts: [], provider: malformed, status: 'ready' },
         { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' },
+        'mainnet',
       ),
     ).rejects.toThrow(/usable transaction reference/)
+  })
+
+  it('refuses to open wallet approval unless the host network is provably mainnet', async () => {
+    const sendBasicTransactionWithData = vi.fn()
+    const provider = { sendBasicTransactionWithData } as unknown as NimiqProvider
+    const intent = { receiver: 'NQ07', lunaAmount: '50000', memo: 'MNS:abc123def456' }
+    // Testnet host: fail closed before any wallet prompt.
+    await expect(
+      requestNimPayment({ accounts: [], provider, status: 'ready' }, intent, 'testnet'),
+    ).rejects.toThrow(/must be on Mainnet/)
+    // Unprovable host network: also fail closed.
+    await expect(
+      requestNimPayment({ accounts: [], provider, status: 'ready' }, intent, 'unknown'),
+    ).rejects.toThrow(/must be on Mainnet/)
+    expect(sendBasicTransactionWithData).not.toHaveBeenCalled()
   })
 
   it('formats luna without floating-point conversion', () => {
