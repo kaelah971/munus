@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, ListRow, PrimaryButton, QuietButton, SectionHeading, StatusPill } from '../components/Primitives'
 import { ESSENTIAL_CATEGORIES } from '../domain/payment'
 import type { IconName } from '../components/Primitives'
@@ -26,6 +26,8 @@ import type { PaymentApi, RailCapability, RailStatus, ReadinessReport } from '..
 import { estimateNgn, mapNimBalance, type NgnQuoteResult } from '../domain/accountPresentation'
 import { buildAggregateFundingView, buildFundingPreview, buildNimFundingView, estimateNimFromNgn } from '../domain/funding'
 import { NimFundingCard, type FundingDeduction } from '../components/NimFundingCard'
+import { useNimRate, type NimRateState } from '../hooks/useNimRate'
+import type { NimIndicativeRate } from '../persistence/paymentApi'
 import { RecoveryCenter } from '../components/RecoveryCenter'
 
 const icons: Record<(typeof ESSENTIAL_CATEGORIES)[number]['id'], IconName> = {
@@ -113,7 +115,6 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
   const [refreshing, setRefreshing] = useState(false)
   const [pendingTxHash, setPendingTxHash] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [reviewRate, setReviewRate] = useState<NgnQuoteResult | null>(null)
   const [balanceRefreshFailed, setBalanceRefreshFailed] = useState(false)
   const balanceRefreshed = useRef<Set<string>>(new Set())
   const [dataNetwork, setDataNetwork] = useState<PaymentOrderDraft['recipientNetwork']>('')
@@ -210,30 +211,35 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
     ? `${reviewed.id}:${reviewed.quotedCryptoAmount}:${reviewed.quoteLunaAmount}`
     : null
 
+  // Shared informational rate for the form preview and review funding
+  // card. Retained across transient failures; never payment authority.
+  const fetchPageRate = useMemo(() => async (): Promise<NimIndicativeRate> => {
+    const rate = await api.getNimRate()
+    const asOf = Date.parse(rate.asOf)
+    const expiresAt = Date.parse(rate.expiresAt)
+    if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
+      throw new Error('NIM rate unavailable.')
+    }
+    return rate
+  }, [api])
+  const pageRate = useNimRate(fetchPageRate, nowMs)
+  const reviewRate: NgnQuoteResult | null = pageRate.rate
+    ? {
+      status: 'available',
+      asset: 'NIM',
+      network: 'mainnet',
+      ngnPerUnit: pageRate.rate.ngnPerNim,
+      source: pageRate.rate.source,
+      asOf: Date.parse(pageRate.rate.asOf),
+      expiresAt: Date.parse(pageRate.rate.expiresAt),
+    }
+    : null
+
   useEffect(() => {
-    // Indicative estimate for the review funding card. Independent from
-    // the authoritative server quote: failures only hide the estimate.
-    if (!reviewedQuoteKey) {
-      setReviewRate(null)
-      return
-    }
-    let active = true
-    api.getNimRate().then((rate) => {
-      if (!active) return
-      const asOf = Date.parse(rate.asOf)
-      const expiresAt = Date.parse(rate.expiresAt)
-      if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
-        setReviewRate({ status: 'unavailable' })
-        return
-      }
-      setReviewRate({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: rate.ngnPerNim, source: rate.source, asOf, expiresAt })
-    }).catch(() => {
-      if (active) setReviewRate({ status: 'unavailable' })
-    })
-    return () => {
-      active = false
-    }
-  }, [api, reviewedQuoteKey])
+    // A new quote deserves a fresh rate attempt alongside the retained one.
+    if (reviewedQuoteKey) pageRate.refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewedQuoteKey])
 
   useEffect(() => {
     // After server-verified payment, re-read the real balance. A refresh
@@ -285,36 +291,12 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
     return updated
   }
 
-  const [formRate, setFormRate] = useState<NgnQuoteResult | null>(null)
-  const [formRateLoading, setFormRateLoading] = useState(false)
-
-  async function loadFormRate() {
-    // Indicative form estimate only. Server fetch, no wallet contact;
-    // failures degrade to an honest unavailable state with retry.
-    setFormRateLoading(true)
-    try {
-      const rate = await api.getNimRate()
-      const asOf = Date.parse(rate.asOf)
-      const expiresAt = Date.parse(rate.expiresAt)
-      if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
-        setFormRate({ status: 'unavailable' })
-        return
-      }
-      setFormRate({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: rate.ngnPerNim, source: rate.source, asOf, expiresAt })
-    } catch {
-      setFormRate({ status: 'unavailable' })
-    } finally {
-      setFormRateLoading(false)
-    }
-  }
-
   function openAirtimeForm() {
     setDraft(emptyAirtimeDraft(defaultPhone))
     setActionError(null)
     setPendingTxHash(null)
-    setFormRate(null)
     setView({ name: 'airtime-form' })
-    void loadFormRate()
+    pageRate.refresh()
   }
 
   function openDataForm() {
@@ -674,10 +656,8 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
           {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
           <AirtimeEstimatePanel
             amount={draft.requestedAmount}
-            rate={formRate}
-            rateLoading={formRateLoading}
+            rateState={pageRate}
             funding={funding ?? null}
-            onRetryRate={() => void loadFormRate()}
           />
           <div className="truth-note"><Icon name="info" size={18} /><p>This saves the order only — no money moves until you review a live quote and approve it in Nimiq Pay.</p></div>
           <PrimaryButton disabled={saving || railStatus('airtime') === 'unavailable'} onClick={() => void saveAirtimeOrder()}>
@@ -1123,30 +1103,27 @@ function OrderStatusPill({ order }: { order: PaymentOrder }) {
  * from the indicative rate — never payment authority and never a reason
  * to disable anything: the server quote alone decides the payment.
  */
-function AirtimeEstimatePanel({ amount, rate, rateLoading, funding, onRetryRate }: {
+function AirtimeEstimatePanel({ amount, rateState, funding }: {
   amount: string
-  rate: NgnQuoteResult | null
-  rateLoading: boolean
+  rateState: NimRateState
   funding?: { luna: string; nim: string; network: 'mainnet' | 'testnet' } | null
-  onRetryRate: () => void
 }) {
   const trimmed = amount.trim()
   const positive = /^\d+(?:\.\d+)?$/.test(trimmed) && Number(trimmed) > 0
   if (!positive) return null
-  if (rateLoading && !rate) {
-    return <p className="section-copy" role="status">Checking current rate…</p>
+  const rate = rateState.rate
+  if (rateState.loading && !rate) {
+    return <p className="section-copy" role="status">Getting current NIM rate…</p>
   }
-  if (!rate || rate.status !== 'available') {
+  if (!rate) {
     return (
       <>
-        <p className="section-copy">NIM rate unavailable — the estimate cannot load right now.</p>
-        <QuietButton disabled={rateLoading} onClick={onRetryRate}>
-          {rateLoading ? 'Checking…' : 'Check again'}
-        </QuietButton>
+        <p className="section-copy">Current NIM rate is temporarily unavailable.</p>
+        <QuietButton onClick={() => rateState.refresh()}>Check again</QuietButton>
       </>
     )
   }
-  const estimate = estimateNimFromNgn(trimmed, rate.ngnPerUnit)
+  const estimate = estimateNimFromNgn(trimmed, rate.ngnPerNim)
   if (!estimate) return null
   let shortfall: string | null = null
   try {
@@ -1162,10 +1139,11 @@ function AirtimeEstimatePanel({ amount, rate, rateLoading, funding, onRetryRate 
       <SectionHeading>Estimated payment</SectionHeading>
       <dl className="contact-details">
         <div><dt>Airtime</dt><dd>₦{trimmed}</dd></div>
-        <div><dt>Rate</dt><dd>1 NIM ≈ ₦{rate.ngnPerUnit}</dd></div>
+        <div><dt>Rate</dt><dd>1 NIM ≈ ₦{rate.ngnPerNim}</dd></div>
         <div><dt>You pay about</dt><dd>≈ {estimate.nim} NIM</dd></div>
         {funding ? <div><dt>Available in Nimiq Pay</dt><dd>{funding.nim} NIM</dd></div> : null}
       </dl>
+      {rateState.refreshing ? <p className="section-copy" role="status">Updating rate…</p> : null}
       {shortfall !== null ? (
         <div className="truth-note"><Icon name="info" size={18} /><p>Estimated amount is higher than your current Nimiq Pay balance. Nimiq Pay still chooses the paying account — this never blocks continuing.</p></div>
       ) : null}

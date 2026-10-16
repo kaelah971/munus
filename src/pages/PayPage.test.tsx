@@ -330,11 +330,17 @@ describe('Pay essentials order flow', () => {
     expect(screen.getByText('221.005 NIM')).toBeInTheDocument()
     expect(screen.getByText(/Estimate only\. The final NIM amount is locked when you continue\./)).toBeInTheDocument()
     expect(screen.queryByText(/higher than your current/)).not.toBeInTheDocument()
+    // Typing recomputes locally: 5 → 50 → 500 triggers no upstream calls.
+    const rateCalls = api.getNimRate.mock.calls.length
+    fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '500' } })
+    expect(await screen.findByText('≈ 0.25 NIM')).toBeInTheDocument()
+    expect(api.getNimRate.mock.calls.length).toBe(rateCalls)
   })
 
   it('warns on shortfall without blocking and retries honest rate failures', async () => {
     const api = apiStub()
-    api.getNimRate.mockRejectedValueOnce(new Error('Live NIM rate is unavailable. No quote was created.'))
+    api.getNimRate.mockRejectedValue(new Error('Live NIM rate is unavailable. No quote was created.'))
     render(<PayPage
       api={api}
       connection={offlineConnection}
@@ -343,12 +349,17 @@ describe('Pay essentials order flow', () => {
     await waitFor(() => expect(api.list).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: /Airtime/ }))
     fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '1000' } })
-    expect(await screen.findByText(/NIM rate unavailable/)).toBeInTheDocument()
+    expect(await screen.findByText(/Current NIM rate is temporarily unavailable/)).toBeInTheDocument()
+    api.getNimRate.mockResolvedValue({
+      ngnPerNim: '2000',
+      source: 'test:rate',
+      asOf: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    })
     const callsBefore = api.getNimRate.mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     await waitFor(() => expect(api.getNimRate.mock.calls.length).toBeGreaterThan(callsBefore))
 
-    fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '1000' } })
     expect(await screen.findByText('Estimated payment')).toBeInTheDocument()
     expect(screen.getByText('≈ 0.5 NIM')).toBeInTheDocument()
     expect(screen.getByText(/higher than your current Nimiq Pay balance/)).toBeInTheDocument()

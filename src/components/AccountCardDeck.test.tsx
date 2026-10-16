@@ -28,7 +28,7 @@ describe('account card deck', () => {
 
   it('masks balances and quotes, and passes no Nimiq address into the USDT adapter', async () => {
     const readUsdtBalance = vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' })
-    const sources: AccountDataSources = { readUsdtBalance, getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: 0, expiresAt: Date.now() + 60000 }) }
+    const sources: AccountDataSources = { readUsdtBalance, getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 }) }
     const view = render(<AccountCardDeck connection={connection} wallet={{ ...wallet, status: 'available', nimBalance: '12.5' }} hideBalances={false} sources={sources} />)
     await waitFor(() => expect(screen.getByText('≈ ₦125.00')).toBeInTheDocument())
     expect(readUsdtBalance.mock.calls[0][0]).toBeUndefined()
@@ -48,7 +48,7 @@ describe('account card deck', () => {
   it('keeps a valid NIM quote when a separate USDT adapter fails', async () => {
     const sources: AccountDataSources = {
       readUsdtBalance: vi.fn().mockRejectedValue(new Error('USDT unavailable')),
-      getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: 0, expiresAt: Date.now() + 60000 }),
+      getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 }),
     }
     render(<AccountCardDeck connection={connection} wallet={{ ...wallet, status: 'available', nimBalance: '12.5' }} hideBalances={false} sources={sources} />)
     await waitFor(() => expect(screen.getByText('≈ ₦125.00')).toBeInTheDocument())
@@ -64,7 +64,7 @@ describe('account card deck', () => {
     }
     const view = render(<AccountCardDeck connection={connection} wallet={{ ...wallet, status: 'available', nimBalance: '12.5' }} hideBalances={false} sources={sources} />)
     view.rerender(<AccountCardDeck connection={{ ...connection, accounts: ['NQ99 different'] }} wallet={{ ...wallet, address: 'NQ99 different', status: 'available', nimBalance: '5' }} hideBalances={false} sources={sources} />)
-    resolveFirst({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Old account', asOf: 0, expiresAt: Date.now() + 60000 })
+    resolveFirst({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Old account', asOf: Date.now(), expiresAt: Date.now() + 60000 })
     await waitFor(() => expect(sources.getNgnQuote).toHaveBeenCalledTimes(2))
     expect(screen.queryByText('≈ ₦50.00')).not.toBeInTheDocument()
     expect(screen.getAllByText('NGN estimate unavailable')).toHaveLength(2)
@@ -79,7 +79,7 @@ describe('account card deck', () => {
   it('prefers the confirmed aggregate over the single signer balance', async () => {
     const sources: AccountDataSources = {
       readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }),
-      getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '2000', source: 'Fixture', asOf: 0, expiresAt: Date.now() + 60000 }),
+      getNgnQuote: vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '2000', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 }),
     }
     render(<AccountCardDeck
       connection={connection}
@@ -106,7 +106,7 @@ describe('account card deck', () => {
   })
 
   it('fetches the estimate for an unknown host network via the aggregate network', async () => {
-    const getNgnQuote = vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '0.415461', source: 'Fixture', asOf: 0, expiresAt: Date.now() + 60000 })
+    const getNgnQuote = vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '0.415461', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 })
     const sources: AccountDataSources = { readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }), getNgnQuote }
     // Production shape: host exposes no network, aggregate is confirmed.
     render(<AccountCardDeck
@@ -139,7 +139,7 @@ describe('account card deck', () => {
   })
 
   it('attributes a confirmed host balance to the session-verified network for estimates', async () => {
-    const getNgnQuote = vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: 0, expiresAt: Date.now() + 60000 })
+    const getNgnQuote = vi.fn().mockResolvedValue({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: '10', source: 'Fixture', asOf: Date.now(), expiresAt: Date.now() + 60000 })
     const sources: AccountDataSources = { readUsdtBalance: vi.fn().mockResolvedValue({ status: 'unavailable', asset: 'USDT' }), getNgnQuote }
     render(<AccountCardDeck
       connection={connection}

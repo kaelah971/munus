@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   accountDataSources, estimateNgn, mapNimBalance,
   type AccountAsset, type AccountDataSources, type AssetBalanceResult,
@@ -6,6 +6,8 @@ import {
 } from '../domain/accountPresentation'
 import { buildAggregateFundingView, buildNimFundingView, nimBalanceForEstimate } from '../domain/funding'
 import { NimFundingCard } from './NimFundingCard'
+import { useNimRate } from '../hooks/useNimRate'
+import type { NimIndicativeRate } from '../persistence/paymentApi'
 import type { NimiqConnectionState, NimiqWalletState } from '../integration/nimiq'
 
 const unavailableQuote: NgnQuoteResult = { status: 'unavailable' }
@@ -26,7 +28,7 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
   aggregate?: { luna: string; nim: string; network: 'mainnet' | 'testnet' } | null
 }) {
   const [selectedAsset, setSelectedAsset] = useState<AccountAsset>('NIM')
-  const [quotes, setQuotes] = useState<{ key: string; NIM: NgnQuoteResult; USDT: NgnQuoteResult } | null>(null)
+  const [usdtQuote, setUsdtQuote] = useState<{ key: string; quote: NgnQuoteResult } | null>(null)
   const [usdtResult, setUsdtResult] = useState<{ key: string; balance: AssetBalanceResult } | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const accountKey = JSON.stringify([connection.status, wallet.address, wallet.network, usdtAccount])
@@ -39,28 +41,45 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
   const quoteNetwork = wallet.network === 'mainnet' || wallet.network === 'testnet'
     ? wallet.network
     : aggregate?.network ?? fallbackNetwork ?? wallet.network
-  const nimKey = `${accountKey}|${quoteNetwork}`
-  const nimQuote = quotes?.key === nimKey ? quotes.NIM : unavailableQuote
-  const usdtQuote = quotes?.key === accountKey ? quotes.USDT : unavailableQuote
+  const fetchNimRate = useMemo(() => async (signal: AbortSignal): Promise<NimIndicativeRate> => {
+    const result = await sources.getNgnQuote('NIM', quoteNetwork, signal)
+    if (result.status !== 'available') throw new Error('NIM rate unavailable.')
+    return {
+      ngnPerNim: result.ngnPerUnit,
+      source: result.source,
+      asOf: new Date(result.asOf).toISOString(),
+      expiresAt: new Date(result.expiresAt).toISOString(),
+    }
+  }, [sources, quoteNetwork])
+  const nimRate = useNimRate(fetchNimRate, now, accountKey)
+  const nimQuote: NgnQuoteResult = nimRate.rate
+    ? {
+      status: 'available',
+      asset: 'NIM',
+      network: quoteNetwork,
+      ngnPerUnit: nimRate.rate.ngnPerNim,
+      source: nimRate.rate.source,
+      asOf: Date.parse(nimRate.rate.asOf),
+      expiresAt: Date.parse(nimRate.rate.expiresAt),
+    }
+    : unavailableQuote
+  const usdtQuoteValue = usdtQuote?.key === accountKey ? usdtQuote.quote : unavailableQuote
 
   useEffect(() => {
     const controller = new AbortController()
     let active = true
     const readQuote = (asset: AccountAsset, network: string) => sources.getNgnQuote(asset, network, controller.signal).catch((): NgnQuoteResult => ({ status: 'unavailable' }))
     // Currency data sources are independent; a future USDT failure must not suppress NIM's quote.
-    void readQuote('NIM', quoteNetwork).then((NIM) => {
-      if (active) setQuotes((previous) => ({ key: nimKey, NIM, USDT: previous?.key === accountKey ? previous.USDT : unavailableQuote }))
-    })
     void sources.readUsdtBalance(usdtAccount, controller.signal).then(async (balance) => {
       const validBalance = balance.asset === 'USDT' ? balance : unavailableUsdt
       if (active) setUsdtResult({ key: accountKey, balance: validBalance })
       const USDT = validBalance.status === 'available' ? await readQuote('USDT', validBalance.network) : unavailableQuote
-      if (active) setQuotes((previous) => ({ key: accountKey, NIM: previous?.key === accountKey ? previous.NIM : unavailableQuote, USDT }))
+      if (active) setUsdtQuote({ key: accountKey, quote: USDT })
     }).catch(() => {
       if (active) setUsdtResult({ key: accountKey, balance: { status: 'error', asset: 'USDT', error: 'Balance unavailable' } })
     })
     return () => { active = false; controller.abort() }
-  }, [accountKey, nimKey, quoteNetwork, sources, usdtAccount])
+  }, [accountKey, sources, usdtAccount])
 
   useEffect(() => {
     const refresh = () => setNow(Date.now())
@@ -73,7 +92,7 @@ export function AccountCardDeck({ wallet, connection, hideBalances, sources = ac
     <section className="account-deck" aria-label="Your accounts">
       {(['NIM', 'USDT'] as const).map((asset) => {
         const balance = asset === 'NIM' ? nim : usdt
-        const quote = asset === 'NIM' ? nimQuote : usdtQuote
+        const quote = asset === 'NIM' ? nimQuote : usdtQuoteValue
         const estimate = estimateNgn(
           asset === 'NIM' ? nimBalanceForEstimate(balance, quote, quoteNetwork) : balance,
           quote,
