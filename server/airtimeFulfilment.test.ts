@@ -147,6 +147,19 @@ describe('Airtime fulfilment service', () => {
     expect(fulfilled.fulfilledAt).toBeUndefined()
   })
 
+  it('submits on first fulfilment when the provider holds no record', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await paidOrder(repository)
+    const { provider, fulfilment } = service(repository)
+    // Same stuck shape as the retry path, but on first handoff: an
+    // ambiguous provider answer without any order reference must not
+    // park a PAID order in recovery without ever trying the purchase.
+    provider.queryRecord = { statusCode: '', status: 'TRANSACTION_BEYOND_30_DAYS', outcome: 'unknown' }
+    const started = await fulfilment.fulfilOrder('user-a', order.id)
+    expect(started.fulfilmentStatus).toBe('FULFILLING')
+    expect(provider.purchaseCalls).toBe(1)
+  })
+
   it('never repurchases on a duplicate fulfil attempt', async () => {
     const repository = new InMemoryPaymentRepository()
     const order = await paidOrder(repository)
@@ -394,24 +407,57 @@ describe('Airtime fulfilment service', () => {
     expect(provider.purchaseCalls).toBe(0)
     expect(provider.queryCalls).toBe(1)
 
-    // Provider ambiguous: recovery holds, no repurchase.
-    provider.queryRecord = { statusCode: '300', status: 'ORDER_UNKNOWN', outcome: 'unknown' }
+    // Provider ambiguous WITH its own order id: recovery holds, no repurchase.
+    provider.queryRecord = { providerOrderId: 'ord-9', statusCode: '300', status: 'ORDER_UNKNOWN', outcome: 'unknown' }
     const recovery = await fulfilment.retryDelivery('user-a', order.id)
     expect(recovery.fulfilmentStatus).toBe('RECOVERY_REQUIRED')
+    expect(recovery.providerRef).toBe('ord-9')
     expect(provider.purchaseCalls).toBe(0)
+    // A stuck reference also blocks resubmission on later retries.
+    const held = await fulfilment.retryDelivery('user-a', order.id)
+    expect(held.fulfilmentStatus).toBe('RECOVERY_REQUIRED')
+    expect(provider.purchaseCalls).toBe(0)
+  })
 
-    // Provider never saw it: purchase once with the same RequestID.
-    provider.queryRecord = { statusCode: '', status: '', outcome: 'not-found' }
-    const retried = await fulfilment.retryDelivery('user-a', order.id)
-    expect(retried.fulfilmentStatus).toBe('FULFILLING')
-    expect(retried.providerRequestId).toBe(order.id.replace(/-/g, ''))
-    expect(provider.purchaseCalls).toBe(1)
-
-    // A plain refresh finds the provider record and never repurchases.
-    provider.queryRecord = { providerOrderId: 'ord-1', statusCode: '100', status: 'ORDER_RECEIVED', outcome: 'pending' }
-    const again = await fulfilment.reconcileOrder('user-a', order.id)
-    expect(again.fulfilmentStatus).toBe('FULFILLING')
-    expect(provider.purchaseCalls).toBe(1)
+  it('resubmits with the same RequestID when the provider holds no record', async () => {
+    const repository = new InMemoryPaymentRepository()
+    const order = await paidOrder(repository)
+    const stored = repository.orders.get(order.id)
+    if (!stored) throw new Error('Fixture order was not stored.')
+    // Production shape after the auth outage: RECOVERY_REQUIRED, a stable
+    // reserved RequestID, but no provider order reference anywhere.
+    stored.fulfilmentStatus = 'RECOVERY_REQUIRED'
+    stored.provider = 'clubkonnect'
+    stored.providerRequestId = order.id.replace(/-/g, '')
+    const { provider, fulfilment } = service(repository)
+    const logged: unknown[][] = []
+    const info = console.info
+    console.info = (...args: unknown[]) => { logged.push(args) }
+    try {
+      provider.queryRecord = { statusCode: '', status: 'TRANSACTION_BEYOND_30_DAYS', outcome: 'unknown' }
+      const retried = await fulfilment.retryDelivery('user-a', order.id)
+      expect(retried.fulfilmentStatus).toBe('FULFILLING')
+      expect(retried.providerRequestId).toBe(order.id.replace(/-/g, ''))
+      expect(retried.providerRef).toBe('ord-1')
+      expect(provider.purchaseCalls).toBe(1)
+      const lookup = logged.find((args) => typeof args[0] === 'string' && args[0].includes('recovery lookup'))
+      expect(lookup?.[1]).toMatchObject({
+        orderId: order.id,
+        requestId: order.id.replace(/-/g, ''),
+        action: 'resubmit',
+        providerStatus: 'TRANSACTION_BEYOND_30_DAYS',
+        outcome: 'unknown',
+      })
+      // Success reconciles to delivered; a repeat retry is refused.
+      provider.queryRecord = { providerOrderId: 'ord-1', statusCode: '200', status: 'ORDER_COMPLETED', outcome: 'completed' }
+      expect(await fulfilment.reconcileOrder('user-a', order.id)).toMatchObject({ fulfilmentStatus: 'DELIVERED' })
+      expect(provider.purchaseCalls).toBe(1)
+      // Terminal delivery: further retries resolve without repurchasing.
+      expect(await fulfilment.retryDelivery('user-a', order.id)).toMatchObject({ fulfilmentStatus: 'DELIVERED' })
+      expect(provider.purchaseCalls).toBe(1)
+    } finally {
+      console.info = info
+    }
   })
 
   it('blocks unsafe retries while delivery is in progress or resolved', async () => {

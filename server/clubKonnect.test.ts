@@ -132,6 +132,20 @@ describe('ClubKonnect airtime adapter', () => {
     expect(urls[1]).toContain(CLUBKONNECT_QUERY_PATH)
   })
 
+  it('carries the provider HTTP status on transport failures for diagnostics', async () => {
+    const realFetch = globalThis.fetch
+    try {
+      globalThis.fetch = (async () => ({ ok: false, status: 403 })) as unknown as typeof fetch
+      const adapter = new ClubKonnectAirtimeProvider({ credentials })
+      const failure = await adapter.query({ requestId: 'abc123' }).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(ClubKonnectError)
+      expect((failure as ClubKonnectError).httpStatus).toBe(403)
+      expect((failure as Error).message).not.toMatch(/key|CK101|secret/i)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('treats an empty query response as not-found', async () => {
     const record = await provider(async () => ({})).query({ requestId: 'missing' })
     expect(record.outcome).toBe('not-found')

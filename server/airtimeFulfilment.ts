@@ -13,7 +13,20 @@ import {
   type PaymentServiceType,
 } from '../src/domain/orders'
 import type { FulfilmentStart, PaymentRepository, ProviderEvidenceUpdate } from './paymentRepository'
-import { CLUBKONNECT_CALLBACK_PATH } from './clubKonnect'
+import { CLUBKONNECT_CALLBACK_PATH, ClubKonnectError } from './clubKonnect'
+
+/**
+ * Sanitized provider-failure log: HTTP status when a response arrived,
+ * provider message otherwise. Never URLs, credentials, or phone numbers.
+ */
+function logProviderFailure(kind: string, orderId: string, requestId: string, step: string, error: unknown): void {
+  console.info(`Munus ${kind} provider ${step} failed`, {
+    orderId,
+    requestId,
+    httpStatus: error instanceof ClubKonnectError ? (error.httpStatus ?? null) : null,
+    cause: error instanceof Error ? error.message : 'unknown provider error',
+  })
+}
 
 export class FulfilmentError extends Error {
   constructor(message: string, readonly statusCode = 409) {
@@ -40,6 +53,25 @@ interface FulfilmentRunner<Input> {
   buildPurchaseParams(input: Input): Record<string, string>
   purchase(input: Input): Promise<AirtimePurchaseReceipt>
   query(input: AirtimeQueryInput): Promise<AirtimeQueryRecord>
+}
+
+/**
+ * Provider holds no transaction under a RequestID: the query came back
+ * empty, or ambiguous WITHOUT any provider order reference. Production
+ * proof (2026-10-16): a never-created RequestID answers
+ * `TRANSACTION_BEYOND_30_DAYS` with no orderid — reconcile-first must
+ * treat that as resubmittable, not as a known transaction. Any record
+ * carrying a provider order id (or an order already holding a provider
+ * reference) is genuinely ambiguous and must only reconcile, never
+ * repurchase: the order id is the existence proof.
+ */
+export function providerHasNoRecord(
+  order: Pick<PaymentOrder, 'providerRef'>,
+  record: Pick<AirtimeQueryRecord, 'outcome' | 'providerOrderId'>,
+): boolean {
+  if (record.outcome === 'not-found') return true
+  if (record.outcome !== 'unknown') return false
+  return !record.providerOrderId && !order.providerRef
 }
 
 /**
@@ -171,12 +203,28 @@ export class AirtimeFulfilmentService {
     provider.buildPurchaseParams(purchaseInput)
 
     // Reconcile first: only a provider that has never seen this RequestID
-    // may be asked to fulfil it.
-    const record = await provider.query({
+    // may be asked to fulfil it. An ambiguous answer WITH a provider
+    // order id reconciles only; without one there is nothing to
+    // duplicate, so the same stable RequestID is (re)submitted.
+    let record: AirtimeQueryRecord
+    try {
+      record = await provider.query({
+        requestId: purchaseInput.requestId,
+        providerOrderId: order.providerRef,
+      })
+    } catch (error) {
+      logProviderFailure(kind, orderId, purchaseInput.requestId, 'lookup', error)
+      throw error
+    }
+    console.info(`Munus ${kind} recovery lookup`, {
+      orderId,
       requestId: purchaseInput.requestId,
-      providerOrderId: order.providerRef,
+      action: providerHasNoRecord(order, record) ? 'resubmit' : 'reconcile-only',
+      providerCode: record.statusCode || null,
+      providerStatus: record.status || null,
+      outcome: record.outcome,
     })
-    if (record.outcome !== 'not-found') {
+    if (!providerHasNoRecord(order, record)) {
       return this.applyQueryRecord(userId, order, record)
     }
 
@@ -187,8 +235,14 @@ export class AirtimeFulfilmentService {
       })
       if (!reserved) return this.requireOwnedOrder(userId, orderId)
     }
-    console.info(`Munus ${kind} purchase sent`, { orderId, recipient: maskPhone(order.recipientPhone ?? '') })
-    const receipt = await provider.purchase(purchaseInput)
+    console.info(`Munus ${kind} purchase sent`, { orderId, requestId: purchaseInput.requestId, recipient: maskPhone(order.recipientPhone ?? '') })
+    let receipt: AirtimePurchaseReceipt
+    try {
+      receipt = await provider.purchase(purchaseInput)
+    } catch (error) {
+      logProviderFailure(kind, orderId, purchaseInput.requestId, 'purchase', error)
+      throw error
+    }
     const updated = await this.payment.recordProviderUpdate(userId, orderId, {
       providerOrderId: receipt.providerOrderId,
       providerStatusCode: receipt.statusCode,
@@ -226,13 +280,29 @@ export class AirtimeFulfilmentService {
 
     // Reconcile-first retry: if the provider already knows this RequestID
     // (earlier purchase reached them), attach it instead of repurchasing.
+    // An ambiguous answer without any provider order id means nothing
+    // exists to duplicate, so the same stable RequestID is submitted.
     const existing = await provider.query({ requestId: purchaseInput.requestId })
-    if (existing.outcome !== 'not-found') {
+    console.info(`Munus ${kind} recovery lookup`, {
+      orderId,
+      requestId: purchaseInput.requestId,
+      action: providerHasNoRecord(current, existing) ? 'resubmit' : 'reconcile-only',
+      providerCode: existing.statusCode || null,
+      providerStatus: existing.status || null,
+      outcome: existing.outcome,
+    })
+    if (!providerHasNoRecord(current, existing)) {
       return this.applyQueryRecord(userId, current, existing)
     }
 
-    console.info(`Munus ${kind} purchase sent`, { orderId: current.id, recipient: maskPhone(current.recipientPhone ?? '') })
-    const receipt = await provider.purchase(purchaseInput)
+    console.info(`Munus ${kind} purchase sent`, { orderId: current.id, requestId: purchaseInput.requestId, recipient: maskPhone(current.recipientPhone ?? '') })
+    let receipt: AirtimePurchaseReceipt
+    try {
+      receipt = await provider.purchase(purchaseInput)
+    } catch (error) {
+      logProviderFailure(kind, current.id, purchaseInput.requestId, 'purchase', error)
+      throw error
+    }
     const updated = await this.payment.recordProviderUpdate(userId, orderId, {
       providerOrderId: receipt.providerOrderId,
       providerStatusCode: receipt.statusCode,
@@ -299,7 +369,14 @@ export class AirtimeFulfilmentService {
       fulfilmentStatus: next,
       fulfilledAt: next === 'DELIVERED' ? this.now() : undefined,
     }
-    console.info(`Munus ${order.serviceType === 'DATA' ? 'data' : 'airtime'} reconciled`, { orderId: order.id, outcome: record.outcome, fulfilmentStatus: next })
+    console.info(`Munus ${order.serviceType === 'DATA' ? 'data' : 'airtime'} reconciled`, {
+      orderId: order.id,
+      outcome: record.outcome,
+      fulfilmentStatus: next,
+      providerCode: record.statusCode || null,
+      providerStatus: record.status || null,
+      providerRef: record.providerOrderId ?? order.providerRef ?? null,
+    })
     const updated = await this.payment.recordProviderUpdate(userId, order.id, evidence)
     const settled = updated ?? order
     await this.notifySettled(settled)

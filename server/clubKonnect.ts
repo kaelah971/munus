@@ -84,9 +84,14 @@ export function toProviderMsisdn(recipientPhone: string): string {
 }
 
 export class ClubKonnectError extends Error {
-  constructor(message: string, readonly statusCode = 502) {
+  readonly statusCode: number
+  /** Provider HTTP status when a response arrived; undefined on transport failure. Server logs only. */
+  readonly httpStatus: number | undefined
+  constructor(message: string, statusCode = 502, httpStatus?: number) {
     super(message)
     this.name = 'ClubKonnectError'
+    this.statusCode = statusCode
+    this.httpStatus = httpStatus
   }
 }
 
@@ -192,9 +197,11 @@ export class ClubKonnectAirtimeProvider implements AirtimeProviderAdapter {
     let payload: unknown
     try {
       payload = await this.fetchJson(url)
-    } catch {
+    } catch (error) {
       // Never surface raw URLs (they carry credentials as GET params).
-      throw new ClubKonnectError('Airtime provider request failed. No airtime was confirmed.')
+      // Preserve the provider HTTP status for sanitized diagnostics.
+      const httpStatus = error instanceof ClubKonnectError ? error.httpStatus : undefined
+      throw new ClubKonnectError('Airtime provider request failed. No airtime was confirmed.', 502, httpStatus)
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new ClubKonnectError('Airtime provider returned an unreadable response. No airtime was confirmed.')
@@ -293,9 +300,11 @@ export class ClubKonnectDataProvider implements DataProviderAdapter {
     let payload: unknown
     try {
       payload = await this.fetchJson(url)
-    } catch {
+    } catch (error) {
       // Never surface raw URLs (they carry credentials as GET params).
-      throw new ClubKonnectError('Data provider request failed. No bundle was confirmed.')
+      // Preserve the provider HTTP status for sanitized diagnostics.
+      const httpStatus = error instanceof ClubKonnectError ? error.httpStatus : undefined
+      throw new ClubKonnectError('Data provider request failed. No bundle was confirmed.', 502, httpStatus)
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new ClubKonnectError('Data provider returned an unreadable response. No bundle was confirmed.')
@@ -347,7 +356,7 @@ async function defaultFetchJson(url: string): Promise<unknown> {
   } catch {
     throw new ClubKonnectError('Airtime provider request failed. No airtime was confirmed.')
   }
-  if (!response.ok) throw new ClubKonnectError('Airtime provider is unavailable. No airtime was confirmed.')
+  if (!response.ok) throw new ClubKonnectError('Airtime provider is unavailable. No airtime was confirmed.', 502, response.status)
   try {
     return (await response.json()) as unknown
   } catch {

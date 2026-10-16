@@ -30,12 +30,35 @@ Legend:
   never trusts callback fields (server/app.ts provider-callback
   handler → `reconcileByProviderReference`).
 
+## ClubKonnect Airtime — VERIFIED FROM CURRENT PROVIDER/DOCS (2026-10-16)
+
+- Official docs (`clubkonnect.com/APIDocs`): purchase and query are
+  HTTPS GET with `UserID`/`APIKey` (+ `MobileNetwork`, `Amount`,
+  `MobileNumber`, `RequestID`, `CallBackURL` for purchase;
+  `OrderID` and/or `RequestID` for query). Munus matches exactly.
+- Official status table (`APIParaGetDisputeResolutionV1`): 1xx
+  ORDER_RECEIVED, 2xx ORDER_COMPLETED, 3xx ORDER_PROCESSING, 4xx
+  ORDER_ERROR (400 INVALID_CREDENTIALS, 401 MISSING_CREDENTIALS,
+  402/403 missing fields), 5xx ORDER_CANCELLED, 6xx ORDER_ONHOLD,
+  799 ORDER_PROCESSED, 899 ORDER_REFUNDED.
+- Official Wallet Balance API (`APIWalletBalanceV1.asp`, read-only,
+  `UserID`+`APIKey` only) returns `{date, id, phoneno, balance}`.
+- Official docs list an **IP whitelisting** account feature; a
+  non-whitelisted server IP is therefore a live suspect whenever
+  valid-shaped credentials are rejected.
+- Live provider evidence: querying a never-created `RequestID` with
+  valid credentials answers `status: TRANSACTION_BEYOND_30_DAYS`
+  with NO `orderid` and NO `statuscode`. A provider transaction
+  always carries its order id (docs: reconcile by `orderId`), so an
+  ambiguous answer WITHOUT any order reference means nothing exists
+  to duplicate — `providerHasNoRecord` (server/airtimeFulfilment.ts)
+  resubmits with the same stable `RequestID`; any answer WITH an
+  order reference only ever reconciles.
+
 ## ClubKonnect Airtime — STILL ASSUMED
 
 - Exact network codes sent as `MobileNetwork` (mapping lives in
   `clubKonnectNetworkCode`; confirm MTN/Glo/9mobile/Airtel codes).
-- Query response shape and status vocabulary the parser accepts
-  (confirm field names, success/pending/failure codes).
 - Callback parameter names and delivery semantics (confirm which
   params arrive, and whether callbacks retry).
 - Minimum/maximum airtime amounts and fee behavior.
