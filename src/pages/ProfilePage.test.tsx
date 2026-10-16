@@ -120,4 +120,29 @@ describe('mobile profile settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enable lock' }))
     await waitFor(() => expect(handlers.onSavePin).toHaveBeenCalledWith('123456'))
   })
+
+  it('shows NIM rate diagnostics only with a session loader', async () => {
+    const handlers = props()
+    render(<ProfilePage {...handlers} />)
+    expect(screen.queryByRole('heading', { name: 'NIM rate diagnostics' })).not.toBeInTheDocument()
+
+    const getNimRate = vi.fn().mockResolvedValue({
+      ngnPerNim: '0.415461',
+      source: 'coingecko:nimiq-2/ngn',
+      asOf: '2026-10-15T00:00:00.000Z',
+      expiresAt: '2026-10-15T00:02:00.000Z',
+    })
+    render(<ProfilePage {...props()} getNimRate={getNimRate} />)
+    expect(await screen.findByRole('heading', { name: 'NIM rate diagnostics' })).toBeInTheDocument()
+    expect(await screen.findByText('200 · parsed')).toBeInTheDocument()
+    expect(screen.getByText('1 NIM ≈ ₦0.415461')).toBeInTheDocument()
+    expect(getNimRate).toHaveBeenCalledOnce()
+  })
+
+  it('classifies rate failures without leaking secrets', async () => {
+    const getNimRate = vi.fn().mockRejectedValue(new Error('Live NIM rate is unavailable. No quote was created.'))
+    render(<ProfilePage {...props()} getNimRate={getNimRate} />)
+    expect(await screen.findByText('502 · upstream failed')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Live NIM rate is unavailable.')
+  })
 })

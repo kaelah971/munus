@@ -307,6 +307,56 @@ describe('Pay essentials order flow', () => {
     expect(screen.queryByRole('button', { name: /pay now/i })).not.toBeInTheDocument()
   })
 
+  it('shows an indicative conversion on the airtime form before any quote', async () => {
+    const api = apiStub()
+    render(<PayPage
+      api={api}
+      connection={offlineConnection}
+      funding={{ luna: '22100500', nim: '221.005', network: 'mainnet' }}
+    />)
+    await waitFor(() => expect(api.list).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: /Airtime/ }))
+    expect(await screen.findByRole('heading', { name: 'Top up airtime' })).toBeInTheDocument()
+    await waitFor(() => expect(api.getNimRate).toHaveBeenCalled())
+    // No amount yet: no estimate, no wallet contact.
+    expect(screen.queryByText('Estimated payment')).not.toBeInTheDocument()
+    expect(mockedRequestNimPayment).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '50' } })
+    expect(await screen.findByText('Estimated payment')).toBeInTheDocument()
+    expect(screen.getByText('₦50')).toBeInTheDocument()
+    expect(screen.getByText('1 NIM ≈ ₦2000')).toBeInTheDocument()
+    expect(screen.getByText('≈ 0.025 NIM')).toBeInTheDocument()
+    expect(screen.getByText('221.005 NIM')).toBeInTheDocument()
+    expect(screen.getByText(/Estimate only\. The final NIM amount is locked when you continue\./)).toBeInTheDocument()
+    expect(screen.queryByText(/higher than your current/)).not.toBeInTheDocument()
+  })
+
+  it('warns on shortfall without blocking and retries honest rate failures', async () => {
+    const api = apiStub()
+    api.getNimRate.mockRejectedValueOnce(new Error('Live NIM rate is unavailable. No quote was created.'))
+    render(<PayPage
+      api={api}
+      connection={offlineConnection}
+      funding={{ luna: '1000', nim: '0.01', network: 'mainnet' }}
+    />)
+    await waitFor(() => expect(api.list).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: /Airtime/ }))
+    fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '1000' } })
+    expect(await screen.findByText(/NIM rate unavailable/)).toBeInTheDocument()
+    const callsBefore = api.getNimRate.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(api.getNimRate.mock.calls.length).toBeGreaterThan(callsBefore))
+
+    fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '1000' } })
+    expect(await screen.findByText('Estimated payment')).toBeInTheDocument()
+    expect(screen.getByText('≈ 0.5 NIM')).toBeInTheDocument()
+    expect(screen.getByText(/higher than your current Nimiq Pay balance/)).toBeInTheDocument()
+    // Informational only: review stays available.
+    expect(screen.getByRole('button', { name: 'Review airtime order' })).toBeEnabled()
+    expect(mockedRequestNimPayment).not.toHaveBeenCalled()
+  })
+
   it('lists saved orders with masked phones and keeps other categories unselectable', async () => {
     render(<PayPage api={apiStub([order()])} connection={offlineConnection} />)
 

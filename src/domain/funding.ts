@@ -37,6 +37,46 @@ function parseLuna(value: string): bigint | null {
   }
 }
 
+function parseDecimalParts(value: string): { digits: bigint; scale: number } | null {
+  const text = value.trim()
+  if (text.length > 64 || !/^\d+(?:\.\d+)?$/.test(text)) return null
+  const [whole, fractional = ''] = text.split('.')
+  return { digits: BigInt(whole + fractional), scale: fractional.length }
+}
+
+export interface IndicativeNimEstimate {
+  /** Display NIM, rounded half-up to 5 decimals (NIM precision). */
+  nim: string
+  /** Conservative integer luna (ceiled) for shortfall comparison. */
+  luna: string
+}
+
+/**
+ * Informational form estimate only: ngnAmount / ngnPerNim in exact
+ * decimal arithmetic. Never payment authority — the server quote
+ * (ceil to integer luna) alone decides what leaves the wallet.
+ * Returns null for non-positive or malformed input: show nothing.
+ */
+export function estimateNimFromNgn(ngnAmount: string, ngnPerNim: string): IndicativeNimEstimate | null {
+  const ngn = parseDecimalParts(ngnAmount)
+  const rate = parseDecimalParts(ngnPerNim)
+  if (!ngn || !rate || ngn.digits <= 0n || rate.digits <= 0n) return null
+  // nim = ngn / rate at 5-decimal NIM precision, half-up:
+  // floor the scaled quotient, then round up when remainder >= half.
+  const numerator = ngn.digits * 10n ** BigInt(rate.scale + 5)
+  const denominator = rate.digits * 10n ** BigInt(ngn.scale)
+  const q = numerator / denominator
+  const r = numerator % denominator
+  const halfUp = r * 2n >= denominator ? q + 1n : q
+  const units = halfUp / 100000n
+  const frac = (halfUp % 100000n).toString().padStart(5, '0').replace(/0+$/, '')
+  const ceilLuna = (numerator + denominator - 1n) / denominator
+  return {
+    nim: frac === '' ? `${units}` : `${units}.${frac}`,
+    luna: ceilLuna.toString(),
+  }
+}
+
 /**
  * Builds the preview, or null when inputs are not exact non-negative
  * integer luna with a non-empty display amount. Null means "show no

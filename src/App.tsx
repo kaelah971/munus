@@ -758,6 +758,7 @@ export function App() {
     content = <ProfilePage
       authBusy={authBusy} authError={authError} connection={connection}
       getReadiness={getReadiness}
+      getNimRate={paymentApi ? () => paymentApi.getNimRate() : undefined}
       onListAccounts={requestAccounts}
       onCheckBalances={paymentApi && sessionUserId ? (addresses) => paymentApi.listAccountBalances(addresses).then((report) => {
         // Keep the stored set fresh after an explicit diagnostics refresh.

@@ -4,7 +4,7 @@ import { ProfileAvatar } from '../components/ProfileAvatar'
 import { Icon, QuietButton, StatusPill } from '../components/Primitives'
 import { profileToDraft, type MunusProfile, type ProfileDraft } from '../domain/profile'
 import type { MunusSession } from '../domain/auth'
-import type { RailStatus, ReadinessReport } from '../persistence/paymentApi'
+import type { NimIndicativeRate, RailStatus, ReadinessReport } from '../persistence/paymentApi'
 import type { AppDestination } from '../navigation'
 import { shortenNimiqAccount, type NimiqConnectionState, type NimiqWalletState } from '../integration/nimiq'
 import { WalletDiagnostics } from '../components/WalletDiagnostics'
@@ -15,7 +15,7 @@ export function ProfilePage({
   connection, session, profile, pinRecord, authBusy = false, authError,
   onNavigate, onSignIn, onSignOut, onSave, onSavePin, onRemovePin,
   hideBalances = false, onToggleBalances, onOpenContacts, onCopyAddress, wallet,
-  getReadiness, onListAccounts, onCheckBalances,
+  getReadiness, getNimRate, onListAccounts, onCheckBalances,
 }: {
   connection: NimiqConnectionState
   session: MunusSession | null
@@ -35,6 +35,8 @@ export function ProfilePage({
   onCopyAddress?: () => void
   /** Authenticated readiness loader. Same session cookie as every other API call. */
   getReadiness?: () => Promise<ReadinessReport>
+  /** Authenticated indicative-rate loader for the diagnostics below. */
+  getNimRate?: () => Promise<NimIndicativeRate>
   wallet?: NimiqWalletState
   /**
    * Explicit-tap-only host account listing plus authenticated per-address
@@ -132,6 +134,7 @@ export function ProfilePage({
           </section>
 
           {session && getReadiness ? <ReadinessSection load={getReadiness} /> : null}
+          {session && getNimRate ? <RateDiagnosticsSection load={getNimRate} /> : null}
           {session && wallet ? <WalletDiagnostics connection={connection} wallet={wallet} sessionWallet={session.walletAddress} onListAccounts={onListAccounts} onCheckBalances={onCheckBalances} /> : null}
 
           <section className="profile-settings-group" aria-labelledby="settings-people">
@@ -147,6 +150,57 @@ export function ProfilePage({
       ) : null}
     </section>
   )
+}
+
+/**
+ * Temporary operator diagnostics for the live /nim/rate path: shows
+ * whether the authenticated request was attempted, the inferred HTTP
+ * outcome, and the parsed rate or the exact error. Same session cookie
+ * as every other call; no wallet contact; nothing secret can appear.
+ */
+function RateDiagnosticsSection({ load }: { load: () => Promise<NimIndicativeRate> }) {
+  const [state, setState] = useState<
+    | { status: 'loading' }
+    | { status: 'ok'; rate: NimIndicativeRate }
+    | { status: 'error'; message: string }
+  >({ status: 'loading' })
+
+  useEffect(() => {
+    let active = true
+    load().then((rate) => {
+      if (active) setState({ status: 'ok', rate })
+    }).catch((loadError: unknown) => {
+      if (active) setState({ status: 'error', message: loadError instanceof Error ? loadError.message : 'NIM rate check failed.' })
+    })
+    return () => {
+      active = false
+    }
+  }, [load])
+
+  return (
+    <section className="profile-settings-group" aria-labelledby="settings-rate">
+      <h2 className="settings-group-title" id="settings-rate">NIM rate diagnostics</h2>
+      {state.status === 'loading' ? <p className="section-copy" role="status">Checking…</p> : null}
+      {state.status === 'error' ? <p className="inline-error" role="alert">{state.message}</p> : null}
+      {state.status !== 'loading' ? (
+        <div className="settings-list">
+          <SettingRow label="Request" value="GET /nim/rate · attempted" />
+          <SettingRow label="HTTP" value={state.status === 'ok' ? '200 · parsed' : inferRateHttp(state.message)} />
+          {state.status === 'ok'
+            ? <SettingRow label="Parsed rate" value={`1 NIM ≈ ₦${state.rate.ngnPerNim}`} mono />
+            : null}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function inferRateHttp(message: string): string {
+  if (message.includes('not configured')) return '503 · unconfigured'
+  if (message.includes('unavailable')) return '502 · upstream failed'
+  const match = /failed \((\d{3})\)/.exec(message)
+  if (match) return `${match[1]} · transport/route failure`
+  return 'unknown · see message'
 }
 
 function SettingRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {

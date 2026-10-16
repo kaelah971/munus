@@ -24,7 +24,7 @@ import { requestNimPayment, shortenNimiqAccount, type NimiqConnectionState, type
 import { requestUsdtTransfer } from '../integration/ethereum'
 import type { PaymentApi, RailCapability, RailStatus, ReadinessReport } from '../persistence/paymentApi'
 import { estimateNgn, mapNimBalance, type NgnQuoteResult } from '../domain/accountPresentation'
-import { buildAggregateFundingView, buildFundingPreview, buildNimFundingView } from '../domain/funding'
+import { buildAggregateFundingView, buildFundingPreview, buildNimFundingView, estimateNimFromNgn } from '../domain/funding'
 import { NimFundingCard, type FundingDeduction } from '../components/NimFundingCard'
 import { RecoveryCenter } from '../components/RecoveryCenter'
 
@@ -285,11 +285,36 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
     return updated
   }
 
+  const [formRate, setFormRate] = useState<NgnQuoteResult | null>(null)
+  const [formRateLoading, setFormRateLoading] = useState(false)
+
+  async function loadFormRate() {
+    // Indicative form estimate only. Server fetch, no wallet contact;
+    // failures degrade to an honest unavailable state with retry.
+    setFormRateLoading(true)
+    try {
+      const rate = await api.getNimRate()
+      const asOf = Date.parse(rate.asOf)
+      const expiresAt = Date.parse(rate.expiresAt)
+      if (!rate.ngnPerNim || !rate.source.trim() || !Number.isFinite(asOf) || !Number.isFinite(expiresAt)) {
+        setFormRate({ status: 'unavailable' })
+        return
+      }
+      setFormRate({ status: 'available', asset: 'NIM', network: 'mainnet', ngnPerUnit: rate.ngnPerNim, source: rate.source, asOf, expiresAt })
+    } catch {
+      setFormRate({ status: 'unavailable' })
+    } finally {
+      setFormRateLoading(false)
+    }
+  }
+
   function openAirtimeForm() {
     setDraft(emptyAirtimeDraft(defaultPhone))
     setActionError(null)
     setPendingTxHash(null)
+    setFormRate(null)
     setView({ name: 'airtime-form' })
+    void loadFormRate()
   }
 
   function openDataForm() {
@@ -647,6 +672,13 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
             </label>
           </div>
           {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
+          <AirtimeEstimatePanel
+            amount={draft.requestedAmount}
+            rate={formRate}
+            rateLoading={formRateLoading}
+            funding={funding ?? null}
+            onRetryRate={() => void loadFormRate()}
+          />
           <div className="truth-note"><Icon name="info" size={18} /><p>This saves the order only — no money moves until you review a live quote and approve it in Nimiq Pay.</p></div>
           <PrimaryButton disabled={saving || railStatus('airtime') === 'unavailable'} onClick={() => void saveAirtimeOrder()}>
             {saving ? 'Saving order…' : 'Review airtime order'}
@@ -1084,6 +1116,62 @@ export function PayPage({ api, defaultPhone = '', connection, wallet: walletProp
 function OrderStatusPill({ order }: { order: PaymentOrder }) {
   const copy = describeActivityStatusCopy(describeActivityStatus(order), order.serviceType)
   return <StatusPill label={copy.label} tone={copy.tone} />
+}
+
+/**
+ * Informational pre-quote conversion on the Airtime form. Pure estimate
+ * from the indicative rate — never payment authority and never a reason
+ * to disable anything: the server quote alone decides the payment.
+ */
+function AirtimeEstimatePanel({ amount, rate, rateLoading, funding, onRetryRate }: {
+  amount: string
+  rate: NgnQuoteResult | null
+  rateLoading: boolean
+  funding?: { luna: string; nim: string; network: 'mainnet' | 'testnet' } | null
+  onRetryRate: () => void
+}) {
+  const trimmed = amount.trim()
+  const positive = /^\d+(?:\.\d+)?$/.test(trimmed) && Number(trimmed) > 0
+  if (!positive) return null
+  if (rateLoading && !rate) {
+    return <p className="section-copy" role="status">Checking current rate…</p>
+  }
+  if (!rate || rate.status !== 'available') {
+    return (
+      <>
+        <p className="section-copy">NIM rate unavailable — the estimate cannot load right now.</p>
+        <QuietButton disabled={rateLoading} onClick={onRetryRate}>
+          {rateLoading ? 'Checking…' : 'Check again'}
+        </QuietButton>
+      </>
+    )
+  }
+  const estimate = estimateNimFromNgn(trimmed, rate.ngnPerUnit)
+  if (!estimate) return null
+  let shortfall: string | null = null
+  try {
+    if (funding && BigInt(estimate.luna) > BigInt(funding.luna)) {
+      const gap = BigInt(estimate.luna) - BigInt(funding.luna)
+      shortfall = gap.toString()
+    }
+  } catch {
+    shortfall = null
+  }
+  return (
+    <section aria-label="Estimated payment" className="receipt-section">
+      <SectionHeading>Estimated payment</SectionHeading>
+      <dl className="contact-details">
+        <div><dt>Airtime</dt><dd>₦{trimmed}</dd></div>
+        <div><dt>Rate</dt><dd>1 NIM ≈ ₦{rate.ngnPerUnit}</dd></div>
+        <div><dt>You pay about</dt><dd>≈ {estimate.nim} NIM</dd></div>
+        {funding ? <div><dt>Available in Nimiq Pay</dt><dd>{funding.nim} NIM</dd></div> : null}
+      </dl>
+      {shortfall !== null ? (
+        <div className="truth-note"><Icon name="info" size={18} /><p>Estimated amount is higher than your current Nimiq Pay balance. Nimiq Pay still chooses the paying account — this never blocks continuing.</p></div>
+      ) : null}
+      <p className="section-copy">Estimate only. The final NIM amount is locked when you continue.</p>
+    </section>
+  )
 }
 
 function PaymentStageLabel({ order }: { order: PaymentOrder }) {

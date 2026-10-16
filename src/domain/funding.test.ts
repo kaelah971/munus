@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildAggregateFundingView, buildFundingPreview, nimBalanceForEstimate } from './funding'
+import { buildAggregateFundingView, buildFundingPreview, estimateNimFromNgn, nimBalanceForEstimate } from './funding'
 import type { AssetBalanceResult, NgnQuoteResult } from './accountPresentation'
 
 describe('funding preview math', () => {
@@ -64,6 +64,20 @@ describe('funding preview math', () => {
     expect(nimBalanceForEstimate(balance, quote, 'unknown')).toBe(balance)
     expect(nimBalanceForEstimate(balance, { status: 'unavailable' }, 'mainnet')).toBe(balance)
     expect(nimBalanceForEstimate({ status: 'unavailable', asset: 'NIM' }, quote, 'mainnet').status).toBe('unavailable')
+  })
+
+  it('estimates NIM from NGN with exact decimal division', () => {
+    expect(estimateNimFromNgn('50', '0.415461')).toEqual({ nim: '120.34824', luna: '12034824' })
+    expect(estimateNimFromNgn('100', '0.415461')).toEqual({ nim: '240.69648', luna: '24069648' })
+    expect(estimateNimFromNgn('1000', '2000')).toEqual({ nim: '0.5', luna: '50000' })
+    // The estimate luna never exceeds the authoritative ceil.
+    expect(BigInt(estimateNimFromNgn('100', '0.415461')?.luna ?? '0')).toBe(24069648n)
+    expect(estimateNimFromNgn('', '2000')).toBeNull()
+    expect(estimateNimFromNgn('abc', '2000')).toBeNull()
+    expect(estimateNimFromNgn('-5', '2000')).toBeNull()
+    expect(estimateNimFromNgn('0', '2000')).toBeNull()
+    expect(estimateNimFromNgn('100', '0')).toBeNull()
+    expect(estimateNimFromNgn('100', 'nope')).toBeNull()
   })
 
   it('refuses to preview on malformed input', () => {
