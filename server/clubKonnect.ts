@@ -166,13 +166,22 @@ export class ClubKonnectAirtimeProvider implements AirtimeProviderAdapter {
   async purchase(input: AirtimePurchaseInput): Promise<AirtimePurchaseReceipt> {
     const url = withParams(`${this.baseUrl}${CLUBKONNECT_AIRTIME_PATH}`, this.buildPurchaseParams(input))
     const body = await this.requestJson(url)
-    const statusCode = requiredField(pickField(body, ['statuscode']), 'provider status')
-    const status = requiredField(pickField(body, ['status']), 'provider status')
+    // Documented purchase shape: statuscode + status (+ orderid). The
+    // provider's callback JSON uses orderstatus/orderremark instead of
+    // status/remark, and live responses have arrived in that shape —
+    // accept it as an evidence-backed fallback. Anything else stays
+    // fail-closed, but never silently: the sanitized shape is logged.
+    const statusCode = pickField(body, ['statuscode'])
+    const status = pickField(body, ['status', 'orderstatus'])
+    if (!statusCode || !status) {
+      logResponseShape(CLUBKONNECT_AIRTIME_PATH, body)
+      throw new ClubKonnectError('Airtime provider response is missing provider status. No airtime was confirmed.')
+    }
     return {
       providerOrderId: pickField(body, ['orderid']),
       statusCode,
       status,
-      remark: pickField(body, ['remark']),
+      remark: pickField(body, ['remark', 'orderremark']),
     }
   }
 
@@ -347,6 +356,29 @@ function pickField(body: Record<string, unknown>, names: string[]): string | und
 function requiredField(value: string | undefined, field: string): string {
   if (!value) throw new ClubKonnectError(`Airtime provider response is missing ${field}. No airtime was confirmed.`)
   return value
+}
+
+/**
+ * Sanitized purchase-response shape log for production diagnosis.
+ * Field NAMES plus provider-vocabulary values only — free-text fields
+ * have every digit run masked (remarks can embed the recipient phone
+ * number and amounts). Never URLs, credentials, or phone numbers.
+ */
+function logResponseShape(endpointPath: string, body: Record<string, unknown>): void {
+  const preview = (names: string[]): string | null => {
+    const value = pickField(body, names)
+    return value === undefined ? null : value
+  }
+  const maskDigits = (value: string | null): string | null =>
+    value === null ? null : value.replace(/\d+/g, '#').slice(0, 120)
+  console.info('Munus airtime purchase response shape', {
+    endpoint: endpointPath,
+    keys: Object.keys(body).sort(),
+    statusCode: preview(['statuscode']),
+    status: preview(['status', 'orderstatus']),
+    orderIdPresent: pickField(body, ['orderid']) !== undefined,
+    remark: maskDigits(preview(['remark', 'orderremark', 'description'])),
+  })
 }
 
 async function defaultFetchJson(url: string): Promise<unknown> {

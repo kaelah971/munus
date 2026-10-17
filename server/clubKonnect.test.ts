@@ -151,6 +151,58 @@ describe('ClubKonnect airtime adapter', () => {
     expect(record.outcome).toBe('not-found')
   })
 
+  it('parses the documented purchase response with casing tolerance', async () => {
+    const receipt = await provider(async () => ({
+      OrderID: '789',
+      StatusCode: '100',
+      STATUS: 'ORDER_RECEIVED',
+    })).purchase(purchaseInput)
+    expect(receipt).toMatchObject({ providerOrderId: '789', statusCode: '100', status: 'ORDER_RECEIVED' })
+  })
+
+  it('accepts callback-style orderstatus/orderremark on purchase responses', async () => {
+    // Documented callback JSON uses orderstatus/orderremark instead of
+    // status/remark; live purchase responses have arrived in that shape.
+    const receipt = await provider(async () => ({
+      orderid: '6501321715',
+      statuscode: '200',
+      orderstatus: 'ORDER_COMPLETED',
+      orderremark: 'You have topped up N100.00 to 2348149659347.',
+    })).purchase(purchaseInput)
+    expect(receipt).toMatchObject({
+      providerOrderId: '6501321715',
+      statusCode: '200',
+      status: 'ORDER_COMPLETED',
+      remark: 'You have topped up N100.00 to 2348149659347.',
+    })
+  })
+
+  it('keeps status-less purchase responses fail-closed with a sanitized shape log', async () => {
+    const logged: unknown[][] = []
+    const info = console.info
+    console.info = (...args: unknown[]) => { logged.push(args) }
+    try {
+      const failure = await provider(async () => ({
+        orderid: '789',
+        message: 'Something unexpected happened.',
+      })).purchase(purchaseInput).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(ClubKonnectError)
+      expect((failure as Error).message).toMatch(/missing provider status/)
+      const shape = logged.find((args) => args[0] === 'Munus airtime purchase response shape')
+      expect(shape?.[1]).toMatchObject({
+        endpoint: CLUBKONNECT_AIRTIME_PATH,
+        keys: ['message', 'orderid'],
+        statusCode: null,
+        status: null,
+        orderIdPresent: true,
+      })
+      expect(shape?.[1]).toMatchObject({ remark: null })
+      expect(JSON.stringify(shape?.[1])).not.toMatch(/08012345678|fixture-key|fixture-user/)
+    } finally {
+      console.info = info
+    }
+  })
+
   it('classifies documented and failure provider states conservatively', () => {
     expect(classifyOutcome('100', 'ORDER_RECEIVED')).toBe('pending')
     expect(classifyOutcome('', 'ORDER_RECEIVED')).toBe('pending')
