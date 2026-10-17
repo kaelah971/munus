@@ -17,8 +17,10 @@ Legend:
 - Base URL `https://www.nellobytesystems.com` (`CLUBKONNECT_BASE_URL`).
 - Purchase path `/APIAirtimeV1.asp`, query path `/APIQueryV1.asp`.
 - Purchase params: `MobileNetwork`, `Amount`, `MobileNumber`,
-  `RequestID`, `CallBackURL` (server/clubKonnect.ts
-  `buildPurchaseParams`).
+  `RequestID` (server/clubKonnect.ts `buildPurchaseParams`).
+  `CallBackURL` is deliberately NOT sent: the live airtime endpoint
+  rejects purchases containing it (`CALLBACK_NOT_SUPPORTED`, no order
+  id, production 2026). Reconciliation polls by stable `RequestID`.
 - Query params: `RequestID` and/or `OrderID`
   (`buildQueryParams`).
 - Amounts are whole naira (`toProviderAmount`); MSISDN is digits-only

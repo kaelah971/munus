@@ -139,6 +139,11 @@ export class ClubKonnectAirtimeProvider implements AirtimeProviderAdapter {
 
   buildPurchaseParams(input: AirtimePurchaseInput): Record<string, string> {
     if (!input.network) throw new ClubKonnectError('Mobile network is required for airtime fulfilment.', 400)
+    // CallBackURL is deliberately NOT sent: the live airtime endpoint
+    // rejects purchases that include it (CALLBACK_NOT_SUPPORTED, no
+    // order id). Reconciliation polls by stable RequestID instead, so
+    // callbacks are not required for correctness.
+    void input.callbackUrl
     return {
       UserID: this.credentials.userId,
       APIKey: this.credentials.apiKey,
@@ -146,7 +151,6 @@ export class ClubKonnectAirtimeProvider implements AirtimeProviderAdapter {
       Amount: toProviderAmount(input.amountNgn),
       MobileNumber: toProviderMsisdn(input.mobileNumber),
       RequestID: requiredField(input.requestId, 'RequestID'),
-      CallBackURL: requiredField(input.callbackUrl, 'CallBackURL'),
     }
   }
 

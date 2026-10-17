@@ -49,8 +49,18 @@ describe('ClubKonnect airtime adapter', () => {
       Amount: '1000',
       MobileNumber: '08012345678',
       RequestID: 'abc123',
-      CallBackURL: 'https://munus.example/provider-callback/clubkonnect',
     })
+  })
+
+  it('omits CallBackURL from airtime purchase requests', () => {
+    // Live production evidence: the airtime endpoint rejects purchases
+    // that include CallBackURL (CALLBACK_NOT_SUPPORTED, no order id).
+    // Reconciliation polls by stable RequestID, so the purchase URL
+    // carries everything except the callback.
+    const params = provider().buildPurchaseParams(purchaseInput)
+    expect(params).not.toHaveProperty('CallBackURL')
+    expect(params).not.toHaveProperty('callbackurl')
+    expect(params.RequestID).toBe('abc123')
   })
 
   it('builds query parameters by RequestID or OrderID', () => {
@@ -175,6 +185,16 @@ describe('ClubKonnect airtime adapter', () => {
       status: 'ORDER_COMPLETED',
       remark: 'You have topped up N100.00 to 2348149659347.',
     })
+  })
+
+  it('rejects CALLBACK_NOT_SUPPORTED without treating it as accepted', async () => {
+    // Production shape: keys ['status'], no code, no order id. This is a
+    // pre-acceptance rejection — never ORDER_RECEIVED, never delivered.
+    const failure = await provider(async () => ({
+      status: 'CALLBACK_NOT_SUPPORTED',
+    })).purchase(purchaseInput).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(ClubKonnectError)
+    expect((failure as Error).message).toMatch(/missing provider status/)
   })
 
   it('keeps status-less purchase responses fail-closed with a sanitized shape log', async () => {
